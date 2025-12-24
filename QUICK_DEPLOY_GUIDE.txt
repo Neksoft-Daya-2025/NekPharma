@@ -1,0 +1,83 @@
+================================================================================
+QUICK DEPLOYMENT GUIDE - HOSTINGERCODE UPDATE
+================================================================================
+
+⚠️  IMPORTANT: Do NOT use the update-settings page!
+   That page is for user account settings, NOT code deployment.
+
+================================================================================
+METHOD 1: Using Hostinger File Manager (EASIEST)
+================================================================================
+
+1. Login to Hostinger control panel
+2. Go to "File Manager"
+3. Navigate to: public_html (or domains/ryvavitabiotics.com/public_html)
+4. Upload: HOSTINGERCODE_UPDATE.zip
+5. Right-click ZIP → Extract
+6. Copy files from extracted folder to correct locations:
+
+   FROM: UPDATE_PACKAGE/app/Observers/InvoiceObserver.php
+   TO:   app/Observers/InvoiceObserver.php (REPLACE)
+
+   FROM: UPDATE_PACKAGE/app/DataTables/CFADistributorInvoicesDataTable.php
+   TO:   app/DataTables/CFADistributorInvoicesDataTable.php (NEW)
+
+   FROM: UPDATE_PACKAGE/app/Models/CFADistributorStock.php
+   TO:   app/Models/CFADistributorStock.php (NEW)
+
+   FROM: UPDATE_PACKAGE/resources/views/invoices/cfa-distributor/
+   TO:   resources/views/invoices/cfa-distributor/ (ENTIRE FOLDER - NEW)
+
+   FROM: UPDATE_PACKAGE/database/migrations/*.php
+   TO:   database/migrations/ (ALL 16 FILES - NEW)
+
+7. Edit: app/Http/Controllers/InvoiceController.php
+   - Add imports at top (around line 38):
+     use App\DataTables\CFADistributorInvoicesDataTable;
+     use App\Models\ProductPurchaseDetail;
+     use App\Models\CFADistributorStock;
+   
+   - Open: UPDATE_PACKAGE/app/Http/Controllers/InvoiceController_ADDITIONS.txt
+   - Copy ALL methods
+   - Paste BEFORE closing brace } at end of InvoiceController.php
+
+8. Run migrations via Hostinger Terminal:
+   php artisan migrate
+
+9. Clear caches:
+   php artisan config:cache
+   php artisan route:cache
+   php artisan view:cache
+
+================================================================================
+METHOD 2: Using FTP Client (FileZilla, WinSCP)
+================================================================================
+
+1. Extract ZIP on your computer
+2. Connect to server via FTP
+3. Upload files maintaining directory structure
+4. Follow steps 7-9 from Method 1
+
+================================================================================
+WHAT'S INCLUDED IN THE ZIP
+================================================================================
+
+✅ Fixed InvoiceObserver.php (prevents duplicates)
+✅ All 7 CFA/Distributor invoice methods
+✅ All 10 view files
+✅ DataTable class
+✅ Model class
+✅ ALL 16 database migrations
+
+================================================================================
+VERIFICATION
+================================================================================
+
+After deployment, visit:
+https://ryvavitabiotics.com/account/cfa-distributor-invoices
+
+Should work without errors!
+
+================================================================================
+
+
