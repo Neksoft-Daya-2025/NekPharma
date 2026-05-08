@@ -221,8 +221,60 @@ $viewAppreciationPermission = user()->permission('view_appreciation');
                                 <x-cards.data-row :label="__('app.language')"
                                     :value="$employeeLanguage->language_name ?? '--'" />
 
-                                <x-cards.data-row :label="__('modules.employees.probationEndDate')"
-                                :value="$employee->employeeDetail->probation_end_date ? Carbon\Carbon::parse($employee->employeeDetail->probation_end_date)->translatedFormat(company()->date_format) : '--'" />
+                                {{-- ── Probation Section ────────────────────────────────── --}}
+                                @php
+                                    $probationEndDate  = $employee->employeeDetail->probation_end_date;
+                                    $empStatus         = $employee->employeeDetail->employment_status;
+                                    $confirmedAt       = $employee->employeeDetail->probation_confirmed_at;
+                                    $joiningDate       = $employee->employeeDetail->joining_date;
+                                    $isOnProbation     = $empStatus === 'Probation';
+                                    $isConfirmed       = $empStatus === 'Confirmed';
+                                    $canEndProbation   = ($editEmployeePermission == 'all' || ($editEmployeePermission == 'added' && $employee->employeeDetail->added_by == user()->id));
+                                @endphp
+
+                                <div class="col-12 px-0 pb-3 d-lg-flex d-md-flex d-block" id="probation-section">
+                                    <p class="mb-0 text-lightest f-14 w-30">Probation Period</p>
+                                    <div class="mb-0 text-dark-grey f-14 w-70 text-wrap">
+                                        @if($probationEndDate)
+                                            {{-- Timeline: Joining → Probation End --}}
+                                            <div class="d-flex align-items-center flex-wrap mb-1">
+                                                <span>{{ $joiningDate ? \Carbon\Carbon::parse($joiningDate)->translatedFormat(company()->date_format) : '--' }}</span>
+                                                <i class="fa fa-long-arrow-right text-muted mx-2" style="font-size:12px;"></i>
+                                                <span>{{ \Carbon\Carbon::parse($probationEndDate)->translatedFormat(company()->date_format) }}</span>
+                                            </div>
+
+                                            {{-- Status badge --}}
+                                            <div id="probation-status-badge">
+                                                @if($isOnProbation)
+                                                    <span class="badge" style="background:#fd7e14;color:#fff;font-size:11px;padding:4px 8px;">On Probation</span>
+                                                @elseif($isConfirmed)
+                                                    <span class="badge badge-success" style="font-size:11px;padding:4px 8px;">Confirmed</span>
+                                                    @if($confirmedAt)
+                                                        <span class="text-muted f-11 ml-1">on {{ $confirmedAt->translatedFormat(company()->date_format) }}</span>
+                                                    @endif
+                                                @endif
+                                            </div>
+
+                                            {{-- End-Probation button — visible only while on probation, admin only --}}
+                                            @if($isOnProbation && $canEndProbation)
+                                                <div class="mt-2" id="end-probation-wrapper">
+                                                    <button type="button"
+                                                            class="btn btn-sm btn-success f-12"
+                                                            id="end-probation-btn"
+                                                            data-employee-id="{{ $employee->id }}"
+                                                            data-employee-name="{{ $employee->name }}"
+                                                            data-url="{{ route('employees.end-probation', $employee->id) }}">
+                                                        <i class="fa fa-check-circle mr-1"></i>
+                                                        End Probation &amp; Join as Employee
+                                                    </button>
+                                                </div>
+                                            @endif
+                                        @else
+                                            <span class="text-muted">--</span>
+                                        @endif
+                                    </div>
+                                </div>
+                                {{-- ── End Probation Section ────────────────────────────── --}}
 
                                 <x-cards.data-row :label="__('modules.employees.noticePeriodStartDate')"
                                 :value="$employee->employeeDetail->notice_period_start_date ? Carbon\Carbon::parse($employee->employeeDetail->notice_period_start_date)->translatedFormat(company()->date_format) : '--'" />
@@ -376,3 +428,60 @@ $viewAppreciationPermission = user()->permission('view_appreciation');
         <!-- ROW END -->
     </div>
 </div>
+
+<script>
+    $('body').on('click', '#end-probation-btn', function () {
+        var btn          = $(this);
+        var employeeName = btn.data('employee-name');
+        var url          = btn.data('url');
+
+        Swal.fire({
+            icon: 'question',
+            title: 'Confirm Probation End',
+            html: '<p>You are about to confirm <strong>' + employeeName + '</strong> as a full-time employee.</p>' +
+                  '<p class="text-muted f-13 mb-0">This action cannot be undone. The employee status will be changed to <strong>Confirmed</strong>.</p>',
+            showCancelButton: true,
+            confirmButtonText: 'Yes, Confirm as Employee',
+            cancelButtonText: 'Cancel',
+            confirmButtonColor: '#28a745',
+            cancelButtonColor: '#6c757d',
+        }).then(function (result) {
+            if (result.isConfirmed) {
+                btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin mr-1"></i> Confirming...');
+
+                $.ajax({
+                    url: url,
+                    type: 'POST',
+                    data: { _token: '{{ csrf_token() }}' },
+                    success: function (response) {
+                        if (response.status === 'success') {
+                            // Flip badge to Confirmed and hide the button
+                            $('#probation-status-badge').html(
+                                '<span class="badge badge-success" style="font-size:11px;padding:4px 8px;">Confirmed</span>' +
+                                '<span class="text-muted f-11 ml-1">just now</span>'
+                            );
+                            $('#end-probation-wrapper').remove();
+
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Employee Confirmed',
+                                text: response.message,
+                                timer: 3000,
+                                showConfirmButton: false,
+                            });
+                        } else {
+                            btn.prop('disabled', false).html('<i class="fa fa-check-circle mr-1"></i> End Probation &amp; Join as Employee');
+                            Swal.fire({ icon: 'error', title: 'Error', text: response.message });
+                        }
+                    },
+                    error: function (xhr) {
+                        btn.prop('disabled', false).html('<i class="fa fa-check-circle mr-1"></i> End Probation &amp; Join as Employee');
+                        var msg = 'Something went wrong.';
+                        try { msg = JSON.parse(xhr.responseText).message || msg; } catch(e) {}
+                        Swal.fire({ icon: 'error', title: 'Error', text: msg });
+                    }
+                });
+            }
+        });
+    });
+</script>

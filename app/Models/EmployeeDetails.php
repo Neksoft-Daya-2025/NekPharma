@@ -72,6 +72,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $notice_period_end_date
  * @property string|null $notice_period_start_date
  * @property string|null $probation_end_date
+ * @property \Illuminate\Support\Carbon|null $probation_confirmed_at
  * @property string|null $name
  * @property string|null $occassion
  * @method static Builder|EmployeeDetails whereContractEndDate($value)
@@ -92,14 +93,15 @@ class EmployeeDetails extends BaseModel
     protected $table = 'employee_details';
 
     protected $casts = [
-        'joining_date' => 'datetime',
-        'last_date' => 'datetime',
-        'date_of_birth' => 'datetime',
-        'calendar_view' => 'array',
-        'marital_status' => MaritalStatus::class,
-        'areas' => 'array',
-        'regions' => 'array',
-        'zones' => 'array',
+        'joining_date'            => 'datetime',
+        'last_date'               => 'datetime',
+        'date_of_birth'           => 'datetime',
+        'probation_confirmed_at'  => 'datetime',
+        'calendar_view'           => 'array',
+        'marital_status'          => MaritalStatus::class,
+        'areas'                   => 'array',
+        'regions'                 => 'array',
+        'zones'                   => 'array',
     ];
 
     protected $with = ['company:id'];

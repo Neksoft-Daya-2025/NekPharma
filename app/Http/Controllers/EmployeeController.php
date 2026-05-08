@@ -618,6 +618,48 @@ class EmployeeController extends AccountBaseController
      * @param int $id
      * @return array
      */
+    /**
+     * Explicitly confirm the end of an employee's probation period.
+     * Sets employment_status = Confirmed and records the timestamp.
+     * The employee remains on Probation status until this is called manually.
+     */
+    public function endProbation(User $employee)
+    {
+        $editPermission = user()->permission('edit_employees');
+        abort_403(!in_array($editPermission, ['all', 'added', 'owned', 'both']));
+
+        $details = $employee->employeeDetail;
+
+        if (!$details) {
+            return Reply::error(__('messages.employeeNotFound'));
+        }
+
+        if ($details->employment_status !== 'Probation') {
+            return Reply::error('Employee is not currently on probation.');
+        }
+
+        $details->employment_status    = 'Confirmed';
+        $details->probation_confirmed_at = now();
+        $details->save();
+
+        // Activity log
+        \App\Models\ActivityLog::create([
+            'user_id'   => user()->id,
+            'action'    => 'PROBATION_CONFIRMED',
+            'entity'    => 'employee',
+            'entity_id' => $employee->id,
+            'metadata'  => json_encode([
+                'employee_name'         => $employee->name,
+                'probation_end_date'    => $details->probation_end_date,
+                'confirmed_at'          => now()->toDateTimeString(),
+                'confirmed_by'          => user()->name,
+            ]),
+            'ip' => request()->ip(),
+        ]);
+
+        return Reply::success($employee->name . ' has been confirmed as a full-time employee.');
+    }
+
     public function destroy($id)
     {
         $user = User::withoutGlobalScope(ActiveScope::class)->findOrFail($id);

@@ -233,6 +233,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('employees/send-invite', [EmployeeController::class, 'sendInvite'])->name('employees.send_invite');
     Route::post('employees/create-link', [EmployeeController::class, 'createLink'])->name('employees.create_link');
     Route::post('/get-exit-date-message', [EmployeeController::class, 'getExitDateMessage'])->name('getExitDateMessage');
+    Route::post('employees/{employee}/end-probation', [EmployeeController::class, 'endProbation'])->name('employees.end-probation');
     Route::resource('employees', EmployeeController::class);
 
     // Full & Final Settlement routes
