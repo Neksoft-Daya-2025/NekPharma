@@ -52,27 +52,31 @@ class LeavesQuotaController extends AccountBaseController
 
     public function employeeLeaveTypes($userId)
     {
+        $options = '';
+
         if ($userId != 0) {
-            $employee = User::withoutGlobalScope(ActiveScope::class)->with(['roles', 'leaveTypes'])->findOrFail($userId);
-            $options = '';
-            
-            foreach($employee->leaveTypes as $leavesQuota) {
-                $hasLeave = ($leavesQuota->leaveType && $leavesQuota->leaveType->deleted_at == null) ? $leavesQuota->leaveType->leaveTypeCondition($leavesQuota->leaveType, $employee) : false;
+            $employee = User::withoutGlobalScope(ActiveScope::class)->with(['roles', 'leaveTypes', 'employeeDetail'])->findOrFail($userId);
+
+            foreach ($employee->leaveTypes as $leavesQuota) {
+                $hasLeave = ($leavesQuota->leaveType && $leavesQuota->leaveType->deleted_at == null)
+                    ? $leavesQuota->leaveType->leaveTypeCondition($leavesQuota->leaveType, $employee)
+                    : false;
 
                 if ($hasLeave) {
                     $displayRemaining = (int) round((float) $leavesQuota->leaves_remaining);
-                    $options .= '<option value="' . $leavesQuota->leave_type_id . '"> ' .  $leavesQuota->leaveType->type_name .' (' . $displayRemaining . ') </option>'; /** @phpstan-ignore-line */
+                    $options .= '<option value="' . $leavesQuota->leave_type_id . '"> ' . $leavesQuota->leaveType->type_name . ' (' . $displayRemaining . ') </option>'; /** @phpstan-ignore-line */
                 }
             }
-        }
-        else {
-            $leaveQuotas = LeaveType::all();
+        } else {
+            // userId=0 is an admin-only generic list (no employee context).
+            // Restrict this to admin/HR roles only so employees cannot abuse it to bypass probation checks.
+            abort_403(!($this->user->hasRole('admin') || $this->user->hasRole('employee') === false));
 
-            $options = '';
+            $leaveQuotas = LeaveType::all();
 
             foreach ($leaveQuotas as $leaveQuota) {
                 $displayLeaves = (int) round((float) $leaveQuota->no_of_leaves);
-                $options .= '<option value="' . $leaveQuota->id . '"> ' .  $leaveQuota->type_name . ' (' . $displayLeaves . ') </option>'; /** @phpstan-ignore-line */
+                $options .= '<option value="' . $leaveQuota->id . '"> ' . $leaveQuota->type_name . ' (' . $displayLeaves . ') </option>'; /** @phpstan-ignore-line */
             }
         }
 

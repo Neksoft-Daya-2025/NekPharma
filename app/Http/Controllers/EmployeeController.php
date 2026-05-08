@@ -638,8 +638,13 @@ class EmployeeController extends AccountBaseController
             return Reply::error('Employee is not currently on probation.');
         }
 
-        $details->employment_status    = 'Confirmed';
+        $originalProbationEndDate = $details->probation_end_date;
+
+        $details->employment_status      = 'Confirmed';
         $details->probation_confirmed_at = now();
+        // Set probation_end_date to yesterday so leaveTypeCondition() (which is date-based)
+        // immediately unlocks restricted leave types (CL/EL etc.) for the confirmed employee.
+        $details->probation_end_date     = now()->subDay()->toDateString();
         $details->save();
 
         // Activity log
@@ -649,10 +654,10 @@ class EmployeeController extends AccountBaseController
             'entity'    => 'employee',
             'entity_id' => $employee->id,
             'metadata'  => json_encode([
-                'employee_name'         => $employee->name,
-                'probation_end_date'    => $details->probation_end_date,
-                'confirmed_at'          => now()->toDateTimeString(),
-                'confirmed_by'          => user()->name,
+                'employee_name'              => $employee->name,
+                'original_probation_end_date'=> $originalProbationEndDate,
+                'confirmed_at'               => now()->toDateTimeString(),
+                'confirmed_by'               => user()->name,
             ]),
             'ip' => request()->ip(),
         ]);

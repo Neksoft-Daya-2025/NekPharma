@@ -168,6 +168,14 @@ class LeaveType extends BaseModel
         $probationEndDate = $detail->probation_end_date
             ? Carbon::parse($detail->probation_end_date)->timezone($tz)->startOfDay()
             : null;
+
+        // If employment_status is explicitly 'Probation' but no end date is set,
+        // treat them as still on probation by using a far-future sentinel date.
+        // This prevents employees with status=Probation+null end date from bypassing leave restrictions.
+        if (is_null($probationEndDate) && ($detail->employment_status ?? '') === 'Probation') {
+            $probationEndDate = Carbon::now($tz)->addYears(10)->startOfDay();
+        }
+
         $userRole = $user->roles->pluck('id')->toArray();
 
         $leaveRole = $leave->role;
