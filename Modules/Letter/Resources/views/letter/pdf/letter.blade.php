@@ -5,11 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <title>@lang($pageTitle)</title>
-    <link type="text/css" rel="stylesheet" media="all" href="{{ asset('css/main.css') }}">
     <style>
-        html, body {
-            padding: 0;
+        /* Force A4 size in DomPDF */
+        @page {
+            size: 210mm 297mm;
             margin: 0;
+        }
+
+        html {
+            margin: 0;
+            padding: 0;
+            width: 210mm;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            width: 210mm;
             @php
                 $letterSetting = \Modules\Letter\Entities\LetterSetting::where('company_id', company()->id)->first();
                 if ($letterSetting && $letterSetting->background_image) {
@@ -22,6 +34,7 @@
                 }
             @endphp
         }
+
         .letter-content {
             @php
                 if ($letterSetting && $letterSetting->background_image) {
@@ -30,10 +43,29 @@
                     echo 'background-color: #fff;';
                 }
             @endphp
+            box-sizing: border-box;
+            width: 210mm;
+            min-height: 297mm;
             padding-top: {{ $letter->top }}px;
             padding-bottom: {{ $letter->bottom }}px;
             padding-left: {{ $letter->left }}px;
             padding-right: {{ $letter->right }}px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        /* Prevent images/tables from breaking across pages */
+        img {
+            max-width: 100%;
+            page-break-inside: avoid;
+        }
+        table {
+            page-break-inside: avoid;
+            width: 100%;
+        }
+        p, h1, h2, h3, h4, h5, h6 {
+            orphans: 3;
+            widows: 3;
         }
     </style>
 

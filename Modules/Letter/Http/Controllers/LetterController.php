@@ -252,6 +252,7 @@ class LetterController extends AccountBaseController
         $this->pageTitle = __('letter::app.previewLetter');
 
         $pdf = app('dompdf.wrapper');
+        $pdf->setPaper('a4', 'portrait');
         $pdf->loadView('letter::letter.pdf.preview', $this->data);
         return $pdf->download($this->pageTitle . '.pdf');
     }
@@ -273,6 +274,7 @@ class LetterController extends AccountBaseController
         $this->pageTitle = $this->letter->employee_name . ' - ' . $this->letter->template->title;
 
         $pdf = app('dompdf.wrapper');
+        $pdf->setPaper('a4', 'portrait');
         $pdf->loadView('letter::letter.pdf.letter', $this->data);
         return $pdf->download($this->pageTitle . '.pdf');
     }

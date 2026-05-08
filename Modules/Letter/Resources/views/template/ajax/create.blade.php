@@ -1,6 +1,27 @@
 <style>
+    /* A4 WYSIWYG editor — what you see is what prints */
+    #description {
+        background: #e8e8e8;
+        padding: 20px 0;
+    }
     #description .ql-editor {
-        min-height: 350px;
+        background: #ffffff;
+        width: 794px;       /* A4 at 96 DPI */
+        min-height: 1123px; /* A4 at 96 DPI */
+        margin: 0 auto;
+        padding: 20mm;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+        box-sizing: border-box;
+        font-size: 12pt;
+        line-height: 1.6;
+        overflow: visible;
+    }
+    /* Page-break visual guide */
+    #description .ql-editor::after {
+        content: '';
+        display: block;
+        border-top: 2px dashed #bbb;
+        margin-top: 20px;
     }
 </style>
 <div class="row">
