@@ -11,14 +11,9 @@ class AttendanceImport implements ToArray
     public static function fields(): array
     {
         return array(
-            array('id' => 'email', 'name' => __('app.email'), 'required' => 'Yes'),
-            array('id' => 'clock_in_time', 'name' => __('modules.attendance.clock_in'), 'required' => 'Yes'),
-            array('id' => 'clock_out_time', 'name' => __('modules.attendance.clock_out'), 'required' => 'No'),
-            array('id' => 'clock_in_ip', 'name' => __('modules.attendance.clock_in_ip'), 'required' => 'No'),
-            array('id' => 'clock_out_ip', 'name' => __('modules.attendance.clock_out_ip'), 'required' => 'No'),
-            array('id' => 'working_from', 'name' => __('modules.attendance.working_from'), 'required' => 'No'),
-            array('id' => 'late', 'name' => __('modules.attendance.late'), 'required' => 'No'),
-            array('id' => 'half_day', 'name' => __('modules.attendance.halfDay'), 'required' => 'No'),
+            array('id' => 'email',  'name' => __('app.email'), 'required' => 'Yes'),
+            array('id' => 'date',   'name' => __('app.date') . ' (YYYY-MM-DD)', 'required' => 'Yes'),
+            array('id' => 'status', 'name' => 'Status (present / absent / half_day / late)', 'required' => 'Yes'),
         );
     }
 

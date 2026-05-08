@@ -1,4 +1,6 @@
-email,clock_in_time,clock_out_time,clock_in_ip,clock_out_ip,working_from,late,half_day
-employee1@example.com,2026-04-01 09:30:00,2026-04-01 18:30:00,192.168.1.10,192.168.1.10,office,no,no
-employee2@example.com,2026-04-01 10:15:00,2026-04-01 19:00:00,,,home,yes,no
-employee3@example.com,2026-04-01 09:00:00,2026-04-01 13:00:00,,,office,no,yes
+email,date,status
+employee1@example.com,2026-04-01,present
+employee2@example.com,2026-04-01,absent
+employee3@example.com,2026-04-01,half_day
+employee4@example.com,2026-04-02,late
+employee5@example.com,2026-04-02,present

@@ -1400,6 +1400,56 @@ class AttendanceController extends AccountBaseController
         return view('attendances.create', $this->data);
     }
 
+    /**
+     * Generate a live CSV template pre-filled with all active employees.
+     * Always reflects the current employee list — new hires appear automatically.
+     */
+    public function downloadAttendanceTemplate()
+    {
+        $addPermission = user()->permission('add_attendance');
+        abort_403(!($addPermission == 'all' || $addPermission == 'added'));
+
+        $employees = User::join('employee_details', 'employee_details.user_id', '=', 'users.id')
+            ->leftJoin('designations', 'employee_details.designation_id', '=', 'designations.id')
+            ->leftJoin('teams', 'employee_details.department_id', '=', 'teams.id')
+            ->whereHas('roles', fn($q) => $q->where('name', 'employee'))
+            ->where('users.status', 'active')
+            ->where('users.company_id', company()->id)
+            ->orderBy('users.name')
+            ->select(
+                'users.name',
+                'users.email',
+                'designations.name as designation',
+                'teams.team_name as department'
+            )
+            ->get();
+
+        $today = now()->format('Y-m-d');
+
+        $rows   = [];
+        // Header row — "name" and "designation"/"department" are helper columns, read-only context
+        $rows[] = implode(',', ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'date', 'status']);
+
+        foreach ($employees as $emp) {
+            $rows[] = implode(',', [
+                '"' . str_replace('"', '""', $emp->name)        . '"',
+                '"' . str_replace('"', '""', $emp->designation ?? '') . '"',
+                '"' . str_replace('"', '""', $emp->department   ?? '') . '"',
+                $emp->email,
+                $today,
+                'present',
+            ]);
+        }
+
+        $csv      = implode("\n", $rows);
+        $filename = 'attendance-template-' . $today . '.csv';
+
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ]);
+    }
+
     public function importStore(ImportRequest $request)
     {
         $rvalue = $this->importFileProcess($request, AttendanceImport::class);

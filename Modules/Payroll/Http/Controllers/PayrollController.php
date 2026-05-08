@@ -85,6 +85,16 @@ class PayrollController extends AccountBaseController
 
         $this->salaryPaymentMethods = SalaryPaymentMethod::all();
 
+        // Find the last finalized month so the JS can auto-select it in the dropdown
+        $lastFinalized = AttendanceMonthFinalisation::where('company_id', company()->id)
+            ->whereNotNull('finalised_at')
+            ->orderByDesc('year')
+            ->orderByDesc('month')
+            ->first(['year', 'month']);
+
+        $this->lastFinalizedYear  = $lastFinalized ? (int) $lastFinalized->year  : null;
+        $this->lastFinalizedMonth = $lastFinalized ? (int) $lastFinalized->month : null;
+
         return $dataTable->render('payroll::payroll.index', $this->data);
     }
 
@@ -1793,7 +1803,7 @@ class PayrollController extends AccountBaseController
     {
         $users = User::join('employee_details', 'employee_details.user_id', '=', 'users.id');
 
-        if ($departmentId) {
+        if ($departmentId && $departmentId !== 'all') {
             $users = $users->where('employee_details.department_id', $departmentId);
         }
 
@@ -1807,7 +1817,7 @@ class PayrollController extends AccountBaseController
         $options = '';
 
         foreach ($users as $item) {
-            $options .= '<option  data-content="<div class=\'d-inline-block mr-1\'><img class=\'taskEmployeeImg rounded-circle\' src=' . $item->image_url . ' ></div>  ' . $item->name . '" value="' . $item->id . '"> ' . $item->name . ' </option>';
+            $options .= '<option selected data-content="<div class=\'d-inline-block mr-1\'><img class=\'taskEmployeeImg rounded-circle\' src=' . $item->image_url . ' ></div>  ' . $item->name . '" value="' . $item->id . '"> ' . $item->name . ' </option>';
         }
 
         return Reply::dataOnly(['status' => 'success', 'data' => $options]);

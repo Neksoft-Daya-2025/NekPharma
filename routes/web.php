@@ -915,6 +915,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::get('attendances/by-hour', [AttendanceController::class, 'byHour'])->name('attendances.by_hour');
     Route::post('attendances/bulk-mark', [AttendanceController::class, 'bulkMark'])->name('attendances.bulk_mark');
     Route::get('attendances/import', [AttendanceController::class, 'importAttendance'])->name('attendances.import');
+    Route::get('attendances/import/employee-template', [AttendanceController::class, 'downloadAttendanceTemplate'])->name('attendances.import.template');
     Route::post('attendances/import', [AttendanceController::class, 'importStore'])->name('attendances.import.store');
     Route::post('attendances/import/process', [AttendanceController::class, 'importProcess'])->name('attendances.import.process');
     Route::get('attendances/by-map-location', [AttendanceController::class, 'byMapLocation'])->name('attendances.by_map_location');

@@ -137,7 +137,7 @@
                                 </x-forms.label>
                                     <select class="form-control select-picker" name="department"
                                         id="employee_department" data-live-search="true">
-                                        <option value="">--</option>
+                                        <option value="all" selected>@lang('app.all') @lang('app.department')</option>
                                         @foreach ($teams as $team)
                                             <option value="{{ $team->id }}">{{ $team->team_name }}</option>
                                         @endforeach
@@ -151,7 +151,7 @@
                                     <select class="form-control multiple-users" multiple name="employee_id[]"
                                     id="selectEmployee" data-live-search="true" data-size="8">
                                     @foreach ($employees as $item)
-                                        <x-user-option :user="$item" :pill="true" />
+                                        <x-user-option :user="$item" :pill="true" :selected="true" />
                                     @endforeach
                                 </select>
 
@@ -162,7 +162,11 @@
                                                   :fieldLabel="__('payroll::modules.payroll.markAbsentUnpaid')"
                                                   fieldName="mark_absent_unpaid"/>
                             </div> --}}
-                            <div class="w-100 border-top-grey d-flex justify-content-end px-4 py-3">
+                            <div class="w-100 border-top-grey d-flex justify-content-between align-items-center px-4 py-3">
+                                <div id="payroll-period-label" class="text-muted f-13">
+                                    <i class="fa fa-calendar mr-1"></i>
+                                    <span id="payroll-period-text">@lang('app.loading')...</span>
+                                </div>
                                 <x-forms.button-primary id="generate-payslip"
                                                         icon="paper-plane">@lang('payroll::modules.payroll.generate')
                                 </x-forms.button-primary>
@@ -270,7 +274,7 @@
         });
 
         function getEmployee(cycle, type, id){
-            if(type == 'payrollCycle' || id == null || id == '' || id == undefined){
+            if(type == 'payrollCycle' || id == null || id == '' || id == undefined || id == 'all'){
                     var url = "{{ route('payroll.get-employee', [':cycleId']) }}";
                 }
                 else{
@@ -433,6 +437,9 @@
             var year = $('#year').val();
             var cycle = $('#payrollCycle').val();
             var department = $('#employee_department').val();
+            if (department === 'all') {
+                department = '';
+            }
             var employee_id = $('#selectEmployee').val();
 
             var token = "{{ csrf_token() }}";
@@ -485,20 +492,52 @@
                 formData.append('deductions_file', deductionsFile);
             }
 
-            $.easyAjax({
-                url: '{{route('payroll.generate_pay_slip')}}',
-                container: '#genrate-payroll-form',
-                type: "POST",
-                disableButton: true,
-                blockUI: true,
-                buttonSelector: "#generate-payslip",
+            var $btn = $('#generate-payslip');
+            $btn.prop('disabled', true);
+            $.blockUI({ message: '<div class="spinner-border text-primary" role="status"></div>' });
+
+            $.ajax({
+                url: '{{ route('payroll.generate_pay_slip') }}',
+                type: 'POST',
                 data: formData,
                 processData: false,
                 contentType: false,
                 success: function (response) {
-                    if (response.status == "success") {
+                    $.unblockUI();
+                    $btn.prop('disabled', false);
+                    if (response.status === 'success') {
                         showTable();
+                    } else {
+                        Swal.fire({
+                            icon: 'error',
+                            title: '@lang("app.error")',
+                            html: '<p class="mb-2">' + (response.message || 'Unknown error') + '</p>' +
+                                  '<p class="text-muted f-12 mb-0">Period: <strong>' +
+                                  ($('#payroll-period-text').html() || '—') +
+                                  '</strong></p>',
+                            confirmButtonText: 'OK',
+                            confirmButtonColor: '#d33'
+                        });
                     }
+                },
+                error: function (xhr) {
+                    $.unblockUI();
+                    $btn.prop('disabled', false);
+                    var msg = 'Server error (' + xhr.status + ')';
+                    try {
+                        var json = JSON.parse(xhr.responseText);
+                        msg = json.message || msg;
+                    } catch(e) {}
+                    Swal.fire({
+                        icon: 'error',
+                        title: '@lang("app.error")',
+                        html: '<p class="mb-2">' + msg + '</p>' +
+                              '<p class="text-muted f-12 mb-0">Period: <strong>' +
+                              ($('#payroll-period-text').html() || '—') +
+                              '</strong></p>',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#d33'
+                    });
                 }
             })
 
@@ -636,9 +675,29 @@
             getCycleData();
         });
 
+        // Last finalized month passed from the controller
+        var lastFinalizedYear  = {{ $lastFinalizedYear  ?? 'null' }};
+        var lastFinalizedMonth = {{ $lastFinalizedMonth ?? 'null' }};
+
+        function updatePeriodLabel() {
+            var monthVal = $('#month').val();
+            if (monthVal) {
+                var parts = monthVal.split(' ');
+                if (parts.length === 2) {
+                    var fmt = function(d){ return d.split('-').reverse().join('/'); };
+                    $('#payroll-period-text').html(
+                        '<strong>' + fmt(parts[0]) + '</strong> &rarr; <strong>' + fmt(parts[1]) + '</strong>'
+                    );
+                    return;
+                }
+            }
+            $('#payroll-period-text').text('—');
+        }
+
         function getCycleData() {
             var payrollCycle = $('#payrollCycle').val();
-            var year = $('#year').val();
+            var year         = parseInt($('#year').val());
+            var selectedMonthRange = $('#month').val();
             var token = "{{ csrf_token() }}";
             $.easyAjax({
                 url: '{{route("payroll.get-cycle-data")}}',
@@ -652,7 +711,28 @@
                 success: function (response) {
                     $.unblockUI();
                     $('#month').html(response.view);
+
+                    // 1. Try to restore previously selected range
+                    if (selectedMonthRange && $('#month option[value="' + selectedMonthRange + '"]').length) {
+                        $('#month').val(selectedMonthRange);
+                    }
+                    // 2. If this year matches the last finalized year, auto-select that month
+                    else if (lastFinalizedYear && lastFinalizedMonth && year === lastFinalizedYear) {
+                        $('#month option').each(function () {
+                            var val = $(this).val();
+                            if (val) {
+                                var startDate = val.split(' ')[0]; // "YYYY-MM-DD"
+                                var m = parseInt(startDate.split('-')[1]);
+                                if (m === lastFinalizedMonth) {
+                                    $('#month').val(val);
+                                    return false; // break
+                                }
+                            }
+                        });
+                    }
+
                     $('#month').selectpicker("refresh");
+                    updatePeriodLabel();
                     showTable();
                     refreshPayrollAttendanceFinalisationBanner();
                 }
@@ -660,6 +740,7 @@
         }
 
         $('body').on('change changed.bs.select', '#month', function () {
+            updatePeriodLabel();
             refreshPayrollAttendanceFinalisationBanner();
         });
 
