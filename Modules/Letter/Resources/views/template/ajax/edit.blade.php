@@ -83,8 +83,24 @@
     $(document).ready(function() {
         quillImageLoad('#description');
         var quill = quillArray['#description'];
+
+        // Draw "Page X" labels beside the editor at every A4 page boundary
+        function updatePageLabels() {
+            $('#description .a4-page-label').remove();
+            var editorHeight = $('#description .ql-editor').outerHeight();
+            var pageHeight = 1123;
+            var pages = Math.max(1, Math.ceil(editorHeight / pageHeight));
+            var editorOffset = $('#description .ql-editor').position().top + 30;
+            for (var i = 1; i <= pages; i++) {
+                $('<div class="a4-page-label">Page ' + i + '</div>')
+                    .css('top', editorOffset + (i - 1) * pageHeight + 8)
+                    .appendTo('#description');
+            }
+        }
+        updatePageLabels();
         quill.on('text-change', function() {
             $('#description-text').val(quill.root.innerHTML);
+            updatePageLabels();
         });
 
         $('#save-letter').click(function() {

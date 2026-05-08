@@ -1,13 +1,14 @@
 <style>
-    /* A4 WYSIWYG editor — what you see is what prints */
+    /* A4 WYSIWYG editor — page-by-page view */
     #description {
-        background: #e8e8e8;
-        padding: 20px 0;
+        background: #d0d0d0;
+        padding: 30px 60px 30px 30px; /* extra right space for page numbers */
+        position: relative;
     }
     #description .ql-editor {
         background: #ffffff;
-        width: 794px;       /* A4 at 96 DPI */
-        min-height: 1123px; /* A4 at 96 DPI */
+        width: 794px;
+        min-height: 1123px;
         margin: 0 auto;
         padding: 20mm;
         box-shadow: 0 2px 8px rgba(0,0,0,0.18);
@@ -15,13 +16,27 @@
         font-size: 12pt;
         line-height: 1.6;
         overflow: visible;
+        /* Dashed page-break line every 1123px */
+        background-image: repeating-linear-gradient(
+            to bottom,
+            #fff 0px,
+            #fff calc(1123px - 3px),
+            #bbb calc(1123px - 3px),
+            #bbb 1123px
+        );
+        background-size: 100% 1123px;
     }
-    /* Page-break visual guide */
-    #description .ql-editor::after {
-        content: '';
-        display: block;
-        border-top: 2px dashed #bbb;
-        margin-top: 20px;
+    /* Page number labels rendered by JS */
+    .a4-page-label {
+        position: absolute;
+        right: 8px;
+        background: #555;
+        color: #fff;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        pointer-events: none;
+        white-space: nowrap;
     }
 </style>
 <div class="row">
@@ -85,9 +100,6 @@
     $(document).ready(function() {
         quillImageLoad('#description');
         var quill = quillArray['#description'];
-        quill.on('text-change', function() {
-            $('#description-text').val(quill.root.innerHTML);
-        });
 
         $('#save-letter').click(function() {
             var url = "{{ route('letter.template.store') }}";
@@ -106,6 +118,25 @@
                     }
                 }
             })
+        });
+
+        // Draw "Page X" labels beside the editor at every A4 page boundary
+        function updatePageLabels() {
+            $('#description .a4-page-label').remove();
+            var editorHeight = $('#description .ql-editor').outerHeight();
+            var pageHeight = 1123;
+            var pages = Math.max(1, Math.ceil(editorHeight / pageHeight));
+            var editorOffset = $('#description .ql-editor').position().top + 30; // container padding-top
+            for (var i = 1; i <= pages; i++) {
+                $('<div class="a4-page-label">Page ' + i + '</div>')
+                    .css('top', editorOffset + (i - 1) * pageHeight + 8)
+                    .appendTo('#description');
+            }
+        }
+        updatePageLabels();
+        quill.on('text-change', function() {
+            $('#description-text').val(quill.root.innerHTML);
+            updatePageLabels();
         });
 
         const clipboard = new ClipboardJS('.btn-copy');

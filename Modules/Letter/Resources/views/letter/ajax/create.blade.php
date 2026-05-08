@@ -1,6 +1,66 @@
 <style>
+    /* A4 WYSIWYG editor — page-by-page view */
+    #description {
+        background: #d0d0d0;
+        padding: 30px 60px 30px 30px;
+        position: relative;
+    }
     #description .ql-editor {
-        min-height: 350px;
+        background: #ffffff;
+        width: 100%;
+        max-width: 794px;
+        min-height: 1123px;
+        margin: 0 auto;
+        padding: 20mm;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+        box-sizing: border-box;
+        font-size: 12pt;
+        line-height: 1.6;
+        overflow: visible;
+        background-image: repeating-linear-gradient(
+            to bottom,
+            #fff 0px,
+            #fff calc(1123px - 3px),
+            #bbb calc(1123px - 3px),
+            #bbb 1123px
+        );
+        background-size: 100% 1123px;
+    }
+    .a4-page-label {
+        position: absolute;
+        right: 8px;
+        background: #555;
+        color: #fff;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        pointer-events: none;
+        white-space: nowrap;
+    }
+    /* Right-side live preview A4 styling */
+    #descriptionPreviewArea {
+        background: #d0d0d0;
+        padding: 20px;
+        min-height: 400px;
+    }
+    #descriptionPreview {
+        background: #fff;
+        max-width: 794px;
+        min-height: 1123px;
+        margin: 0 auto;
+        padding: 20mm;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        box-sizing: border-box;
+        font-size: 12pt;
+        line-height: 1.6;
+        background-image: repeating-linear-gradient(
+            to bottom,
+            #fff 0px,
+            #fff calc(1123px - 3px),
+            #bbb calc(1123px - 3px),
+            #bbb 1123px
+        );
+        background-size: 100% 1123px;
     }
 </style>
 <div class="row">
@@ -167,9 +227,25 @@
             });
         }
 
+        // Draw "Page X" labels beside the editor at every A4 page boundary
+        function updatePageLabels() {
+            $('#description .a4-page-label').remove();
+            var editorHeight = $('#description .ql-editor').outerHeight();
+            var pageHeight = 1123;
+            var pages = Math.max(1, Math.ceil(editorHeight / pageHeight));
+            var editorOffset = $('#description .ql-editor').position().top + 30;
+            for (var i = 1; i <= pages; i++) {
+                $('<div class="a4-page-label">Page ' + i + '</div>')
+                    .css('top', editorOffset + (i - 1) * pageHeight + 8)
+                    .appendTo('#description');
+            }
+        }
+        updatePageLabels();
+
         quill.on('text-change', function() {
             $('#description-text').val(quill.root.innerHTML);
             generatePreview();
+            updatePageLabels();
         });
 
         $('#downloadButton').on('click', function() {
