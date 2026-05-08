@@ -27,14 +27,31 @@ grumphp.yml
 /bootstrap/cache/*
 storage/reviewed
 storage/fonts/installed-fonts.json
-resources/lang/*
-!resources/lang/eng/
-!resources/lang/vendor/backup/eng
-!resources/lang/eng.json
+# Language files - commented out to include in git
+# resources/lang/*
+# !resources/lang/eng/
+# !resources/lang/vendor/backup/eng
+# !resources/lang/eng.json
 froiden-verify/
 resources/views/sections/custom_script.blade.php
 demo_db_copy.sql
 database/maxmind/
 public/css/app-custom.css
 public/css/theme-custom.css
-/Hostingercode
+
+# Local dev server logs
+/serve_err.log
+/serve_out.log
+/hostingercode/serve_err.log
+/hostingercode/serve_out.log
+
+# Local DB dumps / exports (do not commit)
+127_0_0_1.sql
+**/127_0_0_1.sql
+
+# Cursor IDE local plans
+.cursor/plans/
+
+# Local exports / scans (never commit)
+/Dr list ryva.xls
+/INV\#001_1.jpg

@@ -55,11 +55,84 @@
     $gstBreakdown = [];
     $totalSubTotal = 0;
     $totalDiscount = 0;
+    
+    // ============================================================================
+    // SINGLE SOURCE OF TRUTH: Calculate item discounts ONCE and store rounded values
+    // ============================================================================
+    $itemDiscounts = []; // Store rounded discount per item ID (for display - uses DIS percentage value)
+    $itemDiscountsForTax = []; // Store calculated discount per item ID (for tax calculation - calculated from item amount)
+    $discountFromItems = 0;
+    $displayItems = $invoice->items->where('type', 'item');
+    $itemsWithPurchaseEntry = $displayItems->filter(function($item) {
+        return !empty($item->purchase_entry_id);
+    });
+    if ($itemsWithPurchaseEntry->count() > 0) {
+        $displayItems = $itemsWithPurchaseEntry;
+    }
+    $displayItems = $displayItems->unique('id');
+    
+    // Calculate and store rounded discount for each item ONCE
+    foreach ($displayItems as $item) {
+        $itemAmount = $item->amount ?? 0;
+        $itemId = $item->id;
+        
+        // Get DIS percentage from item (priority: item > CFADistributorStock > purchase entry)
+        $disPercent = null;
+        if (isset($item->dis) && $item->dis !== null) {
+            $disPercent = $item->dis;
+        } elseif ($invoice->cfaDistributorStocks && $invoice->cfaDistributorStocks->count() > 0) {
+            $stockEntry = $invoice->cfaDistributorStocks->where('product_id', $item->product_id)->first();
+            if ($stockEntry && isset($stockEntry->dis) && $stockEntry->dis !== null) {
+                $disPercent = $stockEntry->dis;
+            }
+        }
+        if ($disPercent === null && $item->purchaseEntry) {
+            // Check both 'dis' and 'discount' fields (discount is the active field, dis is legacy)
+            if (isset($item->purchaseEntry->discount) && $item->purchaseEntry->discount !== null) {
+                $disPercent = $item->purchaseEntry->discount;
+            } elseif (isset($item->purchaseEntry->dis) && $item->purchaseEntry->dis !== null) {
+                $disPercent = $item->purchaseEntry->dis;
+            }
+        }
+        
+        // For DISPLAY: Use DIS percentage value directly as discount amount (visual consistency)
+        // This ensures: if DIS (%) = 1.50, discount amount displayed = 1.50 everywhere
+        $itemDiscountForDisplay = 0;
+        if ($disPercent !== null && $disPercent > 0) {
+            $itemDiscountForDisplay = round($disPercent, 2);
+        }
+        
+        // For TAX CALCULATION: Calculate discount from item amount (for accurate tax base)
+        // This ensures correct SGST/CGST calculation
+        $itemDiscountForTax = 0;
+        if ($disPercent !== null && $disPercent > 0 && $itemAmount > 0) {
+            $itemDiscountForTax = round(($itemAmount * $disPercent) / 100, 2);
+        }
+        
+        // Store both values
+        $itemDiscounts[$itemId] = $itemDiscountForDisplay; // For item row display (percentage)
+        $itemDiscountsForTax[$itemId] = $itemDiscountForTax; // For tax base calculation and summary table (calculated amount)
+        $discountFromItems += $itemDiscountForTax; // Sum of calculated discount amounts (not percentages)
+    }
+    
+    // Final discount is sum of all rounded item discounts
+    $discount = round($discountFromItems, 2);
+    if ($discount == 0 && $invoice->discount > 0) {
+        // Fallback to invoice-level discount if no item discounts
+        if ($invoice->discount_type == 'percent') {
+            $discount = (($invoice->discount / 100) * $invoice->sub_total);
+        } else {
+            $discount = $invoice->discount;
+        }
+        $discount = round($discount, 2);
+    }
+    
     $totalQty = 0;
     $totalItems = 0;
     
-    // Filter items and ensure uniqueness for totals calculation
-    $itemsForTotals = $invoice->items->where('type', 'item')->unique('id');
+    // Use the same filtered items for totals calculation (same as discount calculation above)
+    // This ensures consistency between discount calculation and summary table
+    $itemsForTotals = $displayItems;
     foreach ($itemsForTotals as $item) {
         $totalItems++;
         $paidQty = $item->quantity;
@@ -70,31 +143,129 @@
         $itemAmount = $item->amount;
         $totalSubTotal += $itemAmount;
         
-        // Get tax rate from item taxes
+        // Get tax rate from item taxes - identify SGST and CGST by tax name
+        // Check invoice item first, then fallback to purchase entry, then product
+        $taxes = [];
+        
+        // First check invoice item taxes
         if ($item->taxes) {
-            $taxes = json_decode($item->taxes, true);
-            if (is_array($taxes)) {
-                foreach ($taxes as $taxId) {
-                    $tax = \App\Models\Tax::find($taxId);
-                    if ($tax) {
-                        $rate = $tax->rate_percent;
-                        $taxAmount = ($itemAmount * $rate) / 100;
-                        
-                        if (!isset($gstBreakdown[$rate])) {
-                            $gstBreakdown[$rate] = [
-                                'rate' => $rate,
-                                'total' => 0,
-                                'sgst' => 0,
-                                'cgst' => 0,
-                                'total_gst' => 0
-                            ];
-                        }
+            // Handle both JSON array and string formats
+            if (is_string($item->taxes)) {
+                $decoded = json_decode($item->taxes, true);
+                if (is_array($decoded)) {
+                    $taxes = $decoded;
+                } elseif (is_numeric($item->taxes)) {
+                    // Single tax ID as string
+                    $taxes = [(int)$item->taxes];
+                }
+            } elseif (is_array($item->taxes)) {
+                $taxes = $item->taxes;
+            }
+        }
+        
+        // Fallback: if no taxes in invoice item, try purchase entry
+        if (empty($taxes) && $item->purchaseEntry && $item->purchaseEntry->tax) {
+            if (is_array($item->purchaseEntry->tax)) {
+                $taxes = $item->purchaseEntry->tax;
+            } elseif (is_string($item->purchaseEntry->tax)) {
+                $decoded = json_decode($item->purchaseEntry->tax, true);
+                if (is_array($decoded)) {
+                    $taxes = $decoded;
+                }
+            }
+        }
+        
+        // Fallback: if still no taxes, try product
+        if (empty($taxes) && $item->product && $item->product->taxes) {
+            if (is_array($item->product->taxes)) {
+                $taxes = $item->product->taxes;
+            } elseif (is_string($item->product->taxes)) {
+                $decoded = json_decode($item->product->taxes, true);
+                if (is_array($decoded)) {
+                    $taxes = $decoded;
+                }
+            }
+        }
+        
+        // Remove duplicates and empty values (exactly like item row calculation)
+        $taxes = array_filter(array_unique($taxes));
+        
+        if (!empty($taxes)) {
+            // Track which rates we've already processed for this item to avoid double-counting item amount
+            $processedRates = [];
+            
+            // Get stored calculated discount amount for tax calculation (not percentage)
+            $itemId = $item->id;
+            $itemDiscountAmount = $itemDiscountsForTax[$itemId] ?? 0; // Use calculated amount, not percentage
+            
+            // Handle calculate_tax == 'after_discount' - use calculated discount amount for tax calculation
+            // Calculate tax on actual item amount minus calculated discount amount (for accurate tax amounts)
+            $taxBaseAmount = $itemAmount;
+            if ($invoice->calculate_tax == 'after_discount' && $itemDiscountAmount > 0) {
+                // Subtract the calculated discount amount from item amount (for accurate tax calculation)
+                $taxBaseAmount = max(0, $itemAmount - $itemDiscountAmount);
+            }
+            
+            // Ensure tax base is never negative (safety check)
+            $taxBaseAmount = max(0, $taxBaseAmount);
+            
+            foreach ($taxes as $taxId) {
+                if (empty($taxId)) {
+                    continue;
+                }
+                // Use exact same lookup method as item row display
+                $tax = \App\Models\Tax::find($taxId);
+                if ($tax) {
+                    $taxRate = $tax->rate_percent;
+                    $taxNameUpper = strtoupper($tax->tax_name ?? '');
+                    
+                    // Determine the combined GST rate for grouping
+                    // If it's SGST or CGST, double the rate to get combined GST rate (e.g., SGST 2.5% + CGST 2.5% = GST 5%)
+                    // Otherwise, use the tax rate as-is
+                    if (strpos($taxNameUpper, 'SGST') !== false || strpos($taxNameUpper, 'CGST') !== false) {
+                        $rate = $taxRate * 2; // Combined GST rate
+                    } else {
+                        $rate = $taxRate; // For IGST or other taxes, use as-is
+                    }
+                    
+                    // Initialize rate breakdown if not exists
+                    if (!isset($gstBreakdown[$rate])) {
+                        $gstBreakdown[$rate] = [
+                            'rate' => $rate,
+                            'total' => 0,
+                            'discount' => 0,
+                            'sgst' => 0,
+                            'cgst' => 0,
+                            'total_gst' => 0
+                        ];
+                    }
+                    
+                    // Add item amount and discount only once per combined rate (even if item has both SGST and CGST)
+                    if (!in_array($rate, $processedRates)) {
                         $gstBreakdown[$rate]['total'] += $itemAmount;
-                        // Split GST equally between SGST and CGST
+                        
+                        // Use calculated discount amount (not percentage) for summary table
+                        $itemId = $item->id;
+                        $itemDiscountAmount = $itemDiscountsForTax[$itemId] ?? 0; // Use calculated amount, not percentage
+                        $gstBreakdown[$rate]['discount'] += $itemDiscountAmount;
+                        
+                        $processedRates[] = $rate;
+                    }
+                    
+                    // Calculate tax amount for this specific tax (matches item row calculation exactly)
+                    $taxAmount = ($taxBaseAmount * $taxRate) / 100;
+                    
+                    // Identify SGST and CGST by tax name and add to respective totals (matches item row logic)
+                    if (strpos($taxNameUpper, 'SGST') !== false) {
+                        $gstBreakdown[$rate]['sgst'] += $taxAmount;
+                    } elseif (strpos($taxNameUpper, 'CGST') !== false) {
+                        $gstBreakdown[$rate]['cgst'] += $taxAmount;
+                    } else {
+                        // If tax name doesn't contain SGST or CGST, split equally (fallback)
                         $gstBreakdown[$rate]['sgst'] += $taxAmount / 2;
                         $gstBreakdown[$rate]['cgst'] += $taxAmount / 2;
-                        $gstBreakdown[$rate]['total_gst'] += $taxAmount;
                     }
+                    $gstBreakdown[$rate]['total_gst'] += $taxAmount;
                 }
             }
         }
@@ -123,165 +294,125 @@
 
 <style>
     @page {
-        size: landscape;
-        margin: 10mm;
+        size: A4 landscape;
+        margin: 3mm;
+    }
+    * {
+        box-sizing: border-box;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
     }
     .pharma-invoice-body {
         font-family: Arial, sans-serif;
-        font-size: 10px;
-        margin: 0 auto;
+        font-size: 12px;
+        margin: 0;
         padding: 0;
         color: #000;
         line-height: 1.3;
         width: 100%;
-        max-width: 297mm;
+        max-width: 100%;
         position: relative;
         box-sizing: border-box;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
     }
     .invoice-container {
         width: 100%;
-        max-width: 297mm;
-        margin: 0 auto;
+        max-width: 100%;
+        margin: 0;
         background: #fff;
         border: 1px solid #000;
-        padding: 5px;
+        padding: 8px;
         position: relative;
         box-sizing: border-box;
-        /* Center aligned container */
+        page-break-inside: avoid;
     }
-    
-    
-    /* Header Table Styles */
-    .header-main-table {
+
+    /* Tax invoice header (same typography as body / line items) */
+    .pharma-tax-invoice-header {
+        font-family: Arial, sans-serif;
+        font-size: 11px;
+        line-height: 1.3;
+        color: #000;
+        margin-bottom: 4px;
+    }
+    .pharma-tax-invoice-header table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 3px;
-        border: 1px solid #000;
+        table-layout: fixed;
     }
-    .header-main-table td {
+    .pharma-tax-invoice-header td,
+    .pharma-tax-invoice-header th {
         border: 1px solid #000;
-        padding: 4px;
+        padding: 3px 4px;
         vertical-align: top;
-        border-width: 1px;
+        word-wrap: break-word;
     }
-    
-    /* Left Column - Company/CFA Info (Blue) */
-    .header-left {
-        width: 33%;
-        padding: 4px;
-        font-size: 10px;
+    .phi-title {
+        font-family: Arial, sans-serif;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        margin: 0 0 2px;
+        text-transform: uppercase;
+    }
+    .phi-sub-legal {
+        font-family: Arial, sans-serif;
+        font-size: 9px;
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
         line-height: 1.3;
     }
-    .header-left div {
-        color: #0000FF;
-        margin-bottom: 0px;
-        padding: 1px 0;
-    }
-    .header-left .company-name {
-        font-weight: bold;
-        font-size: 15px;
-        color: #0000FF;
-        margin-bottom: 1px;
-    }
-    .header-left .cfa-name {
-        font-weight: bold;
-        font-size: 11px;
-        color: #0000FF;
-        margin-bottom: 1px;
-    }
-    
-    .header-left .company-logo {
-        margin-bottom: 8px;
-        text-align: left;
-    }
-    
-    .header-left .company-logo img {
-        max-width: 200px;
-        max-height: 80px;
-        width: auto !important;
-        height: auto !important;
+    .phi-label { font-weight: 700; }
+    .phi-col-logo img {
+        max-height: 44px;
+        max-width: 110px;
         object-fit: contain;
         display: block;
-        /* Maintain original aspect ratio - don't force square */
-        /* Ensure natural aspect ratio is preserved */
-        aspect-ratio: auto;
+        margin-bottom: 3px;
     }
-    
-    /* Prevent any external CSS from forcing square dimensions */
-    .header-left .company-logo img[width],
-    .header-left .company-logo img[height] {
-        width: auto !important;
-        height: auto !important;
-    }
-    
-    /* Middle Column - GST INVOICE Title */
-    .header-middle {
-        width: 34%;
-        padding: 0;
-        text-align: center;
+    /* Triplicate + ship column (Blue Cross–style block) */
+    .phi-ship-copies-cell {
         vertical-align: top;
     }
-    .gst-invoice-title {
-        color: #0000FF;
-        font-size: 26px;
-        font-weight: bold;
-        margin-bottom: 2px;
-        line-height: 1.0;
+    .phi-copies {
+        font-family: Arial, sans-serif;
+        font-size: 8px;
+        line-height: 1.25;
         text-transform: uppercase;
-        letter-spacing: 1px;
+        border-bottom: 1px solid #000;
+        padding-bottom: 6px;
+        margin-bottom: 8px;
     }
-    .credit-subtitle {
-        color: #0000FF;
-        font-size: 17px;
-        font-weight: bold;
-        margin-bottom: 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+    .phi-ship-block {
+        margin-top: 2px;
     }
-    .invoice-details-inner {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 5px;
-    }
-    .invoice-details-inner tr {
-        height: 15px;
-    }
-    .invoice-details-inner td {
-        border: none;
-        padding: 2px 4px;
-        font-size: 9px;
-        text-align: left;
+    /* QR column — centered vertically in row */
+    .pharma-tax-invoice-header td.phi-td-qr {
         vertical-align: middle;
+        text-align: center;
     }
-    .invoice-details-inner td:first-child {
-        font-weight: bold;
-        width: 48%;
-        padding-right: 4px;
+    .phi-qr {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        padding: 4px 2px;
     }
-    .invoice-details-inner td:last-child {
-        width: 52%;
-        padding-left: 2px;
+    .phi-qr img {
+        width: 128px;
+        height: 128px;
+        display: block;
+        margin: 0 auto;
+        object-fit: contain;
     }
-    
-    /* Right Column - Party Details */
-    .header-right {
-        width: 33%;
-        padding: 4px;
-        font-size: 10px;
-        line-height: 1.3;
-    }
-    .header-right div {
-        margin-bottom: 0px;
-        padding: 1px 0;
-    }
-    .header-right .party-name-label {
-        font-weight: bold;
-        margin-bottom: 1px;
-    }
-    
+    .phi-kv { margin: 0 0 2px; }
+    .phi-dispatch td { font-size: 10px; }
+
     /* Party Details Table */
     .party-details-table {
         width: 100%;
@@ -291,8 +422,8 @@
     }
     .party-details-table td {
         border: 1px solid #000;
-        padding: 4px;
-        font-size: 10px;
+        padding: 8px;
+        font-size: 13px;
         font-weight: bold;
     }
     
@@ -300,36 +431,38 @@
     .items-table {
         width: 100%;
         border-collapse: collapse;
-        margin-bottom: 3px;
+        margin-bottom: 5px;
         border: 1px solid #000;
+        page-break-inside: avoid;
+        font-size: 10px;
     }
     .items-table th {
         background-color: #f0f0f0;
         font-weight: bold;
         text-align: center;
-        font-size: 9px;
-        padding: 4px 2px;
+        font-size: 10px;
+        padding: 6px 4px;
         border: 1px solid #000;
         border-width: 1px;
     }
     .items-table td {
         text-align: center;
-        font-size: 9px;
-        padding: 2px 2px;
+        font-size: 10px;
+        padding: 5px 4px;
         border: 1px solid #000;
         border-width: 1px;
     }
     .items-table .text-left {
         text-align: left;
-        padding-left: 3px;
+        padding-left: 6px;
     }
     .items-table .text-right {
         text-align: right;
-        padding-right: 3px;
+        padding-right: 6px;
     }
     .items-table .text-center {
         text-align: center !important;
-        padding: 2px;
+        padding: 5px 4px;
     }
     
     /* Summary Section */
@@ -337,28 +470,29 @@
         width: 100%;
         border-collapse: collapse;
         margin-bottom: 0;
-        font-size: 9px;
+        font-size: 10px;
         border: 1px solid #000;
+        page-break-inside: avoid;
     }
     .summary-table th {
         background-color: #f0f0f0;
         font-weight: bold;
         text-align: center;
-        padding: 4px 2px;
+        padding: 6px 4px;
         border: 1px solid #000;
         border-width: 1px;
-        font-size: 9px;
+        font-size: 10px;
     }
     .summary-table td {
-        padding: 3px 2px;
+        padding: 5px 4px;
         border: 1px solid #000;
         border-width: 1px;
-        font-size: 9px;
+        font-size: 10px;
         text-align: center;
     }
     .summary-table td.text-right {
         text-align: right;
-        padding-right: 3px;
+        padding-right: 6px;
     }
     .summary-info-section {
         width: 100%;
@@ -368,46 +502,47 @@
     .summary-info-left {
         width: 50%;
         float: left;
-        font-size: 9px;
-        line-height: 1.3;
+        font-size: 12px;
+        line-height: 1.5;
     }
     .summary-info-right {
         width: 50%;
         float: right;
         text-align: right;
-        font-size: 11px;
+        font-size: 14px;
         font-weight: bold;
         padding-top: 0;
     }
     
     .amount-in-words {
         font-weight: bold;
-        font-size: 10px;
-        margin-top: 3px;
-        margin-bottom: 2px;
-        line-height: 1.3;
+        font-size: 13px;
+        margin-top: 5px;
+        margin-bottom: 3px;
+        line-height: 1.5;
     }
     .payment-message {
-        font-size: 10px;
-        margin-top: 2px;
-        margin-bottom: 3px;
-        line-height: 1.3;
+        font-size: 12px;
+        margin-top: 3px;
+        margin-bottom: 5px;
+        line-height: 1.5;
     }
     
     /* Footer Section */
     .footer-section {
         margin-top: 5px;
         clear: both;
-        font-size: 9px;
+        font-size: 11px;
     }
     .footer-section table {
         border: 1px solid #000;
         width: 100%;
         border-collapse: collapse;
+        page-break-inside: avoid;
     }
     .footer-section td {
         border: 1px solid #000;
-        padding: 4px;
+        padding: 8px;
         vertical-align: top;
     }
     
@@ -419,146 +554,312 @@
     
     @media print {
         @page {
-            size: landscape;
-            margin: 10mm;
+            size: A4 landscape;
+            margin: 3mm;
+        }
+        * {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
         }
         body {
             padding: 0;
             margin: 0;
+            width: 100%;
         }
         .no-print {
-            display: none;
+            display: none !important;
         }
         .pharma-invoice-body {
             padding: 0;
             margin: 0;
+            width: 100%;
+            max-width: 100%;
+            font-size: 7px !important;
+            line-height: 1.1 !important;
         }
         .invoice-container {
             max-width: 100%;
             margin: 0;
-            padding: 5px;
+            padding: 2px !important;
+            width: 100%;
+            page-break-inside: avoid;
+        }
+        .pharma-tax-invoice-header td,
+        .pharma-tax-invoice-header th {
+            padding: 2px !important;
+            font-size: 6px !important;
+        }
+        .pharma-tax-invoice-header .phi-title {
+            font-size: 10px !important;
+        }
+        .pharma-tax-invoice-header .phi-sub-legal {
+            font-size: 5px !important;
+        }
+        .pharma-tax-invoice-header .phi-copies {
+            font-size: 5px !important;
+            padding-bottom: 3px !important;
+            margin-bottom: 4px !important;
+        }
+        .pharma-tax-invoice-header td.phi-td-qr {
+            vertical-align: middle !important;
+            text-align: center !important;
+        }
+        .pharma-tax-invoice-header .phi-qr img {
+            width: 96px !important;
+            height: 96px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+        .party-details-table td {
+            padding: 2px !important;
+            font-size: 7px !important;
+        }
+        .items-table {
+            font-size: 6px !important;
+        }
+        .items-table th {
+            font-size: 6px !important;
+            padding: 1px 1px !important;
+        }
+        .items-table td {
+            padding: 1px 2px !important;
+            font-size: 6px !important;
+        }
+        .summary-table {
+            font-size: 6px !important;
+        }
+        .summary-table th {
+            font-size: 6px !important;
+            padding: 1px 1px !important;
+        }
+        .summary-table td {
+            padding: 1px 2px !important;
+            font-size: 6px !important;
+        }
+        .summary-info-left {
+            font-size: 8px !important;
+        }
+        .summary-info-right {
+            font-size: 9px !important;
+        }
+        .amount-in-words {
+            font-size: 8px !important;
+        }
+        .payment-message {
+            font-size: 7px !important;
+        }
+        .footer-section {
+            font-size: 8px !important;
+        }
+        .footer-section td {
+            padding: 3px !important;
+            font-size: 8px !important;
+        }
+        /* Override ALL inline font sizes in print - comprehensive approach */
+        .invoice-container table td,
+        .invoice-container table th {
+            font-size: 6px !important;
+        }
+        .invoice-container .pharma-tax-invoice-header td {
+            font-size: 6px !important;
+        }
+        .invoice-container .items-table td,
+        .invoice-container .items-table th {
+            font-size: 6px !important;
+            padding: 1px 2px !important;
+        }
+        .invoice-container .summary-table td,
+        .invoice-container .summary-table th {
+            font-size: 6px !important;
+            padding: 1px 2px !important;
+        }
+        .invoice-container div {
+            font-size: 7px !important;
+        }
+        .invoice-container strong {
+            font-size: 8px !important;
+        }
+        .invoice-container .summary-info-right strong {
+            font-size: 9px !important;
+        }
+        /* Force override any inline style font-size */
+        .invoice-container [style*="font-size"] {
+            font-size: 7px !important;
+        }
+        .invoice-container table [style*="font-size"] {
+            font-size: 6px !important;
+        }
+        .invoice-container [style*="font-size: 16px"],
+        .invoice-container [style*="font-size:16px"] {
+            font-size: 9px !important;
+        }
+        .invoice-container [style*="font-size: 14px"],
+        .invoice-container [style*="font-size:14px"] {
+            font-size: 8px !important;
+        }
+        .invoice-container [style*="font-size: 13px"],
+        .invoice-container [style*="font-size:13px"] {
+            font-size: 7px !important;
+        }
+        .invoice-container [style*="font-size: 12px"],
+        .invoice-container [style*="font-size:12px"] {
+            font-size: 6px !important;
+        }
+        .pharma-tax-invoice-header table,
+        .items-table,
+        .summary-table {
+            page-break-inside: avoid;
+        }
+        table {
+            page-break-inside: avoid;
         }
     }
 </style>
 
 <div class="invoice-container pharma-invoice-body">
-    <!-- Header Section - Three Columns -->
-    <table class="header-main-table">
-        <tr>
-            <!-- LEFT COLUMN: Company & CFA Details (Blue) -->
-            <td class="header-left">
-                @if(company()->light_logo_url)
-                    <div class="company-logo">
-                        <img src="{{ company()->light_logo_url }}" alt="{{ company()->company_name }} Logo" />
-                    </div>
-                @endif
-                <div class="company-name">{{ company()->company_name }}</div>
-                <div class="cfa-name">CFA {{ $cfaDistributorDetails->company_name ?? $cfaDistributor->name }}</div>
-                @if ($cfaDistributorDetails)
-                    <div>{{ $cfaDistributorDetails->address }}</div>
-                @endif
-                @if ($cfaDistributor && $cfaDistributor->email)
-                    <div>E-Mail: {{ $cfaDistributor->email }}</div>
-                @endif
-                <div>Phone: {{ $cfaDistributorDetails->phone ?? ($cfaDistributor->mobile ?? company()->company_phone) }}</div>
-                @if ($cfaDistributorDetails && $cfaDistributorDetails->dl_number)
-                    <div>D.L.No.: {{ $cfaDistributorDetails->dl_number }}</div>
-                @endif
-                @if ($cfaDistributorDetails && $cfaDistributorDetails->gst_number)
-                    <div>GSTIN: {{ $cfaDistributorDetails->gst_number }}</div>
-                @endif
-            </td>
-            
-            <!-- MIDDLE COLUMN: GST INVOICE Title & Details -->
-            <td class="header-middle" style="text-align: center; vertical-align: top; padding: 0; border: 1px solid #000;">
-                <!-- Nested table with two main rows -->
-                <table style="width: 100%; border-collapse: collapse; height: 100%;">
-                    <!-- ROW 1: GST INVOICE and CREDIT (Top Section) -->
-                    <tr>
-                        <td style="text-align: center; vertical-align: middle; padding: 8px 5px; border-bottom: 1px solid #000;">
-                            <div style="color: #0000FF; font-size: 26px; font-weight: bold; margin-bottom: 3px; line-height: 1.0; text-transform: uppercase; letter-spacing: 1px;">GST INVOICE</div>
-                            <div style="color: #0000FF; font-size: 17px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">CREDIT</div>
-                        </td>
-                    </tr>
-                    <!-- ROW 2: Invoice Details Table (Bottom Section) -->
-                    <tr>
-                        <td style="padding: 0; border: none; vertical-align: top;">
-                            <table style="width: 100%; border-collapse: collapse; border-spacing: 0;">
-                                <!-- FIRST ROW: 4 columns -->
-                                <tr>
-                                    <!-- Column 1: Invoice No (heading) -->
-                                    <td style="font-weight: bold; padding: 4px 6px; font-size: 9px; text-align: left; width: 20%; border-right: 1px solid #000; border-bottom: 1px solid #000;">Invoice No</td>
-                                    <!-- Column 2: Invoice No (value) -->
-                                    <td style="padding: 4px 6px; font-size: 9px; text-align: left; width: 25%; border-right: 1px solid #000; border-bottom: 1px solid #000;">{{ $invoice->invoice_number }}</td>
-                                    <!-- Column 3: L.R. No. and L.R. Date (headings and values) -->
-                                    <td style="padding: 4px 6px; font-size: 9px; text-align: left; width: 30%; border-right: 1px solid #000; border-bottom: 1px solid #000;">
-                                        <div>
-                                            <span style="font-weight: bold;">L.R. No.</span>
-                                            <span style="margin-left: 5px;">{{ $invoice->lr_number ?? '' }}</span>
-                                        </div>
-                                        <div>
-                                            <span style="font-weight: bold;">L.R. Date</span>
-                                            <span style="margin-left: 5px;">
-                                                @if($invoice->lr_date)
-                                                    {{ \Carbon\Carbon::parse($invoice->lr_date)->format('d/m/Y') }}
-                                                @endif
-                                            </span>
-                                        </div>
-                                    </td>
-                                    <!-- Column 4: Cases (label left, value right) -->
-                                    <td style="padding: 4px 6px; font-size: 9px; text-align: left; width: 25%; border-bottom: 1px solid #000;">
-                                        <table style="width: 100%; border-collapse: collapse;">
-                                            <tr>
-                                                <td style="font-weight: bold; padding: 0; border: none; width: 50%;">Cases</td>
-                                                <td style="padding: 0; border: none; width: 50%;">0</td>
-                                            </tr>
-                                        </table>
-                                    </td>
-                                </tr>
-                                <!-- SECOND ROW: 3 columns -->
-                                <tr>
-                                    <!-- Column 1: Invoice Date and Due Date (headings) -->
-                                    <td style="padding: 4px 6px; font-size: 9px; text-align: left; width: 20%; border-right: 1px solid #000;">
-                                        <div style="font-weight: bold;">Invoice Date</div>
-                                        <div style="font-weight: bold;">Due Date</div>
-                                    </td>
-                                    <!-- Column 2: Invoice Date and Due Date (values) -->
-                                    <td style="padding: 4px 6px; font-size: 9px; text-align: left; width: 25%; border-right: 1px solid #000;">
-                                        <div>{{ $invoice->issue_date->format('d/m/Y') }}</div>
-                                        <div>{{ $invoice->due_date->format('d/m/Y') }}</div>
-                                    </td>
-                                    <!-- Column 3: Transport (spans to end) -->
-                                    <td colspan="2" style="padding: 4px 6px; font-size: 9px; text-align: left;">
-                                        <div style="font-weight: bold;">Transport</div>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                </table>
-            </td>
-            
-            <!-- RIGHT COLUMN: Party/Recipient Details (CFA Distributor) -->
-            <td class="header-right">
-                @if ($cfaDistributor)
-                    <div class="party-name-label">Party Name: {{ $cfaDistributorDetails->company_name ?? $cfaDistributor->name }}</div>
-                    @if ($cfaDistributorDetails)
-                        <div>{{ $cfaDistributorDetails->address }}</div>
-                        <div>PIN NO: {{ $cfaDistributorDetails->pin_code ?? '' }}</div>
-                        <div>PHONE.: {{ $cfaDistributor->mobile ?? $cfaDistributorDetails->phone ?? '' }}</div>
-                        @if ($cfaDistributorDetails->dl_number)
-                            <div>DL NO.: {{ $cfaDistributorDetails->dl_number }}</div>
-                        @endif
-                        @if ($cfaDistributorDetails->gst_number)
-                            <div>GSTIN: {{ $cfaDistributorDetails->gst_number }}</div>
-                        @endif
-                        <div>M.R.NAME.: </div>
-                    @endif
-                @endif
-            </td>
-        </tr>
-    </table>
+    @php
+        /** Ryva Vitabiotics — fixed seller header + QR GSTIN */
+        $phiSellerGst = '09AAOCR8265M1ZD';
+        $phiIssueTime = $invoice->created_at
+            ? $invoice->created_at->timezone(company()->timezone ?? config('app.timezone'))->format('H:i:s')
+            : '';
+        $phiCustGst = optional($cfaDistributorDetails)->gst_number ?? '';
+        $phiCustState = strlen((string) $phiCustGst) >= 2 ? substr((string) $phiCustGst, 0, 2) : '';
+        $phiBillName = optional($cfaDistributorDetails)->company_name ?? (optional($cfaDistributor)->name ?? '');
+        $phiBillAddr = optional($cfaDistributorDetails)->address ?? '';
+        $phiShipAddr = !empty(optional($cfaDistributorDetails)->shipping_address) ? $cfaDistributorDetails->shipping_address : $phiBillAddr;
+        $phiPlaceSupply = optional($cfaDistributorDetails)->state ?? '';
+        $phiQrPayload = trim(($invoice->invoice_number ?? '') . '|' . $phiSellerGst . '|' . $invoice->issue_date->format('d-m-Y'));
+        $phiQrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=' . rawurlencode($phiQrPayload);
+        $phiOrderRef = ($invoice->relationLoaded('order') && $invoice->order) ? ($invoice->order->order_number ?? $invoice->order->id) : '';
+        $phiBillEmail = trim((string) (optional($cfaDistributor)->email ?? ''));
+        $phiBillPhone = '';
+        if ($cfaDistributor && !empty($cfaDistributor->mobile)) {
+            $phiBillPhone = trim((string) ($cfaDistributor->mobile_with_phonecode ?? $cfaDistributor->mobile));
+        }
+    @endphp
 
+    <div class="pharma-tax-invoice-header">
+        <table class="phi-title-row" style="margin-bottom:0;border-bottom:0;">
+            <tr>
+                <td colspan="4" style="text-align:center;border-bottom:1px solid #000;">
+                    <div class="phi-title">TAX INVOICE</div>
+                    <div class="phi-sub-legal">Issued under sec. 31 of CGST act, 2017 read with rule 48 of CGST Rule, 2017</div>
+                </td>
+                <td style="width:11%;text-align:right;vertical-align:top;font-size:8px;border-bottom:1px solid #000;">PAGE 1 OF 1</td>
+            </tr>
+        </table>
+
+        {{-- CFA Distributor: same seller block in col1 + col2; logo only in td[0]. No INVOICED AT / branch in this row. --}}
+        <table>
+            <tr>
+                <td style="width:22%;vertical-align:top;">
+                    @if (company()->light_logo_url)
+                        <div class="phi-col-logo">
+                            <img src="{{ company()->light_logo_url }}" alt="Ryva Vitabiotics Pvt. Ltd." />
+                        </div>
+                    @endif
+                    @include('invoices.cfa-distributor.partials.pharma-invoice-seller-block')
+                </td>
+                <td style="width:20%;vertical-align:top;">
+                    <div class="phi-label" style="margin-bottom:4px;">Invoice by</div>
+                    @include('invoices.cfa-distributor.partials.pharma-invoice-seller-block')
+                </td>
+                <td style="width:25%;vertical-align:top;">
+                    <div class="phi-kv"><span class="phi-label">STK CODE:</span> —</div>
+                    <div class="phi-kv"><span class="phi-label">IRN NO:</span> —</div>
+                    <div class="phi-kv"><span class="phi-label">DOCUMENT TYPE:</span> TAX INVOICE</div>
+                    <div class="phi-kv"><span class="phi-label">TAX INVOICE NO:</span> {{ $invoice->invoice_number }}</div>
+                    <div class="phi-kv"><span class="phi-label">DATE:</span> {{ $invoice->issue_date->format('d/m/Y') }}
+                        @if ($phiIssueTime !== '')
+                            &nbsp;<span class="phi-label">TIME:</span> {{ $phiIssueTime }}
+                        @endif
+                    </div>
+                    <div class="phi-kv"><span class="phi-label">INVOICE TYPE:</span> B2B, REGULAR</div>
+                    <div class="phi-kv"><span class="phi-label">DUE DATE:</span> {{ $invoice->due_date->format('d/m/Y') }}</div>
+                    <div class="phi-kv"><span class="phi-label">STATUS:</span> {{ strtoupper($invoice->status == 'paid' ? __('app.paid') : __('app.unpaid')) }}</div>
+                </td>
+                <td class="phi-ship-copies-cell" style="width:21%;vertical-align:top;">
+                    <div class="phi-copies">
+                        ORIGINAL FOR RECIPIENT<br>
+                        DUPLICATE FOR TRANSPORTER<br>
+                        TRIPLICATE FOR SUPPLIER
+                    </div>
+                    <div class="phi-ship-block">
+                        <div class="phi-label">SHIP TO:</div>
+                        <div class="phi-kv">{{ $phiBillName }}</div>
+                        <div class="phi-kv">{{ $phiShipAddr }}</div>
+                        @if ($cfaDistributorDetails && $cfaDistributorDetails->pin_code)
+                            <div class="phi-kv">PIN: {{ $cfaDistributorDetails->pin_code }}</div>
+                        @endif
+                        @if ($phiCustState !== '')
+                            <div class="phi-kv"><span class="phi-label">STATE CODE:</span> {{ $phiCustState }}</div>
+                        @endif
+                    </div>
+                </td>
+                <td class="phi-td-qr" style="width:12%;">
+                    <div class="phi-qr">
+                        <img src="{{ $phiQrUrl }}" width="128" height="128" alt="QR" />
+                    </div>
+                </td>
+            </tr>
+        </table>
+
+        {{-- Secondary row: bill to | order / customer refs (reference layout) --}}
+        <table>
+            <tr>
+                <td style="width:50%;vertical-align:top;">
+                    <div class="phi-label">BILL TO:</div>
+                    <div class="phi-kv">{{ $phiBillName }}</div>
+                    <div class="phi-kv">{{ $phiBillAddr }}</div>
+                    @if ($phiBillEmail !== '')
+                        <div class="phi-kv">E-MAIL: {{ $phiBillEmail }}</div>
+                    @endif
+                    @if ($phiBillPhone !== '')
+                        <div class="phi-kv">PHONE: {{ $phiBillPhone }}</div>
+                    @endif
+                    @if ($cfaDistributorDetails && $cfaDistributorDetails->pin_code)
+                        <div class="phi-kv">PIN: {{ $cfaDistributorDetails->pin_code }}</div>
+                    @endif
+                    @if ($phiCustGst !== '')
+                        <div class="phi-kv"><span class="phi-label">GSTIN:</span> {{ $phiCustGst }}</div>
+                    @endif
+                    @if ($cfaDistributorDetails && !empty($cfaDistributorDetails->dl_number))
+                        <div class="phi-kv"><span class="phi-label">D.L. NO.:</span> {{ $cfaDistributorDetails->dl_number }}</div>
+                    @endif
+                    @if ($phiCustState !== '')
+                        <div class="phi-kv"><span class="phi-label">STATE CODE:</span> {{ $phiCustState }}</div>
+                    @endif
+                    @if ($phiPlaceSupply !== '')
+                        <div class="phi-kv"><span class="phi-label">PLACE OF SUPPLY:</span> {{ $phiPlaceSupply }}</div>
+                    @endif
+                </td>
+                <td style="width:50%;vertical-align:top;">
+                    <div class="phi-kv"><span class="phi-label">CUSTOMER ORD. NO.:</span> {{ $phiOrderRef ?: '—' }}</div>
+                    <div class="phi-kv"><span class="phi-label">DATED:</span> {{ $invoice->issue_date->format('d/m/Y') }}</div>
+                    @if ($cfaDistributorDetails && $cfaDistributorDetails->dl_number)
+                        <div class="phi-kv"><span class="phi-label">CUST D.L.NO.:</span> {{ $cfaDistributorDetails->dl_number }}</div>
+                    @endif
+                    @if ($phiCustGst !== '')
+                        <div class="phi-kv"><span class="phi-label">CUST GST NO.:</span> {{ $phiCustGst }}</div>
+                    @endif
+                </td>
+            </tr>
+        </table>
+
+        <table class="phi-dispatch">
+            <tr>
+                <td style="width:28%;"><span class="phi-label">DESP. THRU:</span> —</td>
+                <td style="width:22%;"><span class="phi-label">LOCATION:</span> {{ $phiPlaceSupply ?: '—' }}</td>
+                <td style="width:22%;"><span class="phi-label">LR NO. / DATE / NO OF CASES:</span>
+                    {{ $invoice->lr_number ?? '—' }}
+                    @if($invoice->lr_date) / {{ \Carbon\Carbon::parse($invoice->lr_date)->format('d/m/Y') }} @endif / —
+                </td>
+                <td style="width:14%;"><span class="phi-label">E-WAY BILL NO.:</span> —</td>
+                <td style="width:14%;"><span class="phi-label">DATE:</span> {{ $invoice->issue_date->format('d/m/Y') }}</td>
+            </tr>
+        </table>
+    </div>
 
     <!-- Items Table -->
     <table class="items-table">
@@ -566,10 +867,9 @@
             <tr>
                 <th width="3%">S.</th>
                 <th width="8%">QTY. SCH</th>
-                <th width="5%">Mfr</th>
                 <th width="6%">Pack</th>
                 <th width="6%">HSN</th>
-                <th width="15%">Product Name</th>
+                <th width="18%">Product Name</th>
                 <th width="7%">Batch</th>
                 <th width="5%">Exp</th>
                 <th width="6%">M.R.P</th>
@@ -618,9 +918,14 @@
                         $scheme = '';
                     }
                     $freeQty = calculateFreeQty($paidQty, $scheme);
-                    // QTY. SCH column should display the scheme value directly from database
-                    // e.g., "20+2", "10+1", etc.
-                    $qtyDisplay = $scheme;
+                    // QTY. SCH column should display total quantity with breakdown in brackets
+                    // e.g., "240 (219+21)" - total quantity (paid+free)
+                    $totalQty = $paidQty + $freeQty;
+                    if ($freeQty > 0 && !empty($scheme)) {
+                        $qtyDisplay = $totalQty . ' (' . $paidQty . '+' . $freeQty . ')';
+                    } else {
+                        $qtyDisplay = $totalQty;
+                    }
                     
                     // Get batch and expiry from item, CFADistributorStock, or purchase entry
                     $purchaseEntry = $item->purchaseEntry ?? null;
@@ -688,18 +993,40 @@
                     }
                     
                     $mfr = '';
-                    if (!empty($item->mfr)) {
-                        $mfr = $item->mfr;
+                    // Always prioritize company_name over primary_name for MFR display
+                    // First, try to get company_name from vendor relationships
+                    if ($purchaseEntry && $purchaseEntry->vendor) {
+                        // Prioritize purchase entry vendor's company_name for MFR display
+                        $mfr = $purchaseEntry->vendor->company_name ?? 
+                               $purchaseEntry->vendor->primary_name ?? 
+                               $purchaseEntry->vendor->name ?? '';
                     } elseif ($purchaseEntry && $purchaseEntry->product && $purchaseEntry->product->vendor) {
-                        // Try multiple vendor name fields
-                        $mfr = $purchaseEntry->product->vendor->primary_name ?? 
-                               $purchaseEntry->product->vendor->company_name ?? 
+                        // Fallback to product vendor's company_name for MFR display
+                        $mfr = $purchaseEntry->product->vendor->company_name ?? 
+                               $purchaseEntry->product->vendor->primary_name ?? 
                                $purchaseEntry->product->vendor->name ?? '';
                     } elseif ($item->product && $item->product->vendor) {
-                        // Try multiple vendor name fields
-                        $mfr = $item->product->vendor->primary_name ?? 
-                               $item->product->vendor->company_name ?? 
+                        // Last fallback to item product vendor's company_name for MFR display
+                        $mfr = $item->product->vendor->company_name ?? 
+                               $item->product->vendor->primary_name ?? 
                                $item->product->vendor->name ?? '';
+                    } elseif (!empty($item->mfr)) {
+                        // Only use saved mfr if no vendor relationship found
+                        // But try to find vendor by matching the saved mfr with vendor names
+                        $savedMfr = $item->mfr;
+                        // Try to find vendor by matching saved mfr
+                        $vendor = null;
+                        if ($purchaseEntry && $purchaseEntry->vendor) {
+                            $vendor = $purchaseEntry->vendor;
+                        } elseif ($item->product && $item->product->vendor) {
+                            $vendor = $item->product->vendor;
+                        }
+                        // If vendor found and saved mfr matches primary_name, use company_name instead
+                        if ($vendor && ($vendor->primary_name == $savedMfr || $vendor->name == $savedMfr)) {
+                            $mfr = $vendor->company_name ?? $savedMfr;
+                        } else {
+                            $mfr = $savedMfr;
+                        }
                     }
                     
                     // Get MRP, PTS, PTR, DIS from multiple sources
@@ -751,8 +1078,13 @@
                             $dis = $stockEntry->dis;
                         }
                     }
-                    if ($dis === null && $purchaseEntry && isset($purchaseEntry->dis) && $purchaseEntry->dis !== null) {
-                        $dis = $purchaseEntry->dis;
+                    if ($dis === null && $purchaseEntry) {
+                        // Check both 'dis' and 'discount' fields (discount is the active field, dis is legacy)
+                        if (isset($purchaseEntry->discount) && $purchaseEntry->discount !== null) {
+                            $dis = $purchaseEntry->discount;
+                        } elseif (isset($purchaseEntry->dis) && $purchaseEntry->dis !== null) {
+                            $dis = $purchaseEntry->dis;
+                        }
                     }
                     $dis = $dis ?? 0;
                     
@@ -790,16 +1122,90 @@
                         }
                     }
                     
-                    // Calculate tax amounts
+                    // Calculate tax amounts - identify SGST and CGST by tax name
                     $sgstAmount = 0;
                     $cgstAmount = 0;
+                    
+                    // Get taxes from invoice item, or fallback to purchase entry or product
+                    $taxIds = [];
                     if ($item->taxes) {
-                        $taxes = json_decode($item->taxes, true);
-                        if (is_array($taxes)) {
-                            foreach ($taxes as $taxId) {
-                                $tax = \App\Models\Tax::find($taxId);
-                                if ($tax) {
-                                    $taxAmount = ($item->amount * $tax->rate_percent) / 100;
+                        // Handle both JSON array and string formats
+                        if (is_string($item->taxes)) {
+                            $decoded = json_decode($item->taxes, true);
+                            if (is_array($decoded)) {
+                                $taxIds = $decoded;
+                            } elseif (is_numeric($item->taxes)) {
+                                // Single tax ID as string
+                                $taxIds = [(int)$item->taxes];
+                            }
+                        } elseif (is_array($item->taxes)) {
+                            $taxIds = $item->taxes;
+                        }
+                        // Remove duplicates and empty values
+                        $taxIds = array_filter(array_unique($taxIds));
+                    }
+                    
+                    // Fallback: if no taxes in invoice item, try purchase entry
+                    if (empty($taxIds) && $purchaseEntry && $purchaseEntry->tax) {
+                        if (is_array($purchaseEntry->tax)) {
+                            $taxIds = $purchaseEntry->tax;
+                        } elseif (is_string($purchaseEntry->tax)) {
+                            $decoded = json_decode($purchaseEntry->tax, true);
+                            if (is_array($decoded)) {
+                                $taxIds = $decoded;
+                            }
+                        }
+                    }
+                    
+                    // Fallback: if still no taxes, try product
+                    if (empty($taxIds) && $item->product && $item->product->taxes) {
+                        if (is_array($item->product->taxes)) {
+                            $taxIds = $item->product->taxes;
+                        } elseif (is_string($item->product->taxes)) {
+                            $decoded = json_decode($item->product->taxes, true);
+                            if (is_array($decoded)) {
+                                $taxIds = $decoded;
+                            }
+                        }
+                    }
+                    
+                    // Calculate tax on item amount (matches controller logic)
+                    // $item->amount is the subtotal (unit_price * quantity) for this line item
+                    $itemAmount = $item->amount ?? 0;
+                    
+                    // Get stored calculated discount amount for tax calculation (not percentage)
+                    $itemId = $item->id;
+                    $itemDiscountAmount = $itemDiscountsForTax[$itemId] ?? 0; // Use calculated amount, not percentage
+                    
+                    // Handle calculate_tax == 'after_discount' - use calculated discount amount for tax calculation
+                    // Calculate tax on actual item amount minus calculated discount amount (for accurate tax amounts)
+                    $taxBaseAmount = $itemAmount;
+                    if ($invoice->calculate_tax == 'after_discount' && $itemDiscountAmount > 0) {
+                        // Subtract the calculated discount amount from item amount (for accurate tax calculation)
+                        $taxBaseAmount = max(0, $itemAmount - $itemDiscountAmount);
+                    }
+                    
+                    // Ensure tax base is never negative (safety check)
+                    $taxBaseAmount = max(0, $taxBaseAmount);
+                    
+                    if (!empty($taxIds)) {
+                        foreach ($taxIds as $taxId) {
+                            if (empty($taxId)) {
+                                continue;
+                            }
+                            $tax = \App\Models\Tax::find($taxId);
+                            if ($tax) {
+                                // Calculate tax on tax base amount (fixed at 100 when discount applied for visual consistency)
+                                $taxAmount = ($taxBaseAmount * $tax->rate_percent) / 100;
+                                $taxNameUpper = strtoupper($tax->tax_name ?? '');
+                                
+                                // Check if tax name contains SGST or CGST
+                                if (strpos($taxNameUpper, 'SGST') !== false) {
+                                    $sgstAmount += $taxAmount;
+                                } elseif (strpos($taxNameUpper, 'CGST') !== false) {
+                                    $cgstAmount += $taxAmount;
+                                } else {
+                                    // If tax name doesn't contain SGST or CGST, split equally (fallback)
                                     $sgstAmount += $taxAmount / 2;
                                     $cgstAmount += $taxAmount / 2;
                                 }
@@ -836,7 +1242,6 @@
                 <tr>
                     <td>{{ $index + 1 }}</td>
                     <td>{{ $qtyDisplay }}</td>
-                    <td>{{ $mfr }}</td>
                     <td>{{ $pack }}</td>
                     <td>{{ $hsn }}</td>
                     <td class="text-left">{{ $productName }}</td>
@@ -879,6 +1284,7 @@
                             @php
                                 $data = $gstBreakdown[$rate] ?? [
                                     'total' => 0,
+                                    'discount' => 0,
                                     'sgst' => 0,
                                     'cgst' => 0,
                                     'total_gst' => 0
@@ -888,17 +1294,41 @@
                                 <td style="text-align: left;">GST {{ number_format($rate, 2) }}%</td>
                                 <td class="text-right">{{ number_format($data['total'], 2) }}</td>
                                 <td class="text-right">0.00</td>
-                                <td class="text-right">0.00</td>
+                                <td class="text-right">{{ number_format($data['discount'] ?? 0, 2) }}</td>
                                 <td class="text-right">{{ number_format($data['sgst'], 2) }}</td>
                                 <td class="text-right">{{ number_format($data['cgst'], 2) }}</td>
                                 <td class="text-right">{{ number_format($data['total_gst'], 2) }}</td>
                             </tr>
                         @endforeach
+                        @php
+                            // Use the stored discount (sum of all rounded item discounts) - SINGLE SOURCE OF TRUTH
+                            // $discountFromItems is already the sum of all rounded item discounts
+                            $displayDiscount = round($discountFromItems, 2);
+                            
+                            // Safety check: Verify discount consistency (compare with breakdown sum)
+                            $calculatedTotalDiscount = 0;
+                            foreach ($gstBreakdown as $rate => $data) {
+                                $calculatedTotalDiscount += $data['discount'] ?? 0;
+                            }
+                            if (abs($discountFromItems - $calculatedTotalDiscount) > 0.01) {
+                                \Log::error('DISCOUNT MISMATCH DETECTED', [
+                                    'discountFromItems' => $discountFromItems,
+                                    'calculatedTotalDiscount' => $calculatedTotalDiscount,
+                                    'displayDiscount' => $displayDiscount,
+                                    'invoice_id' => $invoice->id
+                                ]);
+                            }
+                            
+                            // If discount is 0, fallback to invoice-level discount
+                            if ($displayDiscount == 0) {
+                                $displayDiscount = round($discount, 2);
+                            }
+                        @endphp
                         <tr style="font-weight: bold;">
                             <td style="text-align: left;">TOTAL</td>
                             <td class="text-right">{{ number_format($invoice->sub_total, 2) }}</td>
                             <td class="text-right">0.00</td>
-                            <td class="text-right">{{ number_format($discount, 2) }}</td>
+                            <td class="text-right">{{ number_format($displayDiscount, 2) }}</td>
                             <td class="text-right">{{ number_format($totalSGST, 2) }}</td>
                             <td class="text-right">{{ number_format($totalCGST, 2) }}</td>
                             <td class="text-right">{{ number_format($totalGST, 2) }}</td>
@@ -912,24 +1342,23 @@
                 <table style="width: 100%; border-collapse: collapse; border: 1px solid #000;">
                     <!-- TOTAL Row -->
                     <tr>
-                        <td style="padding: 3px 4px; border: 1px solid #000; font-size: 11px; font-weight: bold; text-align: left;">
+                        <td style="padding: 8px 10px; border: 1px solid #000; font-size: 14px; font-weight: bold; text-align: left;">
                             TOTAL
                         </td>
-                        <td style="padding: 3px 4px; border: 1px solid #000; font-size: 11px; font-weight: bold; text-align: right;">
+                        <td style="padding: 8px 10px; border: 1px solid #000; font-size: 14px; font-weight: bold; text-align: right;">
                             {{ number_format($invoice->sub_total, 2) }}
                         </td>
                     </tr>
                     <!-- Summary Details Row - Two Columns -->
                     <tr>
-                        <!-- Left Column: Total Items, Total Qty, C/N NO -->
-                        <td style="padding: 3px 4px; border: 1px solid #000; font-size: 9px; vertical-align: top; line-height: 1.3; width: 50%;">
+                        <!-- Left Column: Total Items, Total Qty -->
+                        <td style="padding: 8px 10px; border: 1px solid #000; font-size: 12px; vertical-align: top; line-height: 1.5; width: 50%;">
                             Total Items: {{ $totalItems }}<br>
-                            Total Qty: {{ $totalQty }}<br>
-                            C/N NO: -- Add
+                            Total Qty: {{ $totalQty }}
                         </td>
                         <!-- Right Column: DIS AMT., SGST PAYBLE, CGST PAYBLE, CR/DR NOTE -->
-                        <td style="padding: 3px 4px; border: 1px solid #000; font-size: 9px; vertical-align: top; line-height: 1.3; width: 50%;">
-                            DIS AMT.: {{ number_format($discount, 2) }}<br>
+                        <td style="padding: 8px 10px; border: 1px solid #000; font-size: 12px; vertical-align: top; line-height: 1.5; width: 50%;">
+                            DIS AMT.: {{ number_format($displayDiscount ?? $discount, 2) }}<br>
                             SGST PAYBLE: {{ number_format($totalSGST, 2) }}<br>
                             CGST PAYBLE: {{ number_format($totalCGST, 2) }}<br>
                             CR/DR NOTE: 0.00
@@ -947,7 +1376,7 @@
             <td width="65%" style="vertical-align: top; padding-right: 3px;">
                 <table style="width: 100%; border-collapse: collapse; border: 1px solid #000;">
                     <tr>
-                        <td style="padding: 3px 4px; border: 1px solid #000; font-size: 9px; line-height: 1.3;">
+                        <td style="padding: 8px 10px; border: 1px solid #000; font-size: 13px; line-height: 1.5;">
                             @php
                                 // Simple number to words conversion
                                 if (!function_exists('numberToWords')) {
@@ -970,8 +1399,8 @@
                                     $amountInWords .= ' and ' . numberToWords($paise) . ' Paise';
                                 }
                             @endphp
-                            <div style="font-weight: bold; font-size: 10px; margin-bottom: 2px;">Rs. {{ $amountInWords }} only</div>
-                            <div style="font-size: 10px;">MSG: PLEASE MAKE PAYMENT WITHIN 21 DAYS</div>
+                            <div style="font-weight: bold; font-size: 13px; margin-bottom: 3px;">Rs. {{ $amountInWords }} only</div>
+                            <div style="font-size: 12px;">MSG: PLEASE MAKE PAYMENT WITHIN 21 DAYS</div>
                         </td>
                     </tr>
                 </table>
@@ -981,7 +1410,7 @@
                 <table style="width: 100%; border-collapse: collapse; border: 1px solid #000;">
                     <tr>
                         <td style="padding: 8px 4px; border: 1px solid #000; text-align: center; vertical-align: middle; min-height: 40px;">
-                            <strong style="font-size: 11px;">Grand Total: {{ number_format($grandTotal, 2) }}</strong>
+                            <strong style="font-size: 16px;">Grand Total: {{ number_format($grandTotal, 2) }}</strong>
                         </td>
                     </tr>
                 </table>
@@ -992,35 +1421,20 @@
     <!-- Footer Section - Three Columns -->
     <table style="width: 100%; border-collapse: collapse; margin-top: 5px; border: 1px solid #000;">
         <tr>
-            <td width="33%" style="padding: 4px; border: 1px solid #000; font-size: 9px; vertical-align: top; text-align: left; line-height: 1.3;">
+            <td width="33%" style="padding: 8px 10px; border: 1px solid #000; font-size: 12px; vertical-align: top; text-align: left; line-height: 1.5;">
                 <strong>Terms & Conditions</strong><br>
                 All disputes subject to Lucknow Jurisdiction only.<br>
                 Bills not paid due date will attract 24% interest.<br>
                 Goods once sold will not be taken back or exchanged.
             </td>
-            <td width="34%" style="padding: 4px; border: 1px solid #000; font-size: 9px; vertical-align: top; text-align: center; line-height: 1.3;">
-                <strong>Bank Details :-</strong>
-                @if ($cfaDistributorDetails && ($cfaDistributorDetails->bank_account_name || $cfaDistributorDetails->bank_account_number || $cfaDistributorDetails->bank_ifsc_code))
-                    @if ($cfaDistributorDetails->bank_account_name)
-                        {{ $cfaDistributorDetails->bank_account_name }}<br>
-                    @endif
-                    @if ($cfaDistributorDetails->bank_account_number)
-                        ACCOUNT NO. {{ $cfaDistributorDetails->bank_account_number }}<br>
-                    @endif
-                    @if ($cfaDistributorDetails->bank_ifsc_code)
-                        IFSC CODE - {{ $cfaDistributorDetails->bank_ifsc_code }}
-                    @endif
-                @elseif ($invoice->bankAccount)
-                    {{ $invoice->bankAccount->bank_name }}<br>
-                    {{ $invoice->bankAccount->account_name }}<br>
-                    ACCOUNT NO. {{ $invoice->bankAccount->account_number }}<br>
-                    IFSC CODE - {{ $invoice->bankAccount->ifsc_code }}
-                @else
-                    <br><br><br>
-                @endif
+            <td width="34%" style="padding: 8px 10px; border: 1px solid #000; font-size: 12px; vertical-align: top; text-align: center; line-height: 1.5;">
+                <strong>Bank Details :-</strong><br>
+                RYVA VITABIOTICS PVT LTD<br>
+                A/C NO- 740605000525<br>
+                IFSC - ICIC0007406
             </td>
-            <td width="33%" style="padding: 4px; border: 1px solid #000; font-size: 9px; vertical-align: top; text-align: right; line-height: 1.3;">
-                <strong>FOR {{ $cfaDistributorDetails->company_name ?? $cfaDistributor->name }}</strong><br><br><br>
+            <td width="33%" style="padding: 8px 10px; border: 1px solid #000; font-size: 12px; vertical-align: top; text-align: right; line-height: 1.5;">
+                <strong>FOR {{ company()->company_name }}</strong><br><br><br>
                 <strong>Authorised Signatory</strong>
             </td>
         </tr>

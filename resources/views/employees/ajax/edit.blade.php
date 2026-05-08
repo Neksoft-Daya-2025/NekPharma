@@ -4,27 +4,29 @@ $changeEmployeeRolePermission = user()->permission('change_employee_role');
 $addDepartmentPermission = user()->permission('add_department');
 @endphp
 @php
-function safeDecodeValue($value) {
+if (!function_exists('safeDecodeValue')) {
+    function safeDecodeValue($value) {
 
-    // CASE 1 — Already array
-    if (is_array($value)) {
+        // CASE 1 — Already array
+        if (is_array($value)) {
 
-        // CASE: ["[\"1\"]"] → unwrap first element
-        if (count($value) === 1 && is_string($value[0])) {
-            $value = $value[0];
-        } else {
-            return $value; // valid array → return as is
+            // CASE: ["[\"1\"]"] → unwrap first element
+            if (count($value) === 1 && is_string($value[0])) {
+                $value = $value[0];
+            } else {
+                return $value; // valid array → return as is
+            }
         }
-    }
 
-    // CASE 2 — Null / Empty / 'null'
-    if (!$value || $value === 'null') {
-        return [];
-    }
+        // CASE 2 — Null / Empty / 'null'
+        if (!$value || $value === 'null') {
+            return [];
+        }
 
-    // CASE 3 — Proper JSON string
-    $decoded = json_decode($value, true);
-    return is_array($decoded) ? $decoded : [];
+        // CASE 3 — Proper JSON string
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
+    }
 }
 @endphp
 
@@ -102,7 +104,7 @@ function safeDecodeValue($value) {
                                 </x-forms.label>
                                 <x-forms.input-group>
                                     <select class="form-control select-picker" name="designation"
-                                        id="employee_designation" data-live-search="true">
+                                        id="employee_designation" data-live-search="true" data-html="true">
                                         <option value="">--</option>
                                         @foreach ($designations as $designation)
                                             <option @if ($employee->employeeDetail->designation_id == $designation->id) selected @endif value="{{ $designation->id }}">
@@ -120,13 +122,20 @@ function safeDecodeValue($value) {
                             </div>
                             <!--============================== sonu =============================================-->
                                                     <!-- AREA MULTI SELECT (For Area Business Manager) -->
-                        <div class="col-lg-4 col-md-6 {{ $employeeDetail->designation->name == 'Area Business Manager' ? '' : 'd-none' }}" id="areaDiv">
+                        @php
+                            $designationName = $employeeDetail->designation?->name ?? '';
+                            $isABMEdit = $employeeDetail->designation && (str_contains($designationName, 'Area Business Manager') || str_contains($designationName, 'ABM'));
+                            $isRBMEdit = $employeeDetail->designation && str_contains($designationName, 'Regional') && (str_contains($designationName, 'Business Manager') || str_contains($designationName, 'Manager'));
+                            $isZMEdit = $employeeDetail->designation && (str_contains($designationName, 'Zonal Manager') || str_contains($designationName, 'ZM'));
+                            $isMISExecutiveEdit = $employeeDetail->designation && (str_contains($designationName, 'MIS Executive') || str_contains($designationName, 'MIS'));
+                        @endphp
+                        <div class="col-lg-4 col-md-6 {{ $isABMEdit ? '' : 'd-none' }}" id="areaDiv">
                             <x-forms.label class="my-3" fieldId="areas" fieldLabel="Select Area(s)"></x-forms.label>
                         
                             <x-forms.input-group>
                                 @php $selectedAreas = safeDecodeValue($employeeDetail->areas); @endphp
                         
-                                <select class="form-control select-picker" multiple name="area_ids[]" id="employee_areas" data-live-search="true">
+                                <select class="form-control select-picker" multiple name="area_ids[]" id="employee_areas" data-live-search="true" data-html="true">
                                     @foreach ($areas as $area)
                                         <option value="{{ $area->id }}" {{ in_array($area->id, $selectedAreas) ? 'selected' : '' }}>
                                             {{ $area->name ?? $area->area_name }}
@@ -138,13 +147,13 @@ function safeDecodeValue($value) {
 
 
                         <!-- REGION MULTI SELECT (For Regional Business Manager) -->
-                        <div class="col-lg-4 col-md-6 {{ $employeeDetail->designation->name == 'Regional Business Manager' ? '' : 'd-none' }}" id="regionDiv">
+                        <div class="col-lg-4 col-md-6 {{ $isRBMEdit ? '' : 'd-none' }}" id="regionDiv">
                             <x-forms.label class="my-3" fieldId="regions" fieldLabel="Select Region(s)"></x-forms.label>
                         
                             <x-forms.input-group>
                                 @php $selectedRegions = safeDecodeValue($employeeDetail->regions); @endphp
                         
-                                <select class="form-control select-picker" multiple name="region_ids[]" id="employee_regions" data-live-search="true">
+                                <select class="form-control select-picker" multiple name="region_ids[]" id="employee_regions" data-live-search="true" data-html="true">
                                     @foreach ($regions as $region)
                                         <option value="{{ $region->id }}" {{ in_array($region->id, $selectedRegions) ? 'selected' : '' }}>
                                             {{ $region->name ?? $region->region_name }}
@@ -154,7 +163,22 @@ function safeDecodeValue($value) {
                             </x-forms.input-group>
                         </div>
 
-
+                        <!-- ZONE MULTI SELECT (For Zonal Manager) -->
+                        @if(isset($zones) && $zones->isNotEmpty())
+                        <div class="col-lg-4 col-md-6 {{ $isZMEdit ? '' : 'd-none' }}" id="zoneDiv">
+                            <x-forms.label class="my-3" fieldId="zones" fieldLabel="Select Zone(s)"></x-forms.label>
+                            <x-forms.input-group>
+                                @php $selectedZones = safeDecodeValue($employeeDetail->zones); @endphp
+                                <select class="form-control select-picker" multiple name="zone_ids[]" id="employee_zones" data-live-search="true" data-html="true">
+                                    @foreach ($zones as $zone)
+                                        <option value="{{ $zone->id }}" {{ in_array($zone->id, $selectedZones) ? 'selected' : '' }}>
+                                            {{ $zone->name }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                            </x-forms.input-group>
+                        </div>
+                        @endif
 
                             <!--====================================================================================-->
                             <div class="col-md-4">
@@ -163,7 +187,7 @@ function safeDecodeValue($value) {
                                 </x-forms.label>
                                 <x-forms.input-group>
                                     <select class="form-control select-picker" name="department"
-                                        id="employee_department" data-live-search="true">
+                                        id="employee_department" data-live-search="true" data-html="true">
                                         <option value="">--</option>
                                         @foreach ($teams as $team)
                                             <option @if ($employee->employeeDetail->department_id == $team->id) selected @endif value="{{ $team->id }}">
@@ -182,16 +206,16 @@ function safeDecodeValue($value) {
                             {{-- PHARMA HEADQUARTER FIELD --}}
                             @php
                             $editViewHeadquarterPermission = user()->permission('view_headquarters');
-                            $isAdminUser = user()->hasRole('admin');
+                            $isAdminUser = user()->hasAdminLikeAccess();
                             $canEditHeadquarterSelection = $isAdminUser || in_array($editViewHeadquarterPermission, ['all', 'added', 'owned', 'both'], true);
                             @endphp
                             @if(in_array('pharma_areas', user_modules()) && $canEditHeadquarterSelection)
-                            <div class="col-md-4">
+                            <div class="col-md-4 {{ ($isABMEdit || $isRBMEdit || $isZMEdit || $isMISExecutiveEdit) ? 'd-none' : '' }}" id="headquarterDiv">
                                 <x-forms.label class="my-3" fieldId="headquarter_id"
                                     :fieldLabel="'HeadQuarter'">
                                 </x-forms.label>
                                 <select class="form-control select-picker" name="headquarter_id"
-                                    id="employee_headquarter" data-live-search="true">
+                                    id="employee_headquarter" data-live-search="true" data-html="true">
                                     <option value="">--</option>
                                     @foreach (\App\Models\PharmaHeadquarter::all() as $hq)
                                         <option @if (isset($employee->employeeDetail->headquarter_id) && $employee->employeeDetail->headquarter_id == $hq->id) selected @endif value="{{ $hq->id }}">
@@ -263,8 +287,15 @@ function safeDecodeValue($value) {
                             fieldName="reporting_to" :fieldPlaceholder="__('placeholders.date')" search="true">
                             <option value="">--</option>
                             @foreach ($employees as $item)
-                                <x-user-option :user="$item" :selected="$employee->employeeDetail->reporting_to == $item->id"/>
+                                <x-user-option :user="$item" :employeeSelect="true" :selected="$employee->employeeDetail->reporting_to == $item->id"/>
                             @endforeach
+                        </x-forms.select>
+                    </div>
+                    <div class="col-md-4">
+                        <x-forms.select fieldId="attendance_source" :fieldLabel="__('modules.employees.attendanceSource')"
+                            fieldName="attendance_source">
+                            <option value="office" @if (($employee->employeeDetail->attendance_source ?? 'office') == 'office') selected @endif>{{ __('modules.employees.attendanceSourceOffice') }}</option>
+                            <option value="field" @if (($employee->employeeDetail->attendance_source ?? '') == 'field') selected @endif>{{ __('modules.employees.attendanceSourceField') }}</option>
                         </x-forms.select>
                     </div>
                     <div class="col-md-4">
@@ -305,6 +336,14 @@ function safeDecodeValue($value) {
                             <x-forms.textarea class="mr-0 mr-lg-2 mr-md-2" :fieldLabel="__('app.address')"
                                 :fieldValue="$employee->employeeDetail->address" fieldName="address" fieldId="address"
                                 :fieldPlaceholder="__('placeholders.address')">
+                            </x-forms.textarea>
+                        </div>
+                    </div>
+                    <div class="col-md-12">
+                        <div class="form-group my-3">
+                            <x-forms.textarea class="mr-0 mr-lg-2 mr-md-2" fieldLabel="Permanent Address"
+                                fieldName="permanent_address" fieldId="permanent_address" fieldPlaceholder="Permanent address"
+                                :fieldValue="$employee->employeeDetail->permanent_address ?? ''">
                             </x-forms.textarea>
                         </div>
                     </div>
@@ -442,6 +481,16 @@ function safeDecodeValue($value) {
                         </x-forms.select>
                     </div>
 
+                    <div class="col-lg-3 col-md-6">
+                        <x-forms.select fieldId="employment_status" fieldLabel="Employment Status"
+                            fieldName="employment_status" fieldPlaceholder="Select status">
+                            <option value="">--</option>
+                            <option value="Probation" @selected(($employee->employeeDetail->employment_status ?? '') === 'Probation')>Probation</option>
+                            <option value="Confirmed" @selected(($employee->employeeDetail->employment_status ?? '') === 'Confirmed')>Confirmed</option>
+                            <option value="Resigned" @selected(($employee->employeeDetail->employment_status ?? '') === 'Resigned')>Resigned</option>
+                        </x-forms.select>
+                    </div>
+
                     <div class="col-lg-3 col-md-6 d-none internship-date">
                         <x-forms.datepicker fieldId="internship_end_date" :fieldLabel="__('modules.employees.internshipEndDate')"
                             fieldName="internship_end_date" :fieldPlaceholder="__('placeholders.date')"
@@ -470,7 +519,7 @@ function safeDecodeValue($value) {
                         </x-forms.label>
                         <x-forms.input-group>
                             <select class="form-control select-picker" name="company_address"
-                                id="company_address" data-live-search="true">
+                                id="company_address" data-live-search="true" data-html="true">
                                 @foreach ($companyAddresses as $address)
                                     <option @selected($employee->employeeDetail->company_address_id == $address->id)
                                      value="{{ $address->id }}">{{ $address->location }}</option>
@@ -485,6 +534,54 @@ function safeDecodeValue($value) {
                             :fieldValue="$employee->employeeDetail->marriage_anniversary_date ? Carbon\Carbon::parse($employee->employeeDetail->marriage_anniversary_date)->format(company()->date_format) : '' " />
                     </div>
 
+                    <!-- Bank Details Section (Requirement 3.1.1) -->
+                    <div class="col-12">
+                        <h5 class="mb-3 mt-4 f-16 font-weight-normal text-dark-grey">
+                            @lang('modules.employees.bankDetails')
+                        </h5>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="bank_account_number" :fieldLabel="__('modules.employees.bankAccountNumber')"
+                            fieldName="bank_account_number" :fieldValue="$employee->employeeDetail->bank_account_number ?? ''"
+                            :fieldPlaceholder="__('modules.employees.bankAccountNumber')">
+                        </x-forms.text>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="ifsc_code" :fieldLabel="__('modules.employees.ifscCode')"
+                            fieldName="ifsc_code" :fieldValue="$employee->employeeDetail->ifsc_code ?? ''"
+                            :fieldPlaceholder="__('modules.employees.ifscCode')">
+                        </x-forms.text>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="bank_name" :fieldLabel="__('modules.employees.bankName')"
+                            fieldName="bank_name" :fieldValue="$employee->employeeDetail->bank_name ?? ''"
+                            :fieldPlaceholder="__('modules.employees.bankName')">
+                        </x-forms.text>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="bank_branch_name" fieldLabel="Branch Name (Bank Branch)"
+                            fieldName="bank_branch_name" :fieldValue="$employee->employeeDetail->bank_branch_name ?? ''"
+                            fieldPlaceholder="Bank branch name">
+                        </x-forms.text>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="uan_number" :fieldLabel="__('modules.employees.uanNumber')"
+                            fieldName="uan_number" :fieldValue="$employee->employeeDetail->uan_number ?? ''"
+                            :fieldPlaceholder="__('modules.employees.uanNumber')">
+                        </x-forms.text>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="pan_number" :fieldLabel="__('modules.employees.panNumber')"
+                            fieldName="pan_number" :fieldValue="$employee->employeeDetail->pan_number ?? ''"
+                            :fieldPlaceholder="__('modules.employees.panNumber')">
+                        </x-forms.text>
+                    </div>
+                    <div class="col-lg-4 col-md-6">
+                        <x-forms.text fieldId="aadhar_number" :fieldLabel="__('modules.employees.aadharNumber')"
+                            fieldName="aadhar_number" :fieldValue="$employee->employeeDetail->aadhar_number ?? ''"
+                            :fieldPlaceholder="__('modules.employees.aadharNumber')">
+                        </x-forms.text>
+                    </div>
 
                 </div>
                 <div class="row p-20 border-top-grey">
@@ -537,6 +634,8 @@ function safeDecodeValue($value) {
 
     </div>
 </div>
+
+<x-forms.custom-field-filejs/>
 
 <script src="{{ asset('vendor/jquery/tagify.min.js') }}"></script>
 @if (function_exists('sms_setting') && sms_setting()->telegram_status)
@@ -801,7 +900,6 @@ function safeDecodeValue($value) {
             updatePhoneCode();
             $('.select-picker').selectpicker('refresh');
         });
-        <x-forms.custom-field-filejs/>
 
         init(RIGHT_MODAL);
     });
@@ -842,20 +940,51 @@ $(document).ready(function () {
 
     function toggleAreaRegion() {
         let designationText = $("#employee_designation option:selected").text().trim();
+        const isABM = designationText.includes("Area Business Manager") || designationText.includes("ABM");
+        const isRBM = designationText.includes("Regional") && (designationText.includes("Business Manager") || designationText.includes("Manager"));
+        const isZM = designationText.includes("Zonal Manager") || designationText.includes("ZM");
+        const isMISExecutive = designationText.includes("MIS Executive") || designationText.includes("MIS");
+        const usesGeography = isABM || isRBM || isZM;
+        const hideHeadquarter = usesGeography || isMISExecutive; // MIS Executive has access to all HQs - no selection needed
 
-        if (designationText === "Area Business Manager") {
+        if ($("#zoneDiv").length) {
+            $("#zoneDiv").addClass("d-none");
+            $("#employee_zones").val([]);
+        }
+        if (isABM) {
             $("#areaDiv").removeClass("d-none");
             $("#regionDiv").addClass("d-none");
+            $("#employee_regions").val([]);
         }
-        else if (designationText === "Regional Business Manager") {
+        else if (isRBM) {
             $("#regionDiv").removeClass("d-none");
             $("#areaDiv").addClass("d-none");
+            $("#employee_areas").val([]);
+        }
+        else if (isZM && $("#zoneDiv").length) {
+            $("#zoneDiv").removeClass("d-none");
+            $("#areaDiv").addClass("d-none");
+            $("#regionDiv").addClass("d-none");
+            $("#employee_areas").val([]);
+            $("#employee_regions").val([]);
         }
         else {
             $("#areaDiv").addClass("d-none");
             $("#regionDiv").addClass("d-none");
+            $("#employee_areas").val([]);
+            $("#employee_regions").val([]);
         }
 
+        // Hide Headquarter for ABM/RBM/ZM/MIS Executive; show for MR and others (MIS Executive has access to all HQs)
+        if ($("#headquarterDiv").length) {
+            if (hideHeadquarter) {
+                $("#headquarterDiv").addClass("d-none");
+                $("#employee_headquarter").val("").prop("required", false);
+            } else {
+                $("#headquarterDiv").removeClass("d-none");
+                $("#employee_headquarter").prop("required", true);
+            }
+        }
         $('.select-picker').selectpicker('refresh');
     }
 

@@ -1,0 +1,331 @@
+<?php $page = 'ui-spinner'; ?>
+@extends('layout.mainlayout')
+@section('content')
+
+    <!-- ========================
+        Start Page Content
+    ========================= -->
+
+    <div class="page-wrapper">
+
+        <!-- Start Content -->
+        <div class="content">
+
+            <!-- Page Header -->
+            <div class="d-md-flex d-block align-items-center justify-content-between page-breadcrumb mb-3">
+                <div class="my-auto mb-2">
+                    <h2 class="mb-1">Spinner</h2>
+                    <nav>
+                        <ol class="breadcrumb mb-0">
+                            <li class="breadcrumb-item">
+                                <a href="{{url('index')}}"><i class="ti ti-smart-home"></i></a>
+                            </li>
+                            <li class="breadcrumb-item">
+                                Base UI
+                            </li>
+                            <li class="breadcrumb-item active" aria-current="page">Spinner</li>
+                        </ol>
+                    </nav>
+                </div>
+                <div class="head-icons ms-2">
+                    <a href="javascript:void(0);" class="" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-original-title="Collapse" id="collapse-header">
+                        <i class="ti ti-chevrons-up"></i>
+                    </a>
+                </div>
+            </div>
+            <!-- /Page Header -->
+
+            <div class="row">
+
+                <!-- Spinner -->
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Border Spinner</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="spinner-border" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Spinner -->
+
+                <!-- Colored Spinner -->
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Colored Spinner</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-secondary" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-success" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-danger" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-warning" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-info" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-light" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-border text-dark" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Colored Spinner -->
+
+                <!-- Grow Spinner -->
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Grow Spinner</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="spinner-grow" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Grow Spinner -->
+
+                <!-- Colored Grow Spinner -->
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Colored Grow Spinner</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="spinner-grow text-primary" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-secondary" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-success" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-danger" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-warning" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-info" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-light" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow text-dark" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Colored Grow Spinner -->
+
+                <!-- Spinner -->
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Flex Alignment</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="d-flex justify-content-center mb-4">
+                                <div class="spinner-border" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                            <div class="d-flex align-items-center justify-content-between">
+                                <strong>Loading...</strong>
+                                <div class="spinner-border" role="status" aria-hidden="true"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Spinner -->
+
+                <!-- Spinner -->
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Float Alignment</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="clearfix">
+                                <div class="spinner-border float-end mb-4" role="status">
+                                    <span class="sr-only">Loading...</span>
+                                </div>
+                            </div>
+                            <div class="clearfix">
+                                <div class="spinner-border float-start" role="status">
+                                    <span class="sr-only">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Spinner -->
+
+                <!-- Spinner -->
+                <div class="col-md-6 d-flex">
+                    <div class="card flex-fill">
+                        <div class="card-header">
+                            <h5 class="card-title">Alignment Text center</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="text-center">
+                                <div class="spinner-border" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Spinner -->
+
+                <!-- Alignment Margin -->
+                <div class="col-md-6 d-flex">
+                    <div class="card flex-fill">
+                        <div class="card-header">
+                            <h5 class="card-title">Alignment Margin</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="spinner-border m-5" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Alignment Margin -->
+
+                <!-- Different Sizes -->
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Different Sizes</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow spinner-grow-sm me-3" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+
+                            <div class="spinner-border" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow me-3" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+
+                            <div class="spinner-border spinner-border-lg" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                            <div class="spinner-grow spinner-grow-lg" role="status">
+                                <span class="sr-only">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Different Sizes -->
+
+                <!-- Buttons Spinner -->
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title">Buttons</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="btn-list">
+                                <button class="btn btn-primary-light" type="button" disabled>
+                                    <span class="spinner-border spinner-border-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    <span class="visually-hidden">Loading...</span>
+                                </button>
+                                <button class="btn btn-primary-light" type="button" disabled>
+                                    <span class="spinner-border spinner-border-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-primary-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    <span class="visually-hidden">Loading...</span>
+                                </button>
+                                <button class="btn btn-primary-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-secondary-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-success-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-info-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-warning-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-danger-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-light" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                                <button class="btn btn-dark text-fixed-white" type="button" disabled>
+                                    <span class="spinner-grow spinner-grow-sm align-middle" role="status"
+                                        aria-hidden="true"></span>
+                                    Loading...
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- /Buttons Spinner -->
+
+            </div>
+        </div>
+        <!-- End Content -->
+
+        @include('partials.footer')
+
+    </div>
+
+    <!-- ========================
+        End Page Content
+    ========================= -->
+
+@endsection
+

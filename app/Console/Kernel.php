@@ -3,6 +3,7 @@
 namespace App\Console;
 
 use App\Console\Commands\AddMissingRolePermission;
+use App\Console\Commands\SyncAccountantFinancePermissions;
 use App\Console\Commands\AutoCreateRecurringExpenses;
 use App\Console\Commands\AutoCreateRecurringInvoices;
 use App\Console\Commands\CarryForwardLeaves;
@@ -35,6 +36,9 @@ use App\Console\Commands\RecalculateLeavesQuotas;
 use App\Console\Commands\AutoClockOut;
 use App\Console\Commands\UpdateProjectProgressByDeadline;
 use App\Console\Commands\SendEmployeeDocumentExpiryAlert;
+use App\Console\Commands\TourLockNextMonth;
+use App\Console\Commands\SyncPharmaAreaMappingCommand;
+use App\Console\Commands\SyncSeniorManagerPmtRoleCommand;
 use DateTimeZone;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
@@ -70,6 +74,7 @@ class Kernel extends ConsoleKernel
         SendAutoFollowUpReminder::class,
         FetchTicketEmails::class,
         AddMissingRolePermission::class,
+        SyncAccountantFinancePermissions::class,
         BirthdayReminderCommand::class,
         SendTimeTracker::class,
         SendMonthlyAttendanceReport::class,
@@ -83,6 +88,9 @@ class Kernel extends ConsoleKernel
         RecalculateLeavesQuotas::class,
         UpdateProjectProgressByDeadline::class,
         SendEmployeeDocumentExpiryAlert::class,
+        TourLockNextMonth::class,
+        SyncPharmaAreaMappingCommand::class,
+        SyncSeniorManagerPmtRoleCommand::class,
     ];
 
     /**
@@ -138,6 +146,7 @@ class Kernel extends ConsoleKernel
         $schedule->command('log:clean --keep-last')->dailyAt('02:40');
         $schedule->command('inactive-employee')->dailyAt('02:50');
         $schedule->command('send-employee-document-expiry-alert')->dailyAt('01:00');
+        $schedule->command('tour:lock-next-month')->dailyAt('00:15');
         $schedule->command('daily-schedule-reminder')->daily();
         $schedule->command('assign-shift-rotation')->dailyAt('00:01');
 
@@ -150,9 +159,14 @@ class Kernel extends ConsoleKernel
         $schedule->command('send-monthly-attendance-report')->monthly();
         $schedule->command('app:create-employee-leave-quota-history')->monthly();
         // $schedule->command('carry-forward-leave')->monthly();
-        $schedule->command('app:annual-carry-forward-leaves')->monthly();
-        $schedule->command('app:annual-reimburse-leaves')->monthly();
-        $schedule->command('app:recalculate-leaves-quotas')->monthly();
+        // Run daily because the command itself short-circuits for every user
+        // whose joining anniversary isn't "today". A monthly cron would only
+        // ever catch employees whose anniversary falls on the 1st.
+        $schedule->command('app:annual-carry-forward-leaves')->dailyAt('02:00');
+        $schedule->command('app:annual-reimburse-leaves')->dailyAt('02:05');
+        // Daily recalc keeps the monthly pro-rata balance current at each
+        // month boundary and immediately after each anniversary rollover.
+        $schedule->command('app:recalculate-leaves-quotas')->dailyAt('02:15');
 
         $schedule->command('queue:flush')->weekly();
 

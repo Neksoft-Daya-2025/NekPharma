@@ -1,0 +1,50 @@
+<?php
+
+namespace Modules\Purchase\Exports;
+
+use Maatwebsite\Excel\Concerns\FromArray;
+use Maatwebsite\Excel\Concerns\WithHeadings;
+
+class PurchaseProductSampleExport implements FromArray, WithHeadings
+{
+    public function array(): array
+    {
+        return [
+            [
+                'Paracetamol 500mg',
+                '10x10 Tablets',
+                50.00
+            ],
+            [
+                'Amoxicillin 250mg',
+                '1x10 Strips',
+                75.50
+            ],
+            [
+                'Cough Syrup 100ml',
+                '500ml Bottle',
+                120.00
+            ],
+            [
+                'Vitamin D3 60k IU',
+                '4x15 Tablets',
+                200.00
+            ],
+            [
+                'Antiseptic Solution',
+                '100ml Bottle',
+                85.00
+            ],
+        ];
+    }
+
+    public function headings(): array
+    {
+        return [
+            'Product Name',
+            'Packing',
+            'MRP'
+        ];
+    }
+}
+

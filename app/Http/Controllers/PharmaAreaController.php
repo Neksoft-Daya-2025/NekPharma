@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Helper\Reply;
+use App\Helpers\PharmaDesignationHelper;
 use App\Models\PharmaZone;
 use App\Models\PharmaRegion;
 use App\Models\PharmaArea;
@@ -10,10 +11,13 @@ use App\Models\PharmaHeadquarter;
 use App\Models\PharmaExstation;
 use App\Models\PharmaOutstation;
 use App\Models\PharmaHeadquarterAssign;
+use App\Support\MasterAreaMapGraphBuilder;
+use App\Traits\AccessibleHeadquarters;
 use Illuminate\Http\Request;
 
 class PharmaAreaController extends AccountBaseController
 {
+    use AccessibleHeadquarters;
     /**
      * Permission types that we treat as having at least some visibility scope.
      *
@@ -73,27 +77,14 @@ class PharmaAreaController extends AccountBaseController
         return [];
     }
 
-    private function accessibleHeadquarterIds(): ?array
-    {
-        if (user()->hasRole('admin')) {
-            return null;
-        }
-
-        $headquarterId = optional(user()->employeeDetail)->headquarter_id;
-
-        if (!$headquarterId) {
-            return [];
-        }
-
-        return [$headquarterId];
-    }
+    // Removed duplicate accessibleHeadquarterIds() - now using AccessibleHeadquarters trait
 
     /**
      * Abort with 403 when the resolved permission does not grant any visibility.
      */
     private function authorizeNonNone(string $permission, ?string $message = null): string
     {
-        if (user()->hasRole('admin')) {
+        if (user()->hasAdminLikeAccess()) {
             return 'all';
         }
 
@@ -109,7 +100,7 @@ class PharmaAreaController extends AccountBaseController
      */
     private function authorizeAll(string $permission, ?string $message = null): string
     {
-        if (user()->hasRole('admin')) {
+        if (user()->hasAdminLikeAccess()) {
             return 'all';
         }
 
@@ -120,6 +111,22 @@ class PharmaAreaController extends AccountBaseController
         return $permissionType;
     }
 
+    /**
+     * Whether the current user has designation ABM or above (requirement 3.2.1: ABM & above can add/edit/delete Ex/Out-Station).
+     */
+    private function isABMOrAbove(): bool
+    {
+        if (user()->hasAdminLikeAccess() || user()->hasRole('hr') || user()->hasRole('pmt') || user()->hasRole('sales-manager')) {
+            return true;
+        }
+        $detail = user()->employeeDetail;
+        if (!$detail) {
+            return false;
+        }
+        $detail->loadMissing('designation');
+        return $detail->designation && PharmaDesignationHelper::isABMOrAbove($detail->designation);
+    }
+
     // HEADQUARTERS PAGE
     public function headquarters()
     {
@@ -128,25 +135,44 @@ class PharmaAreaController extends AccountBaseController
         $this->pageTitle = 'HeadQuarters';
         $headquarterScope = $this->accessibleHeadquarterIds();
 
-        $headquarterQuery = PharmaHeadquarter::with(['area', 'exstations', 'outstations']);
+        // Debug: Log the headquarter scope (remove in production)
+        // \Log::info('Headquarter Scope:', ['scope' => $headquarterScope, 'user' => user()->id, 'is_admin' => user()->hasAdminLikeAccess()]);
+
+        $headquarterQuery = PharmaHeadquarter::with(['area', 'exstations', 'outstations'])
+            ->where('company_id', company()->id);
 
         if ($headquarterScope !== null) {
+            // Non-admin user: filter by accessible headquarters
             if (empty($headquarterScope)) {
+                // User has no accessible headquarters - show empty list
                 $this->headquarters = collect();
                 $this->exstations = collect();
                 $this->outstations = collect();
+                $this->areas = PharmaArea::orderBy('name')->get();
+
                 return view('pharma-areas.headquarters', $this->data);
             }
 
             $headquarterQuery->whereIn('id', $headquarterScope);
         }
+        // If $headquarterScope is null, user is admin - show all headquarters
 
-        $this->headquarters = $headquarterQuery->get();
+        $areaFilter = request('area_id');
+        if ($areaFilter === 'unassigned') {
+            $headquarterQuery->whereNull('area_id');
+        } elseif ($areaFilter !== null && $areaFilter !== '' && is_numeric($areaFilter)) {
+            $headquarterQuery->where('area_id', (int) $areaFilter);
+        }
+
+        $this->headquarters = $headquarterQuery->orderBy('name')->get();
+        $this->areas = PharmaArea::orderBy('name')->get();
 
         if ($headquarterScope === null) {
-            $this->exstations = PharmaExstation::all();
-            $this->outstations = PharmaOutstation::all();
+            // Admin: show all ex-stations and out-stations
+            $this->exstations = PharmaExstation::where('company_id', company()->id)->get();
+            $this->outstations = PharmaOutstation::where('company_id', company()->id)->get();
         } else {
+            // Non-admin: show only stations linked to their accessible headquarters
             $this->exstations = $this->headquarters->flatMap->exstations->unique('id')->values();
             $this->outstations = $this->headquarters->flatMap->outstations->unique('id')->values();
         }
@@ -275,7 +301,23 @@ class PharmaAreaController extends AccountBaseController
         $this->authorizeNonNone('view_areas', $this->permissionDeniedMessage('View Areas'));
 
         $this->pageTitle = 'Create Area';
-        $this->areas = PharmaArea::all();
+        
+        // Get accessible area IDs for current user
+        $accessibleAreaIds = $this->accessibleAreaIds();
+        
+        if ($accessibleAreaIds === null) {
+            // Admin: show all areas
+            $this->areas = PharmaArea::where('company_id', company()->id)->get();
+        } elseif (empty($accessibleAreaIds)) {
+            // User has no accessible areas
+            $this->areas = collect();
+        } else {
+            // Non-admin: show only assigned areas
+            $this->areas = PharmaArea::where('company_id', company()->id)
+                ->whereIn('id', $accessibleAreaIds)
+                ->get();
+        }
+        
         return view('pharma-areas.areas', $this->data);
     }
 
@@ -296,13 +338,22 @@ class PharmaAreaController extends AccountBaseController
 
         $request->validate([
             'region_id' => 'required|exists:pharma_regions,id',
-            'area_ids' => 'required|array',
+            'area_ids' => 'nullable|array',
             'area_ids.*' => 'exists:pharma_areas,id',
         ]);
 
-        foreach ($request->area_ids as $areaId) {
+        $regionId = (int) $request->region_id;
+        $areaIds = $request->input('area_ids', []);
+
+        if ($areaIds === [] || $areaIds === null) {
+            PharmaArea::where('region_id', $regionId)->update(['region_id' => null]);
+
+            return Reply::success(__('Areas assigned successfully'));
+        }
+
+        foreach ($areaIds as $areaId) {
             $area = PharmaArea::findOrFail($areaId);
-            $area->update(['region_id' => $request->region_id]);
+            $area->update(['region_id' => $regionId]);
         }
 
         return Reply::success(__('Areas assigned successfully'));
@@ -314,7 +365,11 @@ class PharmaAreaController extends AccountBaseController
         $this->authorizeNonNone('view_regions', $this->permissionDeniedMessage('View Regions'));
 
         $this->pageTitle = 'Create Region';
-        $this->regions = PharmaRegion::all();
+        $this->regions = PharmaRegion::with([
+            'areas.headquarters.exstations',
+            'areas.headquarters.outstations',
+        ])->orderBy('name')->get();
+
         return view('pharma-areas.regions', $this->data);
     }
 
@@ -426,6 +481,70 @@ class PharmaAreaController extends AccountBaseController
         return view('pharma-areas.overview', $this->data);
     }
 
+    /**
+     * Admin-only: interactive flowchart of Zone → Region → Area → HQ → Ex/Out stations.
+     */
+    public function masterAreaMap()
+    {
+        abort_403(! user()->hasAdminLikeAccess(), __('messages.permissionDenied'));
+
+        $this->pageTitle = 'Master Area Map';
+        $company = company();
+        abort_if($company === null, 403, __('messages.permissionDenied'));
+
+        $builder = new MasterAreaMapGraphBuilder(
+            (int) $company->id,
+            (string) ($company->company_name ?? 'Company')
+        );
+        $graph = $builder->build();
+        $this->graphStats = $graph['stats'];
+
+        $visNodes = array_map(static function (array $n) {
+            return [
+                'id' => $n['id'],
+                'label' => $n['label'],
+                'group' => $n['group'],
+                'title' => $n['title'],
+            ];
+        }, $graph['nodes']);
+
+        $this->masterAreaMapClient = [
+            'visNodes' => $visNodes,
+            'visEdges' => $graph['edges'],
+            'nodesMeta' => $graph['nodesMeta'],
+            'graphStats' => $graph['stats'],
+            'manageLinks' => [
+                'root' => ['label' => 'Pharma areas overview', 'url' => route('pharma-areas.overview')],
+                'zone' => ['label' => 'Zones', 'url' => route('pharma-areas.zones')],
+                'region' => ['label' => 'Regions', 'url' => route('pharma-areas.regions')],
+                'area' => ['label' => 'Areas', 'url' => route('pharma-areas.areas')],
+                'headquarter' => ['label' => 'Headquarters', 'url' => route('pharma-areas.headquarters')],
+                'exstation' => ['label' => 'Ex-stations', 'url' => route('pharma-areas.exstations')],
+                'outstation' => ['label' => 'Out-stations', 'url' => route('pharma-areas.outstations')],
+                'bucket' => ['label' => 'Assign regions / areas / HQ', 'url' => route('pharma-areas.assign-headquarters')],
+            ],
+            'groups' => [
+                'root' => [
+                    'color' => [
+                        'background' => '#5c4d7a',
+                        'border' => '#3d3355',
+                        'highlight' => ['background' => '#7a6a9a', 'border' => '#3d3355'],
+                    ],
+                    'font' => ['color' => '#fff', 'size' => 18, 'face' => 'system-ui, Segoe UI, sans-serif'],
+                ],
+                'zone' => ['color' => ['background' => '#6f42c1', 'border' => '#4a2d8a'], 'font' => ['color' => '#fff', 'size' => 16, 'face' => 'system-ui, Segoe UI, sans-serif']],
+                'bucket' => ['color' => ['background' => '#e83e8c', 'border' => '#bd2130'], 'font' => ['color' => '#fff', 'size' => 15, 'face' => 'system-ui, Segoe UI, sans-serif']],
+                'region' => ['color' => ['background' => '#0d6efd', 'border' => '#084298'], 'font' => ['color' => '#fff', 'size' => 15, 'face' => 'system-ui, Segoe UI, sans-serif']],
+                'area' => ['color' => ['background' => '#198754', 'border' => '#146c43'], 'font' => ['color' => '#fff', 'size' => 15, 'face' => 'system-ui, Segoe UI, sans-serif']],
+                'headquarter' => ['color' => ['background' => '#8bab4c', 'border' => '#6d8a3c'], 'font' => ['color' => '#fff', 'size' => 14, 'face' => 'system-ui, Segoe UI, sans-serif']],
+                'exstation' => ['color' => ['background' => '#17a2b8', 'border' => '#117a8b'], 'font' => ['color' => '#fff', 'size' => 13, 'face' => 'system-ui, Segoe UI, sans-serif']],
+                'outstation' => ['color' => ['background' => '#fd7e14', 'border' => '#e8590c'], 'font' => ['color' => '#fff', 'size' => 13, 'face' => 'system-ui, Segoe UI, sans-serif']],
+            ],
+        ];
+
+        return view('pharma-areas.master-area-map', $this->data);
+    }
+
     // STORE METHODS
     // Zones
     public function storeZone(Request $request)
@@ -444,7 +563,7 @@ class PharmaAreaController extends AccountBaseController
 
     public function updateZone(Request $request, $id)
     {
-        $this->authorizeNonNone('edit_zones', $this->permissionDeniedMessage('Edit Zones'));
+        $this->authorizeAll('edit_zones', $this->permissionDeniedMessage('Edit Zones'));
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -456,7 +575,7 @@ class PharmaAreaController extends AccountBaseController
 
     public function destroyZone($id)
     {
-        $this->authorizeNonNone('delete_zones', $this->permissionDeniedMessage('Delete Zones'));
+        $this->authorizeAll('delete_zones', $this->permissionDeniedMessage('Delete Zones'));
 
         PharmaZone::findOrFail($id)->delete();
         return Reply::success(__('messages.deleteSuccess'));
@@ -465,7 +584,7 @@ class PharmaAreaController extends AccountBaseController
     // Regions
     public function updateRegion(Request $request, $id)
     {
-        $this->authorizeNonNone('edit_regions', $this->permissionDeniedMessage('Edit Regions'));
+        $this->authorizeAll('edit_regions', $this->permissionDeniedMessage('Edit Regions'));
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -477,7 +596,7 @@ class PharmaAreaController extends AccountBaseController
 
     public function destroyRegion($id)
     {
-        $this->authorizeNonNone('delete_regions', $this->permissionDeniedMessage('Delete Regions'));
+        $this->authorizeAll('delete_regions', $this->permissionDeniedMessage('Delete Regions'));
 
         PharmaRegion::findOrFail($id)->delete();
         return Reply::success(__('messages.deleteSuccess'));
@@ -513,7 +632,7 @@ class PharmaAreaController extends AccountBaseController
 
     public function updateArea(Request $request, $id)
     {
-        $this->authorizeNonNone('edit_areas', $this->permissionDeniedMessage('Edit Areas'));
+        $this->authorizeAll('edit_areas', $this->permissionDeniedMessage('Edit Areas'));
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -525,7 +644,7 @@ class PharmaAreaController extends AccountBaseController
 
     public function destroyArea($id)
     {
-        $this->authorizeNonNone('delete_areas', $this->permissionDeniedMessage('Delete Areas'));
+        $this->authorizeAll('delete_areas', $this->permissionDeniedMessage('Delete Areas'));
 
         PharmaArea::findOrFail($id)->delete();
         return Reply::success(__('messages.deleteSuccess'));
@@ -534,7 +653,7 @@ class PharmaAreaController extends AccountBaseController
     // Headquarters
     public function destroyHeadquarter($id)
     {
-        $this->authorizeNonNone('delete_headquarters', $this->permissionDeniedMessage('Delete Headquarters'));
+        $this->authorizeAll('delete_headquarters', $this->permissionDeniedMessage('Delete Headquarters'));
 
         PharmaHeadquarter::findOrFail($id)->delete();
         return Reply::success(__('HeadQuarter deleted successfully'));
@@ -542,7 +661,7 @@ class PharmaAreaController extends AccountBaseController
 
     public function updateHeadquarter(Request $request, $id)
     {
-        $this->authorizeNonNone('edit_headquarters', $this->permissionDeniedMessage('Edit Headquarters'));
+        $this->authorizeAll('edit_headquarters', $this->permissionDeniedMessage('Edit Headquarters'));
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -573,7 +692,9 @@ class PharmaAreaController extends AccountBaseController
     // Ex-stations
     public function storeExstation(Request $request)
     {
-        $this->authorizeAll('add_exstations', $this->permissionDeniedMessage('Add Ex-Stations'));
+        if (!$this->isABMOrAbove()) {
+            $this->authorizeAll('add_exstations', $this->permissionDeniedMessage('Add Ex-Stations'));
+        }
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -587,7 +708,9 @@ class PharmaAreaController extends AccountBaseController
 
     public function updateExstation(Request $request, $id)
     {
-        $this->authorizeNonNone('edit_exstations', $this->permissionDeniedMessage('Edit Ex-Stations'));
+        if (!$this->isABMOrAbove()) {
+            $this->authorizeNonNone('edit_exstations', $this->permissionDeniedMessage('Edit Ex-Stations'));
+        }
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -599,7 +722,9 @@ class PharmaAreaController extends AccountBaseController
 
     public function destroyExstation($id)
     {
-        $this->authorizeNonNone('delete_exstations', $this->permissionDeniedMessage('Delete Ex-Stations'));
+        if (!$this->isABMOrAbove()) {
+            $this->authorizeNonNone('delete_exstations', $this->permissionDeniedMessage('Delete Ex-Stations'));
+        }
 
         PharmaExstation::findOrFail($id)->delete();
         return Reply::success(__('messages.deleteSuccess'));
@@ -608,7 +733,9 @@ class PharmaAreaController extends AccountBaseController
     // Out-stations
     public function storeOutstation(Request $request)
     {
-        $this->authorizeAll('add_outstations', $this->permissionDeniedMessage('Add Out-Stations'));
+        if (!$this->isABMOrAbove()) {
+            $this->authorizeAll('add_outstations', $this->permissionDeniedMessage('Add Out-Stations'));
+        }
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -622,7 +749,9 @@ class PharmaAreaController extends AccountBaseController
 
     public function updateOutstation(Request $request, $id)
     {
-        $this->authorizeNonNone('edit_outstations', $this->permissionDeniedMessage('Edit Out-Stations'));
+        if (!$this->isABMOrAbove()) {
+            $this->authorizeNonNone('edit_outstations', $this->permissionDeniedMessage('Edit Out-Stations'));
+        }
 
         $request->validate(['name' => 'required|string|max:255']);
         
@@ -634,7 +763,9 @@ class PharmaAreaController extends AccountBaseController
 
     public function destroyOutstation($id)
     {
-        $this->authorizeNonNone('delete_outstations', $this->permissionDeniedMessage('Delete Out-Stations'));
+        if (!$this->isABMOrAbove()) {
+            $this->authorizeNonNone('delete_outstations', $this->permissionDeniedMessage('Delete Out-Stations'));
+        }
 
         PharmaOutstation::findOrFail($id)->delete();
         return Reply::success(__('messages.deleteSuccess'));

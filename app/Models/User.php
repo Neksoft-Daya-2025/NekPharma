@@ -27,8 +27,10 @@ use IvanoMatteo\LaravelDeviceTracking\Traits\UseDevices;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 use Laravel\Fortify\TwoFactorAuthenticationProvider;
 use Trebol\Entrust\Traits\EntrustUserTrait;
+use App\Helper\Files;
 use App\Helper\UserService;
 use App\Models\EmployeeDocumentExpiry;
+use App\Models\StorageSetting;
 
 /**
  * App\Models\User
@@ -282,16 +284,37 @@ class User extends BaseModel implements AuthenticatableContract, AuthorizableCon
 
     public function getImageUrlAttribute()
     {
-        $gravatarHash = !is_null($this->email) ? md5(strtolower(trim($this->email))) : md5($this->id);
+        if (!$this->image) {
+            return asset('img/gravatar.png');
+        }
 
-        return ($this->image) ? asset_url_local_s3('avatar/' . $this->image) : asset('img/gravatar.png');
+        $avatarRelative = 'avatar/' . $this->image;
+        if (!in_array(config('filesystems.default'), StorageSetting::S3_COMPATIBLE_STORAGE, true)) {
+            $localPath = public_path(Files::UPLOAD_FOLDER . '/' . $avatarRelative);
+            if (!is_file($localPath)) {
+                return asset('img/gravatar.png');
+            }
+        }
+
+        return asset_url_local_s3($avatarRelative);
     }
 
     public function maskedImageUrl(): Attribute
     {
         return Attribute::make(
             get: function () {
-                return ($this->image) ? $this->generateMaskedImageAppUrl('avatar/' . $this->image) : asset('img/gravatar.png');
+                if (!$this->image) {
+                    return asset('img/gravatar.png');
+                }
+                $avatarRelative = 'avatar/' . $this->image;
+                if (!in_array(config('filesystems.default'), StorageSetting::S3_COMPATIBLE_STORAGE, true)) {
+                    $localPath = public_path(Files::UPLOAD_FOLDER . '/' . $avatarRelative);
+                    if (!is_file($localPath)) {
+                        return asset('img/gravatar.png');
+                    }
+                }
+
+                return $this->generateMaskedImageAppUrl($avatarRelative);
             },
         );
 
@@ -666,7 +689,21 @@ class User extends BaseModel implements AuthenticatableContract, AuthorizableCon
         $users = User::withRole('employee')
             ->join('employee_details', 'employee_details.user_id', '=', 'users.id')
             ->leftJoin('designations', 'employee_details.designation_id', '=', 'designations.id')
-            ->select('users.id', 'users.company_id', 'users.name', 'users.email', 'users.created_at', 'users.image', 'designations.name as designation_name', 'users.email_notifications', 'users.mobile', 'users.country_id', 'users.status', 'users.last_activity');
+            ->select(
+                'users.id',
+                'users.company_id',
+                'users.name',
+                'users.email',
+                'users.created_at',
+                'users.image',
+                'designations.name as designation_name',
+                'employee_details.employee_id as employee_id',
+                'users.email_notifications',
+                'users.mobile',
+                'users.country_id',
+                'users.status',
+                'users.last_activity'
+            );
 
         if (!is_null($exceptId)) {
             if (is_array($exceptId)) {
@@ -844,6 +881,14 @@ class User extends BaseModel implements AuthenticatableContract, AuthorizableCon
         return false;
     }
 
+    /**
+     * Admin or Senior Manager PMT: same technical bypass as admin for field/tours/DCR/areas (HR remains gated by permissions).
+     */
+    public function hasAdminLikeAccess(): bool
+    {
+        return $this->hasRole('admin') || $this->hasRole('senior-manager-pmt');
+    }
+
     public function getModulesAttribute()
     {
         return user_modules();
@@ -862,6 +907,15 @@ class User extends BaseModel implements AuthenticatableContract, AuthorizableCon
     public function employeeDetails(): HasOne
     {
         return $this->hasOne(EmployeeDetails::class);
+    }
+
+    /**
+     * SRS 3.1.3: Field employees have attendance marked only via DCR Close Day; no manual clock-in/out.
+     */
+    public function isFieldEmployee(): bool
+    {
+        $detail = $this->employeeDetail ?? $this->employeeDetails;
+        return $detail && $detail->attendance_source === 'field';
     }
 
     public function getUnreadNotificationsAttribute()

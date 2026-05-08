@@ -1,115 +1,131 @@
 @extends('layouts.app')
 
 @section('filter-section')
-    @php
-        $headquarterOptions = $headquarters ?? collect();
-        $headquarterStationsMap = $headquarterStations ?? [];
-        $defaultHeadquarterId = $defaultHeadquarterId ?? null;
-        $selectedHeadquarter = request('headquarter_id', $defaultHeadquarterId ?? 'all');
-        $selectedStation = request('station', 'all');
-    @endphp
-
-    <x-filters.filter-box>
-        <!-- SEARCH START -->
-        <div class="task-search d-flex py-1 px-lg-3 px-0 border-right-grey align-items-center">
-            <form class="w-100 mr-1 mr-lg-0 mr-md-1 ml-md-1 ml-0 ml-lg-0">
-                <div class="input-group bg-grey rounded">
-                    <div class="input-group-prepend">
-                        <span class="input-group-text border-0 bg-additional-grey">
-                            <i class="fa fa-search f-13 text-dark-grey"></i>
-                        </span>
-                    </div>
-                    <input type="text" class="form-control f-14 p-1 border-additional-grey" id="search-text-field"
-                           placeholder="@lang('app.startTyping')">
-                </div>
-            </form>
-        </div>
-        <!-- SEARCH END -->
-
-        <!-- HEADQUARTER FILTER START -->
-        <div class="select-box d-flex py-1 px-lg-2 px-md-2 px-0 border-right-grey">
-            <div class="select-status mr-3 pl-3">
-                <select class="form-control select-picker" name="headquarter_id" id="headquarter_filter" data-live-search="true">
-                    <option value="all" @selected($selectedHeadquarter === 'all' || $selectedHeadquarter === null)>All Headquarters</option>
-                    @foreach($headquarterOptions as $hq)
-                        <option value="{{ $hq->id }}" @selected((string) $selectedHeadquarter === (string) $hq->id)>
-                            {{ $hq->name }}
-                        </option>
-                    @endforeach
-                </select>
-            </div>
-        </div>
-        <!-- HEADQUARTER FILTER END -->
-
-        <!-- STATION FILTER START (Shows after HQ selected) -->
-        <div class="select-box d-flex py-1 px-lg-2 px-md-2 px-0 border-right-grey" id="station_filter_box" style="display: none;">
-            <div class="select-status mr-3 pl-3">
-                <select class="form-control select-picker" name="station" id="station_filter" data-live-search="true">
-                    <option value="all">All Stations</option>
-                    <!-- Options will be loaded dynamically -->
-                </select>
-            </div>
-        </div>
-        <!-- STATION FILTER END -->
-
-        <!-- RESET START -->
-        <div class="select-box d-flex py-1 px-lg-2 px-md-2 px-0">
-            <x-forms.button-secondary class="btn-xs" id="reset-filters" icon="times-circle">
-                @lang('app.clearFilters')
-            </x-forms.button-secondary>
-        </div>
-        <!-- RESET END -->
-    </x-filters.filter-box>
 @endsection
+
+@php
+$addStockistPermission = user()->permission('add_stockists');
+$editStockistPermission = user()->permission('edit_stockists');
+$accessibleHqCount = ($headquarters ?? collect())->count();
+// Non-admin users with exactly one accessible HQ shouldn't see an "All Headquarters" option —
+// it is misleading and implies access they don't have.
+$canSeeAllHqOption = user()->hasAdminLikeAccess() || $accessibleHqCount > 1;
+$fallbackHqSelection = $canSeeAllHqOption ? 'all' : (string) optional(($headquarters ?? collect())->first())->id;
+$selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? $fallbackHqSelection);
+@endphp
 
 @section('content')
     <div class="content-wrapper">
+        @if(session('success'))
+            <div class="alert alert-success alert-dismissible fade show mt-3" role="alert">
+                {{ session('success') }}
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            </div>
+        @endif
         <div class="d-lg-flex d-md-flex d-block justify-content-between action-bar">
             <div id="table-actions" class="flex-grow-1 align-items-center">
-                @if(user()->permission('add_stockists') == 'all' || user()->permission('add_stockists') == 'added')
+                @if ($addStockistPermission == 'all' || $addStockistPermission == 'added')
                     <x-forms.link-primary :link="route('stockists.create')" class="mr-3 openRightModal" icon="plus">
                         @lang('app.add') Stockist
                     </x-forms.link-primary>
-                    <x-forms.link-primary :link="route('stockists.import')" class="mr-3 openRightModal" icon="upload">
+                    <x-forms.link-secondary :link="route('stockists.import')" class="mr-3 openRightModal" icon="upload">
                         @lang('app.importExcel')
+                    </x-forms.link-secondary>
+                @endif
+                @if($editStockistPermission == 'all' || $editStockistPermission == 'added')
+                    <x-forms.link-primary :link="route('stockists.merge-duplicates')" class="mr-3" icon="compress">
+                        Merge duplicates
                     </x-forms.link-primary>
                 @endif
             </div>
         </div>
 
         <div class="d-flex flex-column w-tables rounded mt-3 bg-white">
-            <x-table class="table-hover border-0 w-100" headType="thead-light">
+            <div class="stockists-inline-filters border-bottom px-3 py-3 bg-additional-grey">
+                <div class="row align-items-end">
+                    <div class="col-lg-3 col-md-6 mb-2 mb-lg-0">
+                        <label for="stockists-inline-search" class="f-12 text-dark-grey mb-1 d-block text-capitalize">@lang('app.search')</label>
+                        <div class="input-group input-group-sm">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text border bg-white"><i class="fa fa-search f-12 text-muted"></i></span>
+                            </div>
+                            <input type="text" class="form-control height-35 f-14" id="stockists-inline-search"
+                                   placeholder="@lang('app.name'), shop, mobile…" autocomplete="off" aria-label="@lang('app.search')">
+                        </div>
+                    </div>
+                    <div class="col-lg-2 col-md-6 mb-2 mb-lg-0">
+                        <label for="stockists-filter-headquarter" class="f-12 text-dark-grey mb-1 d-block">Headquarter</label>
+                        <select class="form-control select-picker height-35 f-14" id="stockists-filter-headquarter" data-live-search="true" title="All" @if(!$canSeeAllHqOption) disabled @endif>
+                            @if($canSeeAllHqOption)
+                                <option value="all" @selected((string)($selectedHeadquarterInline ?? 'all') === 'all' || ($selectedHeadquarterInline ?? null) === null)>@lang('app.all') Headquarters</option>
+                            @endif
+                            @foreach(($headquarters ?? collect()) as $hq)
+                                <option value="{{ $hq->id }}" @selected((string)($selectedHeadquarterInline ?? '') === (string) $hq->id)>{{ $hq->name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-lg-2 col-md-6 mb-2 mb-lg-0">
+                        <label for="stockists-filter-area" class="f-12 text-dark-grey mb-1 d-block">Area</label>
+                        <select class="form-control select-picker height-35 f-14" id="stockists-filter-area" data-live-search="true" title="All">
+                            <option value="">@lang('app.all')</option>
+                            @foreach(($areaOptions ?? collect()) as $a)
+                                <option value="{{ $a }}">{{ $a }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-lg-2 col-md-6 mb-2 mb-lg-0">
+                        <label for="stockists-filter-gender" class="f-12 text-dark-grey mb-1 d-block">@lang('app.gender')</label>
+                        <select class="form-control select-picker height-35 f-14" id="stockists-filter-gender" data-live-search="true" title="All">
+                            <option value="">@lang('app.all')</option>
+                            @foreach(($genderOptions ?? collect()) as $g)
+                                <option value="{{ $g }}">{{ ucfirst($g) }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <x-forms.button-secondary class="btn-sm height-35" id="stockists-inline-filters-clear" type="button" icon="times-circle">
+                            @lang('app.clearFilters')
+                        </x-forms.button-secondary>
+                    </div>
+                </div>
+                <small class="text-muted d-block mt-2 mb-0">Filters apply to the stockists listed below.</small>
+            </div>
+            <div class="stockists-table-scroll">
+            <x-table class="table-hover border-0 w-100" headType="thead-light" id="stockists-table">
                 <x-slot name="thead">
                     <th>#</th>
                     <th>Shop Name</th>
                     <th>@lang('app.name')</th>
                     <th>@lang('app.mobile')</th>
+                    <th>Area</th>
                     <th>Headquarter</th>
                     <th class="text-right pr-20">@lang('app.action')</th>
                 </x-slot>
 
                 @forelse($stockists as $key => $stockist)
-                    <tr id="row-{{ $stockist->id }}">
+                    @php
+                        $areaDisplay = optional($stockist->area)->name ?? trim((string) ($stockist->getRawOriginal('area') ?? ''));
+                        $headquarterName = null;
+                        if ($stockist->relationLoaded('headquarter') && $stockist->headquarter) {
+                            $headquarterName = $stockist->headquarter->name ?? null;
+                        }
+                        if (!$headquarterName) {
+                            $headquarterName = $stockist->getRawOriginal('headquarter') ?? null;
+                        }
+                        if (!$headquarterName && $stockist->getAttribute('headquarter') && !is_object($stockist->getAttribute('headquarter'))) {
+                            $headquarterName = $stockist->getAttribute('headquarter');
+                        }
+                    @endphp
+                    <tr id="row-{{ $stockist->id }}"
+                        data-headquarter-id="{{ $stockist->headquarter_id ?? '' }}"
+                        data-area="{{ \Illuminate\Support\Str::lower($areaDisplay) }}"
+                        data-gender="{{ \Illuminate\Support\Str::lower(trim($stockist->gender ?? '')) }}">
                         <td>{{ $key + 1 }}</td>
                         <td><strong>{{ $stockist->shopname ?? '--' }}</strong></td>
                         <td>{{ $stockist->fullname ?? ($stockist->getAttribute('fullname') ?? '--') }}</td>
                         <td>{{ $stockist->mobile ?? ($stockist->getAttribute('mobile') ?? '--') }}</td>
+                        <td>{{ $areaDisplay !== '' ? $areaDisplay : '—' }}</td>
                         <td>
-                            @php
-                                $headquarterName = null;
-                                // Check if headquarter relationship is loaded and has name
-                                if ($stockist->relationLoaded('headquarter') && $stockist->headquarter) {
-                                    $headquarterName = $stockist->headquarter->name ?? null;
-                                }
-                                // Fallback to string column if relationship doesn't exist
-                                if (!$headquarterName) {
-                                    $headquarterName = $stockist->getRawOriginal('headquarter') ?? null;
-                                }
-                                // Final fallback - try to get from attributes
-                                if (!$headquarterName && $stockist->getAttribute('headquarter') && !is_object($stockist->getAttribute('headquarter'))) {
-                                    $headquarterName = $stockist->getAttribute('headquarter');
-                                }
-                            @endphp
                             {{ $headquarterName ?? '--' }}
                         </td>
                         <td class="text-right pr-20">
@@ -131,113 +147,69 @@
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="6" class="text-center">
+                        <td colspan="7" class="text-center">
                             <x-cards.no-record icon="building" message="No stockists found" />
                         </td>
                     </tr>
                 @endforelse
             </x-table>
+            </div>
+            @if($stockists->isNotEmpty())
+                <div class="d-flex justify-content-between align-items-center mt-3 px-3 pb-3">
+                    <div class="text-muted">
+                        {{ $stockists->count() }} stockist(s) total
+                    </div>
+                </div>
+            @endif
         </div>
     </div>
 @endsection
 
 @push('scripts')
 <script>
-    const headquarterStations = @json($headquarterStationsMap ?? []);
-    const selectedHeadquarter = @json($selectedHeadquarter);
-    const selectedStation = @json($selectedStation);
+    function applyStockistsTableFilters() {
+        const search = ($('#stockists-inline-search').val() || '').toLowerCase().trim();
+        const hq = $('#stockists-filter-headquarter').val() || 'all';
+        const area = ($('#stockists-filter-area').val() || '').toLowerCase().trim();
+        const gender = ($('#stockists-filter-gender').val() || '').toLowerCase().trim();
 
-    const getHeadquarterData = (hqId) => {
-        if (!hqId || !headquarterStations) {
-            return { exstations: [], outstations: [] };
-        }
-
-        return headquarterStations[hqId] || headquarterStations[String(hqId)] || { exstations: [], outstations: [] };
-    };
-
-    const populateStationFilter = (hqId, stationValue = 'all') => {
-        const $stationFilter = $('#station_filter');
-        const data = getHeadquarterData(hqId);
-
-        $stationFilter.empty();
-        $stationFilter.append('<option value="all">All Stations</option>');
-
-        if (hqId && hqId !== 'all') {
-            $stationFilter.append('<option value="hq">Headquarter</option>');
-
-            if (data.exstations && data.exstations.length) {
-                data.exstations.forEach(station => {
-                    $stationFilter.append(`<option value="ex-${station.id}">${station.name} (Ex-Station)</option>`);
-                });
+        $('#stockists-table tbody tr').each(function() {
+            const $row = $(this);
+            if ($row.find('td[colspan]').length) {
+                return;
             }
-
-            if (data.outstations && data.outstations.length) {
-                data.outstations.forEach(station => {
-                    $stationFilter.append(`<option value="out-${station.id}">${station.name} (Out-Station)</option>`);
-                });
-            }
-        }
-
-        $stationFilter.val(stationValue);
-        $stationFilter.selectpicker('refresh');
-    };
-
-    const updateStationFilterVisibility = (hqId, stationValue = 'all') => {
-        if (hqId && hqId !== 'all') {
-            $('#station_filter_box').show();
-            populateStationFilter(hqId, stationValue);
-        } else {
-            $('#station_filter_box').hide();
-            $('#station_filter').empty().selectpicker('refresh');
-        }
-    };
-
-    const applyFilters = () => {
-        const headquarterId = $('#headquarter_filter').val();
-        const station = $('#station_filter').val();
-        let url = "{{ route('stockists.index') }}";
-        const params = [];
-
-        if (headquarterId && headquarterId !== 'all') {
-            params.push('headquarter_id=' + headquarterId);
-
-            if (station && station !== 'all') {
-                params.push('station=' + station);
-            }
-        }
-
-        if (params.length > 0) {
-            url += '?' + params.join('&');
-        }
-
-        window.location.href = url;
-    };
-
-    $('#headquarter_filter').on('change', function() {
-        const headquarterId = $(this).val();
-
-        if (headquarterId && headquarterId !== 'all') {
-            updateStationFilterVisibility(headquarterId);
-            applyFilters();
-        } else {
-            window.location.href = "{{ route('stockists.index') }}";
-        }
-    });
-
-    $('#station_filter').on('change', function() {
-        applyFilters();
-    });
-
-    $('#reset-filters').on('click', function() {
-        window.location.href = "{{ route('stockists.index') }}";
-    });
-
-    if (selectedHeadquarter && selectedHeadquarter !== 'all') {
-        $('#headquarter_filter').val(selectedHeadquarter).selectpicker('refresh');
-        updateStationFilterVisibility(selectedHeadquarter, selectedStation);
-    } else {
-        $('#station_filter_box').hide();
+            const text = $row.text().toLowerCase();
+            const matchSearch = !search || text.indexOf(search) > -1;
+            const rowHq = String($row.attr('data-headquarter-id') || '');
+            const matchHq = hq === 'all' || rowHq === String(hq);
+            const rowArea = String($row.attr('data-area') || '');
+            const matchArea = !area || rowArea === area;
+            const rowGender = String($row.attr('data-gender') || '');
+            const matchGender = !gender || rowGender === gender;
+            $row.toggle(matchSearch && matchHq && matchArea && matchGender);
+        });
     }
+
+    $('#stockists-inline-search').on('keyup input', function() {
+        applyStockistsTableFilters();
+    });
+    $('#stockists-filter-headquarter, #stockists-filter-area, #stockists-filter-gender').on('changed.bs.select', function() {
+        applyStockistsTableFilters();
+    });
+    $('#stockists-inline-filters-clear').on('click', function() {
+        $('#stockists-inline-search').val('');
+        $('#stockists-filter-headquarter').val(@json($canSeeAllHqOption ? 'all' : (string) ($selectedHeadquarterInline ?? '')));
+        $('#stockists-filter-area, #stockists-filter-gender').val('');
+        if (typeof $.fn.selectpicker === 'function') {
+            $('.stockists-inline-filters .select-picker').each(function() {
+                var $el = $(this);
+                if ($el.data('selectpicker')) {
+                    $el.selectpicker('refresh');
+                }
+            });
+        }
+        applyStockistsTableFilters();
+    });
 
     $('body').on('click', '.delete-row', function() {
         var id = $(this).data('id');
@@ -260,12 +232,17 @@
         });
     });
 
-    $('#search-text-field').on('keyup', function() {
-        var value = $(this).val().toLowerCase();
-        $('table tbody tr').filter(function() {
-            $(this).toggle($(this).text().toLowerCase().indexOf(value) > -1)
+    if (typeof $.fn.selectpicker === 'function') {
+        $('.stockists-inline-filters .select-picker').each(function() {
+            var $el = $(this);
+            if (!$el.data('selectpicker')) {
+                $el.selectpicker();
+            } else {
+                $el.selectpicker('refresh');
+            }
         });
-    });
+    }
+    applyStockistsTableFilters();
 </script>
 @endpush
 

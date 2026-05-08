@@ -1,73 +1,28 @@
 @extends('layouts.app')
 
+{{-- Top #filter-form / client-list-filter strip hidden: filters live in content (inline bar + table) --}}
 @section('filter-section')
-    @php
-        $headquarterOptions = $headquarters ?? collect();
-        $headquarterStationsMap = $headquarterStations ?? [];
-        $defaultHeadquarterId = $defaultHeadquarterId ?? null;
-        $selectedHeadquarter = request('headquarter_id', $defaultHeadquarterId ?? 'all');
-        $selectedStation = request('station', 'all');
-    @endphp
-
-    <x-filters.filter-box>
-        <!-- SEARCH START -->
-        <div class="task-search d-flex py-1 px-lg-3 px-0 border-right-grey align-items-center">
-            <form class="w-100 mr-1 mr-lg-0 mr-md-1 ml-md-1 ml-0 ml-lg-0">
-                <div class="input-group bg-grey rounded">
-                    <div class="input-group-prepend">
-                        <span class="input-group-text border-0 bg-additional-grey">
-                            <i class="fa fa-search f-13 text-dark-grey"></i>
-                        </span>
-                    </div>
-                    <input type="text" class="form-control f-14 p-1 border-additional-grey" id="search-text-field"
-                           placeholder="@lang('app.startTyping')">
-                </div>
-            </form>
-        </div>
-        <!-- SEARCH END -->
-
-        <!-- HEADQUARTER FILTER START -->
-        <div class="select-box d-flex py-1 px-lg-2 px-md-2 px-0 border-right-grey">
-            <div class="select-status mr-3 pl-3">
-                <select class="form-control select-picker" name="headquarter_id" id="headquarter_filter" data-live-search="true">
-                    <option value="all" @selected($selectedHeadquarter === 'all' || $selectedHeadquarter === null)>All Headquarters</option>
-                    @foreach($headquarterOptions as $hq)
-                        <option value="{{ $hq->id }}" @selected((string) $selectedHeadquarter === (string) $hq->id)>
-                            {{ $hq->name }}
-                        </option>
-                    @endforeach
-                </select>
-            </div>
-        </div>
-        <!-- HEADQUARTER FILTER END -->
-
-        <!-- STATION FILTER START (Shows after HQ selected) -->
-        <div class="select-box d-flex py-1 px-lg-2 px-md-2 px-0 border-right-grey" id="station_filter_box" style="display: none;">
-            <div class="select-status mr-3 pl-3">
-                <select class="form-control select-picker" name="station" id="station_filter" data-live-search="true">
-                    <option value="all">All Stations</option>
-                    <!-- Options will be loaded dynamically -->
-                </select>
-            </div>
-        </div>
-        <!-- STATION FILTER END -->
-
-        <!-- RESET START -->
-        <div class="select-box d-flex py-1 px-lg-2 px-md-2 px-0">
-            <x-forms.button-secondary class="btn-xs" id="reset-filters" icon="times-circle">
-                @lang('app.clearFilters')
-            </x-forms.button-secondary>
-        </div>
-        <!-- RESET END -->
-    </x-filters.filter-box>
 @endsection
 
 @php
 $addDoctorPermission = user()->permission('add_doctors');
+$editDoctorPermission = user()->permission('edit_doctors');
+$accessibleHqCount = ($headquarters ?? collect())->count();
+// If the user is non-admin and has exactly one accessible HQ, default-select that HQ
+// instead of "all", so the dropdown reflects the user's real access scope.
+$canSeeAllHqOption = user()->hasAdminLikeAccess() || $accessibleHqCount > 1;
+$fallbackHqSelection = $canSeeAllHqOption ? 'all' : (string) optional(($headquarters ?? collect())->first())->id;
+$selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? $fallbackHqSelection);
 @endphp
 
 @section('content')
     <div class="content-wrapper">
+        @if(session('success'))
+            <div class="alert alert-success alert-dismissible fade show mt-3" role="alert">
+                {{ session('success') }}
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            </div>
+        @endif
         <div class="d-lg-flex d-md-flex d-block justify-content-between action-bar">
             <div id="table-actions" class="flex-grow-1 align-items-center">
                 @if ($addDoctorPermission == 'all' || $addDoctorPermission == 'added')
@@ -77,12 +32,71 @@ $addDoctorPermission = user()->permission('add_doctors');
                     <x-forms.link-secondary :link="route('doctors.import')" class="mr-3 openRightModal" icon="upload">
                         @lang('app.importExcel')
                     </x-forms.link-secondary>
+
+                    <x-forms.link-secondary :link="route('import-history.index')" class="mr-3" icon="file-earmark-text">
+                        Import History
+                    </x-forms.link-secondary>
+                @endif
+                @if($editDoctorPermission == 'all' || $editDoctorPermission == 'added')
+                    <x-forms.link-primary :link="route('doctors.merge-duplicates')" class="mr-3" icon="compress">
+                        Merge duplicates
+                    </x-forms.link-primary>
                 @endif
             </div>
         </div>
 
         <div class="d-flex flex-column w-tables rounded mt-3 bg-white">
-            <x-table class="table-hover border-0 w-100" headType="thead-light">
+            <div class="doctors-inline-filters border-bottom px-3 py-3 bg-additional-grey">
+                <div class="row align-items-end">
+                    <div class="col-lg-3 col-md-6 mb-2 mb-lg-0">
+                        <label for="doctors-inline-search" class="f-12 text-dark-grey mb-1 d-block text-capitalize">@lang('app.search')</label>
+                        <div class="input-group input-group-sm">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text border bg-white"><i class="fa fa-search f-12 text-muted"></i></span>
+                            </div>
+                            <input type="text" class="form-control height-35 f-14" id="doctors-inline-search"
+                                   placeholder="@lang('app.name'), email, mobile…" autocomplete="off" aria-label="@lang('app.search')">
+                        </div>
+                    </div>
+                    <div class="col-lg-2 col-md-6 mb-2 mb-lg-0">
+                        <label for="doctors-filter-headquarter" class="f-12 text-dark-grey mb-1 d-block">Headquarter</label>
+                        <select class="form-control select-picker height-35 f-14" id="doctors-filter-headquarter" data-live-search="true" title="All" @if(!$canSeeAllHqOption) disabled @endif>
+                            @if($canSeeAllHqOption)
+                                <option value="all" @selected((string)($selectedHeadquarterInline ?? 'all') === 'all' || ($selectedHeadquarterInline ?? null) === null)>@lang('app.all') Headquarters</option>
+                            @endif
+                            @foreach(($headquarters ?? collect()) as $hq)
+                                <option value="{{ $hq->id }}" @selected((string)($selectedHeadquarterInline ?? '') === (string) $hq->id)>{{ $hq->name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-lg-2 col-md-6 mb-2 mb-lg-0">
+                        <label for="doctors-filter-qualification" class="f-12 text-dark-grey mb-1 d-block">Qualification</label>
+                        <select class="form-control select-picker height-35 f-14" id="doctors-filter-qualification" data-live-search="true" title="All">
+                            <option value="">@lang('app.all')</option>
+                            @foreach(($qualificationOptions ?? collect()) as $q)
+                                <option value="{{ $q }}">{{ $q }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-lg-2 col-md-6 mb-2 mb-lg-0">
+                        <label for="doctors-filter-speciality" class="f-12 text-dark-grey mb-1 d-block">Speciality</label>
+                        <select class="form-control select-picker height-35 f-14" id="doctors-filter-speciality" data-live-search="true" title="All">
+                            <option value="">@lang('app.all')</option>
+                            @foreach(($specialityOptions ?? collect()) as $s)
+                                <option value="{{ $s }}">{{ $s }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <x-forms.button-secondary class="btn-sm height-35" id="doctors-inline-filters-clear" type="button" icon="times-circle">
+                            @lang('app.clearFilters')
+                        </x-forms.button-secondary>
+                    </div>
+                </div>
+                <small class="text-muted d-block mt-2 mb-0">Filters apply to the doctors listed below.</small>
+            </div>
+            <div class="doctors-table-scroll">
+            <x-table class="table-hover border-0 w-100" headType="thead-light" id="doctors-table">
                 <x-slot name="thead">
                     <th>#</th>
                     <th>@lang('app.name')</th>
@@ -99,7 +113,10 @@ $addDoctorPermission = user()->permission('add_doctors');
                 </x-slot>
 
                 @forelse($doctors as $key => $doctor)
-                    <tr id="row-{{ $doctor->id }}">
+                    <tr id="row-{{ $doctor->id }}"
+                        data-headquarter-id="{{ $doctor->headquarter_id ?? '' }}"
+                        data-qualification="{{ \Illuminate\Support\Str::lower(trim($doctor->qualification ?? '')) }}"
+                        data-speciality="{{ \Illuminate\Support\Str::lower(trim($doctor->speciality ?? '')) }}">
                         <td>{{ $key + 1 }}</td>
                         <td>
                             <div class="d-flex align-items-center">
@@ -110,7 +127,10 @@ $addDoctorPermission = user()->permission('add_doctors');
                                         {{ mb_substr($doctor->fullname, 0, 1) }}
                                     </div>
                                 @endif
-                                <span>{{ $doctor->fullname }}</span>
+                                <div class="d-flex flex-column">
+                                    <span>{{ $doctor->fullname }}</span>
+                                    <span class="badge badge-secondary align-self-start mt-1 f-11" title="Unique doctor record — use this to tell same-name doctors apart">ID {{ $doctor->id }}</span>
+                                </div>
                             </div>
                         </td>
                         <td>{{ $doctor->email }}</td>
@@ -134,7 +154,7 @@ $addDoctorPermission = user()->permission('add_doctors');
                             @endif
                         </td>
                         <td>
-                            <span class="badge badge-info">{{ $doctor->headquarter->name ?? '-' }}</span>
+                            <span class="badge badge-info">{{ optional($doctor->headquarter)->name ?? '-' }}</span>
                         </td>
                         <td>
                             @if($doctor->exstation_id)
@@ -198,15 +218,13 @@ $addDoctorPermission = user()->permission('add_doctors');
                     </tr>
                 @endforelse
             </x-table>
+            </div>
             
-            <!-- Pagination -->
-            @if($doctors->hasPages())
+            <!-- Count (all matching doctors loaded; list scrolls in .doctors-table-scroll) -->
+            @if($doctors->isNotEmpty())
                 <div class="d-flex justify-content-between align-items-center mt-3 px-3 pb-3">
                     <div class="text-muted">
-                        Showing {{ $doctors->firstItem() }} to {{ $doctors->lastItem() }} of {{ $doctors->total() }} doctors
-                    </div>
-                    <div>
-                        {{ $doctors->links() }}
+                        {{ $doctors->count() }} doctor(s) total
                     </div>
                 </div>
             @endif
@@ -216,95 +234,6 @@ $addDoctorPermission = user()->permission('add_doctors');
 
 @push('scripts')
     <script>
-        const headquarterStations = @json($headquarterStationsMap ?? []);
-        const selectedHeadquarter = @json($selectedHeadquarter);
-        const selectedStation = @json($selectedStation);
-
-        const getHeadquarterData = (hqId) => {
-            if (!hqId || !headquarterStations) {
-                return { exstations: [], outstations: [] };
-            }
-
-            return headquarterStations[hqId] || headquarterStations[String(hqId)] || { exstations: [], outstations: [] };
-        };
-
-        const populateStationFilter = (hqId, stationValue = 'all') => {
-            const $stationFilter = $('#station_filter');
-            const data = getHeadquarterData(hqId);
-
-            $stationFilter.empty();
-            $stationFilter.append('<option value="all">All Stations</option>');
-
-            if (hqId && hqId !== 'all') {
-                $stationFilter.append('<option value="hq">Headquarter</option>');
-
-                if (data.exstations && data.exstations.length) {
-                    data.exstations.forEach(station => {
-                        $stationFilter.append(`<option value="ex-${station.id}">${station.name} (Ex-Station)</option>`);
-                    });
-                }
-
-                if (data.outstations && data.outstations.length) {
-                    data.outstations.forEach(station => {
-                        $stationFilter.append(`<option value="out-${station.id}">${station.name} (Out-Station)</option>`);
-                    });
-                }
-            }
-
-            $stationFilter.val(stationValue);
-            $stationFilter.selectpicker('refresh');
-        };
-
-        const updateStationFilterVisibility = (hqId, stationValue = 'all') => {
-            if (hqId && hqId !== 'all') {
-                $('#station_filter_box').show();
-                populateStationFilter(hqId, stationValue);
-            } else {
-                $('#station_filter_box').hide();
-                $('#station_filter').empty().selectpicker('refresh');
-            }
-        };
-
-        const applyFilters = () => {
-            const headquarterId = $('#headquarter_filter').val();
-            const station = $('#station_filter').val();
-            let url = "{{ route('doctors.index') }}";
-            const params = [];
-
-            if (headquarterId && headquarterId !== 'all') {
-                params.push('headquarter_id=' + headquarterId);
-
-                if (station && station !== 'all') {
-                    params.push('station=' + station);
-                }
-            }
-
-            if (params.length > 0) {
-                url += '?' + params.join('&');
-            }
-
-            window.location.href = url;
-        };
-
-        $('#headquarter_filter').on('change', function() {
-            const headquarterId = $(this).val();
-
-            if (headquarterId && headquarterId !== 'all') {
-                updateStationFilterVisibility(headquarterId);
-                applyFilters();
-            } else {
-                window.location.href = "{{ route('doctors.index') }}";
-            }
-        });
-
-        $('#station_filter').on('change', function() {
-            applyFilters();
-        });
-
-        $('#reset-filters').on('click', function() {
-            window.location.href = "{{ route('doctors.index') }}";
-        });
-
         $('body').on('click', '.delete-table-row', function() {
             const id = $(this).data('doctor-id');
             Swal.fire({
@@ -349,20 +278,63 @@ $addDoctorPermission = user()->permission('add_doctors');
             });
         });
 
-        $('#search-text-field').on('keyup', function() {
-            const value = $(this).val().toLowerCase();
-            $('table tbody tr').filter(function() {
-                $(this).toggle($(this).text().toLowerCase().indexOf(value) > -1);
+        function applyDoctorsTableFilters() {
+            const search = ($('#doctors-inline-search').val() || '').toLowerCase().trim();
+
+            const hq = $('#doctors-filter-headquarter').val() || 'all';
+            const qual = ($('#doctors-filter-qualification').val() || '').toLowerCase().trim();
+            const spec = ($('#doctors-filter-speciality').val() || '').toLowerCase().trim();
+
+            $('#doctors-table tbody tr').each(function() {
+                const $row = $(this);
+                if ($row.find('td[colspan]').length) {
+                    return;
+                }
+                const text = $row.text().toLowerCase();
+                const matchSearch = !search || text.indexOf(search) > -1;
+                const rowHq = String($row.attr('data-headquarter-id') || '');
+                const matchHq = hq === 'all' || rowHq === String(hq);
+                const rowQual = String($row.attr('data-qualification') || '');
+                const matchQual = !qual || rowQual === qual;
+                const rowSpec = String($row.attr('data-speciality') || '');
+                const matchSpec = !spec || rowSpec === spec;
+                $row.toggle(matchSearch && matchHq && matchQual && matchSpec);
             });
+        }
+
+        $('#doctors-inline-search').on('keyup input', function() {
+            applyDoctorsTableFilters();
+        });
+        $('#doctors-filter-headquarter, #doctors-filter-qualification, #doctors-filter-speciality').on('changed.bs.select', function() {
+            applyDoctorsTableFilters();
+        });
+        $('#doctors-inline-filters-clear').on('click', function() {
+            $('#doctors-inline-search').val('');
+            $('#doctors-filter-headquarter').val(@json($canSeeAllHqOption ? 'all' : (string) ($selectedHeadquarterInline ?? '')));
+            $('#doctors-filter-qualification').val('');
+            $('#doctors-filter-speciality').val('');
+            if (typeof $.fn.selectpicker === 'function') {
+                $('.doctors-inline-filters .select-picker').each(function() {
+                    var $el = $(this);
+                    if ($el.data('selectpicker')) {
+                        $el.selectpicker('refresh');
+                    }
+                });
+            }
+            applyDoctorsTableFilters();
         });
 
-        // Initial setup based on selected filters
-        if (selectedHeadquarter && selectedHeadquarter !== 'all') {
-            $('#headquarter_filter').val(selectedHeadquarter).selectpicker('refresh');
-            updateStationFilterVisibility(selectedHeadquarter, selectedStation);
-        } else {
-            $('#station_filter_box').hide();
+        if (typeof $.fn.selectpicker === 'function') {
+            $('.doctors-inline-filters .select-picker').each(function() {
+                var $el = $(this);
+                if (!$el.data('selectpicker')) {
+                    $el.selectpicker();
+                } else {
+                    $el.selectpicker('refresh');
+                }
+            });
         }
+        applyDoctorsTableFilters();
     </script>
 @endpush
 

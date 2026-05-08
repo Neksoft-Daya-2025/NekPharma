@@ -4,7 +4,89 @@ $addDepartmentPermission = user()->permission('add_department');
 @endphp
 
 <link rel="stylesheet" href="{{ asset('vendor/css/tagify.css') }}">
- <!--THIS IS LIVE FILE -->
+<style>
+    /* Employee onboarding – pharma-centric colored cards */
+    .pharma-card {
+        border-radius: 10px;
+        border: 1px solid rgba(0,0,0,0.06);
+        padding: 0;
+        margin-bottom: 1.25rem;
+        overflow: hidden;
+    }
+    .pharma-card-header {
+        padding: 1rem 1.25rem 0.35rem;
+        margin-bottom: 0;
+        font-size: 1.1rem;
+        font-weight: 600;
+        border-left: 4px solid;
+        display: flex;
+        align-items: center;
+    }
+    .pharma-card-header i {
+        margin-right: 10px;
+    }
+    .pharma-card-body {
+        padding: 1rem 1.25rem 1.25rem;
+    }
+    .pharma-card-subtitle {
+        font-size: 0.9rem;
+        opacity: 0.85;
+        margin: 0 1.25rem 1rem;
+        padding: 0;
+    }
+    /* Account – pharma blue (trust, professional) */
+    .pharma-card-account {
+        background: linear-gradient(135deg, #e8f4fd 0%, #f0f7ff 100%);
+        border-left-color: #1976d2;
+    }
+    .pharma-card-account .pharma-card-header {
+        background: rgba(25, 118, 210, 0.08);
+        border-left-color: #1976d2;
+        color: #0d47a1;
+    }
+    .pharma-card-account .pharma-card-header i { color: #1976d2; }
+    .pharma-card-account .pharma-card-subtitle { color: #1565c0; }
+    /* Other details – pharma teal (clarity, compliance) */
+    .pharma-card-details {
+        background: linear-gradient(135deg, #e0f2f1 0%, #f0faf9 100%);
+        border-left-color: #00897b;
+    }
+    .pharma-card-details .pharma-card-header {
+        background: rgba(0, 137, 123, 0.1);
+        border-left-color: #00897b;
+        color: #00695c;
+    }
+    .pharma-card-details .pharma-card-header i { color: #00897b; }
+    .pharma-card-details .pharma-card-subtitle { color: #00796b; }
+    /* Bank & identity – pharma green (health, security) */
+    .pharma-card-bank {
+        background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
+        border: 1px solid rgba(0,0,0,0.06);
+        border-left: 4px solid #2e7d32;
+        padding: 1.25rem;
+        margin-top: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    .pharma-card-bank .section-title {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #1b5e20;
+        margin-bottom: 1rem;
+        padding: 0.5rem 0;
+        cursor: pointer;
+        user-select: none;
+    }
+    .pharma-card-bank .section-title i { color: #2e7d32; }
+    .pharma-card-bank .section-title .fa-chevron-down {
+        transition: transform 0.2s;
+        color: #2e7d32;
+    }
+    .pharma-card-bank.collapsed .section-title .fa-chevron-down { transform: rotate(-90deg); }
+    .employee-onboard-addresses {
+        margin-top: 1rem;
+    }
+</style>
+<!--THIS IS LIVE FILE -->
 <div class="row">
     <div class="col-sm-12">
         <x-form id="save-employee-data-form">
@@ -12,9 +94,13 @@ $addDepartmentPermission = user()->permission('add_department');
             <input type="hidden" name="sendMail" value="no">
 
             <div class="bg-white rounded add-client">
-                <h4 class="p-20 mb-0 f-21 font-weight-normal  border-bottom-grey">
-                    @lang('modules.employees.accountDetails')</h4>
-                <div class="p-20 row">
+                <div class="pharma-card pharma-card-account">
+                    <div class="pharma-card-header px-20">
+                        <i class="fa fa-user-circle"></i> @lang('modules.employees.accountDetails')
+                    </div>
+                    <p class="pharma-card-subtitle px-20">Basic account, role and contact details.</p>
+                    <div class="pharma-card-body">
+                        <div class="row">
                     <div class="col-lg-9">
                         <div class="row">
                             <div class="col-md-3">
@@ -65,7 +151,7 @@ $addDepartmentPermission = user()->permission('add_department');
                                 </x-forms.label>
                                 <x-forms.input-group>
                                     <select class="form-control select-picker" name="designation"
-                                        id="employee_designation" data-live-search="true">
+                                        id="employee_designation" data-live-search="true" data-html="true">
                                         <option value="">--</option>
                                         @foreach ($designations as $designation)
                                             <option value="{{ $designation->id }}">{{ $designation->name }}</option>
@@ -86,7 +172,7 @@ $addDepartmentPermission = user()->permission('add_department');
                                 <x-forms.label class="my-3" fieldId="areas" fieldLabel="Select Area(s)"></x-forms.label>
                                 <x-forms.input-group>
                                     <select class="form-control select-picker" multiple
-                                            name="area_ids[]" id="employee_areas" data-live-search="true">
+                                            name="area_ids[]" id="employee_areas" data-live-search="true" data-html="true">
                                         @foreach ($areas as $area)
                                             <option value="{{ $area->id }}">{{ $area->name ?? $area->area_name }}</option>
                                         @endforeach
@@ -97,13 +183,26 @@ $addDepartmentPermission = user()->permission('add_department');
                             <div class="col-lg-4 col-md-6 d-none" id="regionDiv">
                                 <x-forms.label class="my-3" fieldId="regions" fieldLabel="Select Region(s)"></x-forms.label>
                                 <x-forms.input-group>
-                                    <select class="form-control select-picker" multiple name="region_ids[]" id="employee_regions" data-live-search="true">
+                                    <select class="form-control select-picker" multiple name="region_ids[]" id="employee_regions" data-live-search="true" data-html="true">
                                         @foreach ($regions as $region)
                                             <option value="{{ $region->id }}">{{ $region->name ?? $region->region_name }}</option>
                                         @endforeach
                                     </select>
                                 </x-forms.input-group>
                             </div>
+                            <!-- ZONE MULTI SELECT (For Zonal Manager) -->
+                            @if(isset($zones) && $zones->isNotEmpty())
+                            <div class="col-lg-4 col-md-6 d-none" id="zoneDiv">
+                                <x-forms.label class="my-3" fieldId="zones" fieldLabel="Select Zone(s)"></x-forms.label>
+                                <x-forms.input-group>
+                                    <select class="form-control select-picker" multiple name="zone_ids[]" id="employee_zones" data-live-search="true" data-html="true">
+                                        @foreach ($zones as $zone)
+                                            <option value="{{ $zone->id }}">{{ $zone->name }}</option>
+                                        @endforeach
+                                    </select>
+                                </x-forms.input-group>
+                            </div>
+                            @endif
 
 <!--==================================================================================================================================-->
 
@@ -113,7 +212,7 @@ $addDepartmentPermission = user()->permission('add_department');
                                 </x-forms.label>
                                 <x-forms.input-group>
                                     <select class="form-control select-picker" name="department"
-                                        id="employee_department" data-live-search="true">
+                                        id="employee_department" data-live-search="true" data-html="true">
                                         <option value="">--</option>
                                         @foreach ($teams as $team)
                                             <option value="{{ $team->id }}">{{ $team->team_name }}</option>
@@ -132,18 +231,18 @@ $addDepartmentPermission = user()->permission('add_department');
                             {{-- PHARMA HEADQUARTER FIELD --}}
                             @php
                             $viewHeadquarterPermission = user()->permission('view_headquarters');
-                            $isAdminUser = user()->hasRole('admin');
+                            $isAdminUser = user()->hasAdminLikeAccess();
                             $canAccessHeadquarters = $isAdminUser || in_array($viewHeadquarterPermission, ['all', 'added', 'owned', 'both'], true);
                             $canManageHeadquarters = $isAdminUser || user()->permission('add_headquarters') === 'all';
                             @endphp
                             @if(in_array('pharma_areas', user_modules()) && $canAccessHeadquarters)
-                            <div class="col-lg-4 col-md-6">
+                            <div class="col-lg-4 col-md-6" id="headquarterDiv">
                                 <x-forms.label class="my-3" fieldId="headquarter_id"
                                     :fieldLabel="'HeadQuarter'" fieldRequired="true">
                                 </x-forms.label>
                                 <x-forms.input-group>
                                     <select class="form-control select-picker" name="headquarter_id"
-                                        id="employee_headquarter" data-live-search="true" required>
+                                        id="employee_headquarter" data-live-search="true" required data-html="true">
                                         <option value="">-- Select HeadQuarter --</option>
                                         @foreach (\App\Models\PharmaHeadquarter::all() as $hq)
                                             <option value="{{ $hq->id }}">
@@ -226,8 +325,15 @@ $addDepartmentPermission = user()->permission('add_department');
                             fieldName="reporting_to" :fieldPlaceholder="__('placeholders.date')" search="true">
                             <option value="">--</option>
                             @foreach ($employees as $item)
-                                <x-user-option :user="$item" />
+                                <x-user-option :user="$item" :employeeSelect="true" />
                             @endforeach
+                        </x-forms.select>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <x-forms.select fieldId="attendance_source" :fieldLabel="__('modules.employees.attendanceSource')"
+                            fieldName="attendance_source">
+                            <option value="office">{{ __('modules.employees.attendanceSourceOffice') }}</option>
+                            <option value="field">{{ __('modules.employees.attendanceSourceField') }}</option>
                         </x-forms.select>
                     </div>
                     <div class="col-lg-3 col-md-6">
@@ -247,10 +353,20 @@ $addDepartmentPermission = user()->permission('add_department');
                             @endforeach
                         </x-forms.select>
                     </div>
+                    <div class="col-12 employee-onboard-addresses">
+                        <span class="f-14 font-weight-medium text-dark-grey d-block mb-2"><i class="fa fa-map-marker-alt text-muted mr-1"></i> Addresses</span>
+                    </div>
                     <div class="col-md-12">
                         <div class="my-3 form-group">
                             <x-forms.textarea class="mr-0 mr-lg-2 mr-md-2" :fieldLabel="__('app.address')"
                                 fieldName="address" fieldId="address" :fieldPlaceholder="__('placeholders.address')">
+                            </x-forms.textarea>
+                        </div>
+                    </div>
+                    <div class="col-md-12">
+                        <div class="my-3 form-group">
+                            <x-forms.textarea class="mr-0 mr-lg-2 mr-md-2" fieldLabel="Permanent Address"
+                                fieldName="permanent_address" fieldId="permanent_address" fieldPlaceholder="Permanent address">
                             </x-forms.textarea>
                         </div>
                     </div>
@@ -262,11 +378,17 @@ $addDepartmentPermission = user()->permission('add_department');
                         </div>
                     </div>
 
+                        </div>
+                    </div>
                 </div>
 
-                <h4 class="p-20 mb-0 f-21 font-weight-normal  border-top-grey">
-                    @lang('modules.client.clientOtherDetails')</h4>
-                <div class="p-20 row">
+                <div class="pharma-card pharma-card-details">
+                    <div class="pharma-card-header px-20 border-top-grey">
+                        <i class="fa fa-cog"></i> @lang('modules.client.clientOtherDetails')
+                    </div>
+                    <p class="pharma-card-subtitle px-20">Login, employment type, dates and other settings.</p>
+                    <div class="pharma-card-body">
+                        <div class="row">
                     <div class="col-lg-3 col-md-6">
                         <div class="my-3 form-group">
                             <label class="mb-12 f-14 text-dark-grey w-100"
@@ -374,6 +496,16 @@ $addDepartmentPermission = user()->permission('add_department');
                         </x-forms.select>
                     </div>
 
+                    <div class="col-lg-3 col-md-6">
+                        <x-forms.select fieldId="employment_status" fieldLabel="Employment Status"
+                            fieldName="employment_status" fieldPlaceholder="Select status">
+                            <option value="">--</option>
+                            <option value="Probation">Probation</option>
+                            <option value="Confirmed">Confirmed</option>
+                            <option value="Resigned">Resigned</option>
+                        </x-forms.select>
+                    </div>
+
                     <div class="col-lg-3 col-md-6 d-none internship-date">
                         <x-forms.datepicker fieldId="internship_end_date" :fieldLabel="__('modules.employees.internshipEndDate')"
                             fieldName="internship_end_date" :fieldPlaceholder="__('placeholders.date')"/>
@@ -398,7 +530,7 @@ $addDepartmentPermission = user()->permission('add_department');
                         </x-forms.label>
                         <x-forms.input-group>
                             <select class="form-control select-picker" name="company_address"
-                                id="company_address" data-live-search="true">
+                                id="company_address" data-live-search="true" data-html="true">
                                 @foreach ($companyAddresses as $address)
                                     <option value="{{ $address->id }}">{{ $address->location }}</option>
                                 @endforeach
@@ -413,50 +545,58 @@ $addDepartmentPermission = user()->permission('add_department');
 
                     <input type ="hidden" name="add_more" value="false" id="add_more" />
 
-                    <!-- Bank Details Section -->
-                    <div class="col-12">
-                        <h5 class="mb-3 mt-4 f-16 font-weight-normal text-dark-grey">
-                            @lang('modules.employees.bankDetails')
-                        </h5>
+                    <!-- Bank & Identity Section – pharma green card, collapsible -->
+                    <div class="col-12 mt-3">
+                        <div class="pharma-card-bank employee-onboard-bank-card" id="bank-identity-card">
+                            <div class="section-title d-flex align-items-center justify-content-between" data-toggle="collapse" data-target="#bank-identity-fields" aria-expanded="true">
+                                <span><i class="fa fa-university"></i> @lang('modules.employees.bankDetails') &amp; Identity</span>
+                                <i class="fa fa-chevron-down f-12"></i>
+                            </div>
+                            <div class="row collapse show" id="bank-identity-fields">
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="bank_account_number" :fieldLabel="__('modules.employees.bankAccountNumber')"
+                                        fieldName="bank_account_number" :fieldPlaceholder="__('modules.employees.bankAccountNumber')">
+                                    </x-forms.text>
+                                </div>
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="ifsc_code" :fieldLabel="__('modules.employees.ifscCode')"
+                                        fieldName="ifsc_code" :fieldPlaceholder="__('modules.employees.ifscCode')">
+                                    </x-forms.text>
+                                </div>
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="bank_name" :fieldLabel="__('modules.employees.bankName')"
+                                        fieldName="bank_name" :fieldPlaceholder="__('modules.employees.bankName')">
+                                    </x-forms.text>
+                                </div>
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="bank_branch_name" fieldLabel="Branch Name (Bank Branch)"
+                                        fieldName="bank_branch_name" fieldPlaceholder="Bank branch name">
+                                    </x-forms.text>
+                                </div>
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="uan_number" :fieldLabel="__('modules.employees.uanNumber')"
+                                        fieldName="uan_number" :fieldPlaceholder="__('modules.employees.uanNumber')">
+                                    </x-forms.text>
+                                </div>
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="pan_number" :fieldLabel="__('modules.employees.panNumber')"
+                                        fieldName="pan_number" :fieldPlaceholder="__('modules.employees.panNumber')">
+                                    </x-forms.text>
+                                </div>
+                                <div class="col-lg-4 col-md-6">
+                                    <x-forms.text fieldId="aadhar_number" :fieldLabel="__('modules.employees.aadharNumber')"
+                                        fieldName="aadhar_number" :fieldPlaceholder="__('modules.employees.aadharNumber')">
+                                    </x-forms.text>
+                                </div>
+                            </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="col-lg-4 col-md-6">
-                        <x-forms.text fieldId="bank_account_number" :fieldLabel="__('modules.employees.bankAccountNumber')"
-                            fieldName="bank_account_number" :fieldPlaceholder="__('modules.employees.bankAccountNumber')">
-                        </x-forms.text>
+                        </div>
                     </div>
-
-                    <div class="col-lg-4 col-md-6">
-                        <x-forms.text fieldId="ifsc_code" :fieldLabel="__('modules.employees.ifscCode')"
-                            fieldName="ifsc_code" :fieldPlaceholder="__('modules.employees.ifscCode')">
-                        </x-forms.text>
-                    </div>
-
-                    <div class="col-lg-4 col-md-6">
-                        <x-forms.text fieldId="bank_name" :fieldLabel="__('modules.employees.bankName')"
-                            fieldName="bank_name" :fieldPlaceholder="__('modules.employees.bankName')">
-                        </x-forms.text>
-                    </div>
-
-                    <div class="col-lg-4 col-md-6">
-                        <x-forms.text fieldId="uan_number" :fieldLabel="__('modules.employees.uanNumber')"
-                            fieldName="uan_number" :fieldPlaceholder="__('modules.employees.uanNumber')">
-                        </x-forms.text>
-                    </div>
-
-                    <div class="col-lg-4 col-md-6">
-                        <x-forms.text fieldId="pan_number" :fieldLabel="__('modules.employees.panNumber')"
-                            fieldName="pan_number" :fieldPlaceholder="__('modules.employees.panNumber')">
-                        </x-forms.text>
-                    </div>
-
-                    <div class="col-lg-4 col-md-6">
-                        <x-forms.text fieldId="aadhar_number" :fieldLabel="__('modules.employees.aadharNumber')"
-                            fieldName="aadhar_number" :fieldPlaceholder="__('modules.employees.aadharNumber')">
-                        </x-forms.text>
-                    </div>
-
                 </div>
+
                 <x-forms.custom-field :fields="$fields"></x-forms.custom-field>
 
                 <x-form-actions>
@@ -723,18 +863,34 @@ $addDepartmentPermission = user()->permission('add_department');
 $(document).ready(function () {
 
     function toggleAreaRegion() {
-
         let designationText = $("#employee_designation option:selected").text().trim();
+        const isABM = designationText.includes("Area Business Manager") || designationText.includes("ABM");
+        const isRBM = designationText.includes("Regional") && (designationText.includes("Business Manager") || designationText.includes("Manager"));
+        const isZM = designationText.includes("Zonal Manager") || designationText.includes("ZM");
+        const isMISExecutive = designationText.includes("MIS Executive") || designationText.includes("MIS");
+        const usesGeography = isABM || isRBM || isZM;
+        const hideHeadquarter = usesGeography || isMISExecutive; // MIS Executive has access to all HQs - no selection needed
 
-        if (designationText === "Area Business Manager") {
+        if ($("#zoneDiv").length) {
+            $("#zoneDiv").addClass("d-none");
+            $("#employee_zones").val([]);
+        }
+        if (isABM) {
             $("#areaDiv").removeClass("d-none");
             $("#regionDiv").addClass("d-none");
-            $("#employee_regions").val([]); 
+            $("#employee_regions").val([]);
         }
-        else if (designationText === "Regional Business Manager") {
+        else if (isRBM) {
             $("#regionDiv").removeClass("d-none");
             $("#areaDiv").addClass("d-none");
-            $("#employee_areas").val([]); 
+            $("#employee_areas").val([]);
+        }
+        else if (isZM && $("#zoneDiv").length) {
+            $("#zoneDiv").removeClass("d-none");
+            $("#areaDiv").addClass("d-none");
+            $("#regionDiv").addClass("d-none");
+            $("#employee_areas").val([]);
+            $("#employee_regions").val([]);
         }
         else {
             $("#areaDiv").addClass("d-none");
@@ -743,6 +899,16 @@ $(document).ready(function () {
             $("#employee_regions").val([]);
         }
 
+        // Hide Headquarter for ABM/RBM/ZM/MIS Executive; show for MR and others (MIS Executive has access to all HQs)
+        if ($("#headquarterDiv").length) {
+            if (hideHeadquarter) {
+                $("#headquarterDiv").addClass("d-none");
+                $("#employee_headquarter").val("").prop("required", false);
+            } else {
+                $("#headquarterDiv").removeClass("d-none");
+                $("#employee_headquarter").prop("required", true);
+            }
+        }
         $('.select-picker').selectpicker('refresh');
     }
 

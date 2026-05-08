@@ -5,21 +5,27 @@ namespace App\Http\Controllers;
 use App\Helper\Files;
 use App\Helper\Reply;
 use App\Models\Stockist;
+use App\Models\Doctor;
+use App\Models\Chemist;
+use App\Models\PharmaArea;
 use App\Models\PharmaHeadquarter;
 use App\Models\PharmaHeadquarterAssign;
 use App\Imports\StockistImport;
 use App\Jobs\ImportStockistJob;
 use App\Exports\StockistSampleExport;
+use App\Services\StockistDuplicateMergeService;
 use App\Traits\ImportExcel;
+use App\Traits\AccessibleHeadquarters;
 use App\Http\Requests\Admin\Employee\ImportRequest;
 use Maatwebsite\Excel\Facades\Excel;
 use Maatwebsite\Excel\HeadingRowImport;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 
 class StockistController extends AccountBaseController
 {
-    use ImportExcel;
+    use ImportExcel, AccessibleHeadquarters;
 
     public function __construct()
     {
@@ -106,26 +112,17 @@ class StockistController extends AccountBaseController
             ->where('company_id', company()->id);
 
         $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+        $accessibleAreaIds = $this->accessibleAreaIds();
         $accessibleStationIds = $this->accessibleStations();
 
-        // Only apply headquarter filtering if user is NOT admin
-        // Admins should see all stockists regardless of headquarter restrictions
-        if ($accessibleHeadquarterIds !== null && !user()->hasRole('admin')) {
-            if (empty($accessibleHeadquarterIds)) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $query->where(function ($q) use ($accessibleHeadquarterIds, $accessibleStationIds) {
-                    $q->whereIn('headquarter_id', $accessibleHeadquarterIds);
-
-                    if (!empty($accessibleStationIds['exstation'])) {
-                        $q->orWhereIn('exstation_id', $accessibleStationIds['exstation']);
-                    }
-
-                    if (!empty($accessibleStationIds['outstation'])) {
-                        $q->orWhereIn('outstation_id', $accessibleStationIds['outstation']);
-                    }
-                });
-            }
+        // Only apply geography filtering if user is NOT admin
+        if ($accessibleHeadquarterIds !== null && ! user()->hasAdminLikeAccess()) {
+            $this->applyCustomerGeoScope(
+                $query,
+                $accessibleHeadquarterIds,
+                $accessibleAreaIds ?? [],
+                $accessibleStationIds
+            );
         }
 
         // Filter by headquarter
@@ -181,7 +178,20 @@ class StockistController extends AccountBaseController
         $this->headquarters = $headquarters;
         $this->headquarterStations = $this->formatHeadquarterStations($headquarters);
         $this->defaultHeadquarterId = $this->determineDefaultHeadquarterId($headquarters, $request->get('headquarter_id'));
-        
+
+        $companyId = company()->id;
+        $areaIds = Stockist::where('company_id', $companyId)->whereNotNull('area_id')->distinct()->pluck('area_id')->filter();
+        $areaFromRelation = $areaIds->isNotEmpty()
+            ? PharmaArea::whereIn('id', $areaIds)->orderBy('name')->pluck('name')
+            : collect();
+        $areaFromString = Stockist::where('company_id', $companyId)->whereNull('area_id')
+            ->whereNotNull('area')->where('area', '!=', '')
+            ->distinct()->orderBy('area')->pluck('area');
+        $this->areaOptions = $areaFromRelation->merge($areaFromString)->unique()->sort()->values();
+        $this->genderOptions = Stockist::where('company_id', $companyId)
+            ->whereNotNull('gender')->where('gender', '!=', '')
+            ->distinct()->orderBy('gender')->pluck('gender')->values();
+
         // Debug: Log query results (remove in production)
         // \Log::info('Stockists Query Results', [
         //     'count' => $this->stockists->count(),
@@ -203,6 +213,8 @@ class StockistController extends AccountBaseController
         $this->data['headquarters'] = $this->headquarters;
         $this->data['headquarterStations'] = $this->headquarterStations;
         $this->data['defaultHeadquarterId'] = $this->defaultHeadquarterId;
+        $this->data['areaOptions'] = $this->areaOptions;
+        $this->data['genderOptions'] = $this->genderOptions;
         
         return view('stockists.index', $this->data);
     }
@@ -235,6 +247,11 @@ class StockistController extends AccountBaseController
             'station_type' => 'nullable|in:headquarter,exstation,outstation',
             'exstation_id' => 'nullable|required_if:station_type,exstation|exists:pharma_exstations,id',
             'outstation_id' => 'nullable|required_if:station_type,outstation|exists:pharma_outstations,id',
+            'msl_number' => ['nullable', 'string', 'max:255', function ($attribute, $value, $fail) {
+                if ($value && $this->mslNumberExists($value)) {
+                    $fail('The MSL number already exists in the database.');
+                }
+            }],
         ]);
 
         $this->assertHeadquarterAccessible((int) $request->headquarter_id);
@@ -257,7 +274,9 @@ class StockistController extends AccountBaseController
         $stockist->dl_number = $request->dl_number;
         $stockist->gst_number = $request->gst_number;
         $stockist->msl_number = $request->msl_number;
-        
+        $stockist->latitude = $request->filled('latitude') ? (float) $request->latitude : null;
+        $stockist->longitude = $request->filled('longitude') ? (float) $request->longitude : null;
+
         // Auto-populate area_id from headquarter (backend mapping)
         $stockist->headquarter_id = $request->headquarter_id;
         $stockist->area_id = $headquarter ? $headquarter->area_id : null;
@@ -292,6 +311,7 @@ class StockistController extends AccountBaseController
         $this->editPermission = user()->permission('edit_stockists');
         abort_403(!in_array($this->editPermission, ['all', 'added', 'owned', 'both']));
 
+        $this->assertHeadquarterAccessible((int) $this->stockist->headquarter_id);
         $this->prepareAreaData((int) $this->stockist->headquarter_id);
 
         if (request()->ajax()) {
@@ -316,6 +336,11 @@ class StockistController extends AccountBaseController
             'station_type' => 'nullable|in:headquarter,exstation,outstation',
             'exstation_id' => 'nullable|required_if:station_type,exstation|exists:pharma_exstations,id',
             'outstation_id' => 'nullable|required_if:station_type,outstation|exists:pharma_outstations,id',
+            'msl_number' => ['nullable', 'string', 'max:255', function ($attribute, $value, $fail) use ($id) {
+                if ($value && $this->mslNumberExists($value, $id, 'stockists')) {
+                    $fail('The MSL number already exists in the database.');
+                }
+            }],
         ]);
 
         $this->assertHeadquarterAccessible((int) $request->headquarter_id);
@@ -334,6 +359,8 @@ class StockistController extends AccountBaseController
         $stockist->dl_number = $request->dl_number;
         $stockist->gst_number = $request->gst_number;
         $stockist->msl_number = $request->msl_number;
+        $stockist->latitude = $request->filled('latitude') ? (float) $request->latitude : null;
+        $stockist->longitude = $request->filled('longitude') ? (float) $request->longitude : null;
 
         $headquarter = PharmaHeadquarter::find($request->headquarter_id);
         $stockist->headquarter_id = $request->headquarter_id;
@@ -370,60 +397,16 @@ class StockistController extends AccountBaseController
         $this->deletePermission = user()->permission('delete_stockists');
         abort_403(!in_array($this->deletePermission, ['all', 'added', 'owned', 'both']));
 
+        $this->assertHeadquarterAccessible((int) $stockist->headquarter_id);
         Files::deleteFile($stockist->stockist_pic, 'stockists');
         $stockist->delete();
 
         return Reply::success(__('messages.deleteSuccess'));
     }
 
-    private function accessibleHeadquarterIds(): ?array
-    {
-        // Check if user is admin - admins see all stockists
-        if (user()->hasRole('admin') || in_array('admin', user_roles())) {
-            return null; // null means no filtering - show all
-        }
-
-        $headquarterId = optional(user()->employeeDetail)->headquarter_id;
-
-        return $headquarterId ? [(int) $headquarterId] : [];
-    }
-
-    private function accessibleStations(): array
-    {
-        $headquarterIds = $this->accessibleHeadquarterIds();
-
-        if ($headquarterIds === null) {
-            // Admin - get all stations for current company
-            $headquarters = PharmaHeadquarter::where('company_id', company()->id)->pluck('id')->toArray();
-            return [
-                'exstation' => PharmaHeadquarterAssign::whereIn('headquarter_id', $headquarters)
-                    ->where('station', 'exstation')
-                    ->pluck('station_id')
-                    ->map(fn($id) => (int) $id)
-                    ->toArray(),
-                'outstation' => PharmaHeadquarterAssign::whereIn('headquarter_id', $headquarters)
-                    ->where('station', 'outstation')
-                    ->pluck('station_id')
-                    ->map(fn($id) => (int) $id)
-                    ->toArray(),
-            ];
-        }
-
-        if (empty($headquarterIds)) {
-            return ['exstation' => [], 'outstation' => []];
-        }
-
-        $assignments = PharmaHeadquarterAssign::whereIn('headquarter_id', $headquarterIds)->get();
-
-        return [
-            'exstation' => $assignments->where('station', 'exstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-            'outstation' => $assignments->where('station', 'outstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-        ];
-    }
-
     private function ensureStationAccessible(int $headquarterId, string $stationType, $stationId): void
     {
-        if (!$stationId || user()->hasRole('admin')) {
+        if (!$stationId || user()->hasAdminLikeAccess()) {
             return;
         }
 
@@ -449,6 +432,52 @@ class StockistController extends AccountBaseController
         abort_403(empty($accessibleIds) || !in_array($headquarterId, $accessibleIds, true), __('messages.permissionDenied'));
     }
 
+    /**
+     * Check if MSL number exists in doctors, chemists, or stockists tables
+     * 
+     * @param string $mslNumber
+     * @param int|null $excludeId ID to exclude from check (for updates)
+     * @param string|null $excludeTable Table to exclude from check (for updates)
+     * @return bool
+     */
+    private function mslNumberExists(string $mslNumber, ?int $excludeId = null, ?string $excludeTable = null): bool
+    {
+        // Check doctors table
+        if ($excludeTable !== 'doctors') {
+            $doctorQuery = Doctor::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'doctors') {
+                $doctorQuery->where('id', '!=', $excludeId);
+            }
+            if ($doctorQuery->exists()) {
+                return true;
+            }
+        }
+
+        // Check chemists table
+        if ($excludeTable !== 'chemists') {
+            $chemistQuery = Chemist::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'chemists') {
+                $chemistQuery->where('id', '!=', $excludeId);
+            }
+            if ($chemistQuery->exists()) {
+                return true;
+            }
+        }
+
+        // Check stockists table
+        if ($excludeTable !== 'stockists') {
+            $stockistQuery = Stockist::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'stockists') {
+                $stockistQuery->where('id', '!=', $excludeId);
+            }
+            if ($stockistQuery->exists()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function prepareAreaData(?int $currentHeadquarterId = null): void
     {
         $headquarters = $this->accessibleHeadquartersCollection();
@@ -458,7 +487,7 @@ class StockistController extends AccountBaseController
         }
 
         if ($headquarters->isEmpty()) {
-            abort_403(!user()->hasRole('admin'), __('messages.permissionDenied'));
+            abort_403(!user()->hasAdminLikeAccess(), __('messages.permissionDenied'));
         }
 
         $this->headquarters = $headquarters;
@@ -475,11 +504,16 @@ class StockistController extends AccountBaseController
             return $query->get();
         }
 
-        if (empty($accessibleIds)) {
-            return collect();
+        if (! empty($accessibleIds)) {
+            return $query->whereIn('id', $accessibleIds)->get();
         }
 
-        return $query->whereIn('id', $accessibleIds)->get();
+        $areaIds = $this->accessibleAreaIds();
+        if ($areaIds !== null && ! empty($areaIds)) {
+            return $query->where('company_id', company()->id)->whereIn('area_id', $areaIds)->get();
+        }
+
+        return collect();
     }
 
     private function formatHeadquarterStations(Collection $headquarters): array
@@ -668,7 +702,8 @@ class StockistController extends AccountBaseController
                 }
             }
 
-            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, StockistImport::class, ImportStockistJob::class);
+            $allowedHqIds = $this->accessibleHeadquarterIds();
+            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, StockistImport::class, ImportStockistJob::class, $allowedHqIds);
 
             if (!$batch) {
                 Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
@@ -720,5 +755,92 @@ class StockistController extends AccountBaseController
             \Log::error('Stack trace: ' . $e->getTraceAsString());
             return Reply::error('Error generating sample file: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Preview duplicate stockist groups (same mobile last 10 digits, or same shop name + headquarter if mobile missing).
+     */
+    public function mergeDuplicates()
+    {
+        $this->editPermission = user()->permission('edit_stockists');
+        abort_403(! in_array($this->editPermission, ['all', 'added']));
+
+        $service = new StockistDuplicateMergeService;
+        $groups = $service->findDuplicateGroups($this->stockistsQueryForMerge());
+
+        $this->data['duplicateGroups'] = $groups->map(function ($group) use ($service) {
+            $sorted = $group->sortBy(function ($s) use ($service) {
+                return [-$service->completenessScore($s), $s->id];
+            })->values();
+            $winner = $sorted->first();
+            $scores = $sorted->mapWithKeys(fn ($s) => [$s->id => $service->completenessScore($s)]);
+
+            return [
+                'winner' => $winner,
+                'winner_score' => $scores[$winner->id] ?? 0,
+                'stockists' => $sorted,
+                'scores' => $scores,
+            ];
+        });
+
+        $this->pageTitle = 'Merge duplicate stockists';
+
+        return view('stockists.merge-duplicates', $this->data);
+    }
+
+    /**
+     * Merge all duplicate groups in scope: keep best-filled record, reassign DCR/invoice links, soft-delete others.
+     */
+    public function mergeDuplicatesRun(Request $request)
+    {
+        $this->editPermission = user()->permission('edit_stockists');
+        abort_403(! in_array($this->editPermission, ['all', 'added']));
+
+        $request->validate([
+            'confirm_merge' => 'required|accepted',
+        ]);
+
+        $service = new StockistDuplicateMergeService;
+        $groups = $service->findDuplicateGroups($this->stockistsQueryForMerge());
+
+        if ($groups->isEmpty()) {
+            return redirect()
+                ->route('stockists.merge-duplicates')
+                ->with('success', __('No duplicate groups found for your access scope.'));
+        }
+
+        $stats = $service->mergeAllGroups($groups);
+
+        return redirect()
+            ->route('stockists.index')
+            ->with('success', __('Merged :groups duplicate group(s). Removed :removed duplicate stockist record(s).', [
+                'groups' => $stats['groups_merged'],
+                'removed' => $stats['stockists_removed'],
+            ]));
+    }
+
+    /**
+     * Stockists visible to current user (same geographic scope as list).
+     */
+    protected function stockistsQueryForMerge(): Builder
+    {
+        $query = Stockist::with(['headquarter', 'area', 'exstation', 'outstation'])
+            ->where('company_id', company()->id);
+
+        if (! user()->hasAdminLikeAccess()) {
+            $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+            $accessibleAreaIds = $this->accessibleAreaIds();
+            $accessibleStationIds = $this->accessibleStations();
+            if ($accessibleHeadquarterIds !== null) {
+                $this->applyCustomerGeoScope(
+                    $query,
+                    $accessibleHeadquarterIds,
+                    $accessibleAreaIds ?? [],
+                    $accessibleStationIds
+                );
+            }
+        }
+
+        return $query;
     }
 }

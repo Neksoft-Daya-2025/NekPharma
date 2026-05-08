@@ -25,7 +25,7 @@ class CustomModuleController extends AccountBaseController
         $this->pageTitle = 'app.menu.moduleSettings';
         $this->activeSettingMenu = 'module_settings';
         $this->middleware(function ($request, $next) {
-            abort_403(!user()->hasRole('admin'));
+            abort_403(!user()->hasAdminLikeAccess());
 
             return $next($request);
         });

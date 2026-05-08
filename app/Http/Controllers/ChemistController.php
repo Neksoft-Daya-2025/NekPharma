@@ -5,21 +5,27 @@ namespace App\Http\Controllers;
 use App\Helper\Files;
 use App\Helper\Reply;
 use App\Models\Chemist;
+use App\Models\Doctor;
+use App\Models\Stockist;
+use App\Models\PharmaArea;
 use App\Models\PharmaHeadquarter;
 use App\Models\PharmaHeadquarterAssign;
 use App\Imports\ChemistImport;
 use App\Jobs\ImportChemistJob;
 use App\Exports\ChemistSampleExport;
+use App\Services\ChemistDuplicateMergeService;
 use App\Traits\ImportExcel;
+use App\Traits\AccessibleHeadquarters;
 use App\Http\Requests\Admin\Employee\ImportRequest;
 use Maatwebsite\Excel\Facades\Excel;
 use Maatwebsite\Excel\HeadingRowImport;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 
 class ChemistController extends AccountBaseController
 {
-    use ImportExcel;
+    use ImportExcel, AccessibleHeadquarters;
 
     public function __construct()
     {
@@ -40,26 +46,17 @@ class ChemistController extends AccountBaseController
         $query = Chemist::with(['headquarter', 'area', 'exstation', 'outstation']);
 
         $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+        $accessibleAreaIds = $this->accessibleAreaIds();
         $accessibleStationIds = $this->accessibleStations();
 
-        // Only apply headquarter filtering if user is NOT admin
-        // Admins should see all chemists regardless of headquarter restrictions
-        if ($accessibleHeadquarterIds !== null && !user()->hasRole('admin')) {
-            if (empty($accessibleHeadquarterIds)) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $query->where(function ($q) use ($accessibleHeadquarterIds, $accessibleStationIds) {
-                    $q->whereIn('headquarter_id', $accessibleHeadquarterIds);
-
-                    if (!empty($accessibleStationIds['exstation'])) {
-                        $q->orWhereIn('exstation_id', $accessibleStationIds['exstation']);
-                    }
-
-                    if (!empty($accessibleStationIds['outstation'])) {
-                        $q->orWhereIn('outstation_id', $accessibleStationIds['outstation']);
-                    }
-                });
-            }
+        // Only apply geography filtering if user is NOT admin
+        if ($accessibleHeadquarterIds !== null && ! user()->hasAdminLikeAccess()) {
+            $this->applyCustomerGeoScope(
+                $query,
+                $accessibleHeadquarterIds,
+                $accessibleAreaIds ?? [],
+                $accessibleStationIds
+            );
         }
 
         // Filter by headquarter
@@ -114,7 +111,20 @@ class ChemistController extends AccountBaseController
         $this->headquarters = $headquarters;
         $this->headquarterStations = $this->formatHeadquarterStations($headquarters);
         $this->defaultHeadquarterId = $this->determineDefaultHeadquarterId($headquarters, $request->get('headquarter_id'));
-        
+
+        $companyId = company()->id;
+        $areaIds = Chemist::where('company_id', $companyId)->whereNotNull('area_id')->distinct()->pluck('area_id')->filter();
+        $areaFromRelation = $areaIds->isNotEmpty()
+            ? PharmaArea::whereIn('id', $areaIds)->orderBy('name')->pluck('name')
+            : collect();
+        $areaFromString = Chemist::where('company_id', $companyId)->whereNull('area_id')
+            ->whereNotNull('area')->where('area', '!=', '')
+            ->distinct()->orderBy('area')->pluck('area');
+        $this->areaOptions = $areaFromRelation->merge($areaFromString)->unique()->sort()->values();
+        $this->genderOptions = Chemist::where('company_id', $companyId)
+            ->whereNotNull('gender')->where('gender', '!=', '')
+            ->distinct()->orderBy('gender')->pluck('gender')->values();
+
         return view('chemists.index', $this->data);
     }
 
@@ -146,6 +156,11 @@ class ChemistController extends AccountBaseController
             'station_type' => 'nullable|in:headquarter,exstation,outstation',
             'exstation_id' => 'nullable|required_if:station_type,exstation|exists:pharma_exstations,id',
             'outstation_id' => 'nullable|required_if:station_type,outstation|exists:pharma_outstations,id',
+            'msl_number' => ['nullable', 'string', 'max:255', function ($attribute, $value, $fail) {
+                if ($value && $this->mslNumberExists($value)) {
+                    $fail('The MSL number already exists in the database.');
+                }
+            }],
         ]);
 
         $this->assertHeadquarterAccessible((int) $request->headquarter_id);
@@ -163,7 +178,10 @@ class ChemistController extends AccountBaseController
         $chemist->dom = $request->dom ? \Carbon\Carbon::parse($request->dom)->format('Y-m-d') : null;
         $chemist->gender = $request->gender;
         $chemist->address = $request->address;
-        
+        $chemist->msl_number = $request->msl_number;
+        $chemist->latitude = $request->filled('latitude') ? (float) $request->latitude : null;
+        $chemist->longitude = $request->filled('longitude') ? (float) $request->longitude : null;
+
         // Auto-populate area_id from headquarter (backend mapping)
         $chemist->headquarter_id = $request->headquarter_id;
         $chemist->area_id = $headquarter ? $headquarter->area_id : null;
@@ -198,6 +216,7 @@ class ChemistController extends AccountBaseController
         $this->editPermission = user()->permission('edit_chemists');
         abort_403(!in_array($this->editPermission, ['all', 'added', 'owned', 'both']));
 
+        $this->assertHeadquarterAccessible((int) $this->chemist->headquarter_id);
         $this->prepareAreaData((int) $this->chemist->headquarter_id);
 
         if (request()->ajax()) {
@@ -220,6 +239,11 @@ class ChemistController extends AccountBaseController
             'station_type' => 'nullable|in:headquarter,exstation,outstation',
             'exstation_id' => 'nullable|required_if:station_type,exstation|exists:pharma_exstations,id',
             'outstation_id' => 'nullable|required_if:station_type,outstation|exists:pharma_outstations,id',
+            'msl_number' => ['nullable', 'string', 'max:255', function ($attribute, $value, $fail) use ($id) {
+                if ($value && $this->mslNumberExists($value, $id, 'chemists')) {
+                    $fail('The MSL number already exists in the database.');
+                }
+            }],
         ]);
 
         $this->assertHeadquarterAccessible((int) $request->headquarter_id);
@@ -233,6 +257,9 @@ class ChemistController extends AccountBaseController
         $chemist->area = $request->area;
         $chemist->gender = $request->gender;
         $chemist->address = $request->address;
+        $chemist->msl_number = $request->msl_number;
+        $chemist->latitude = $request->filled('latitude') ? (float) $request->latitude : null;
+        $chemist->longitude = $request->filled('longitude') ? (float) $request->longitude : null;
 
         $headquarter = PharmaHeadquarter::find($request->headquarter_id);
         $chemist->headquarter_id = $request->headquarter_id;
@@ -269,49 +296,16 @@ class ChemistController extends AccountBaseController
         $this->deletePermission = user()->permission('delete_chemists');
         abort_403(!in_array($this->deletePermission, ['all', 'added', 'owned', 'both']));
 
+        $this->assertHeadquarterAccessible((int) $chemist->headquarter_id);
         Files::deleteFile($chemist->chemist_pic, 'chemists');
         $chemist->delete();
 
         return Reply::success(__('messages.deleteSuccess'));
     }
 
-    private function accessibleHeadquarterIds(): ?array
-    {
-        if (user()->hasRole('admin')) {
-            return null;
-        }
-
-        $headquarterId = optional(user()->employeeDetail)->headquarter_id;
-
-        return $headquarterId ? [(int) $headquarterId] : [];
-    }
-
-    private function accessibleStations(): array
-    {
-        $headquarterIds = $this->accessibleHeadquarterIds();
-
-        if ($headquarterIds === null) {
-            return [
-                'exstation' => PharmaHeadquarterAssign::where('station', 'exstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-                'outstation' => PharmaHeadquarterAssign::where('station', 'outstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-            ];
-        }
-
-        if (empty($headquarterIds)) {
-            return ['exstation' => [], 'outstation' => []];
-        }
-
-        $assignments = PharmaHeadquarterAssign::whereIn('headquarter_id', $headquarterIds)->get();
-
-        return [
-            'exstation' => $assignments->where('station', 'exstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-            'outstation' => $assignments->where('station', 'outstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-        ];
-    }
-
     private function ensureStationAccessible(int $headquarterId, string $stationType, $stationId): void
     {
-        if (!$stationId || user()->hasRole('admin')) {
+        if (!$stationId || user()->hasAdminLikeAccess()) {
             return;
         }
 
@@ -337,6 +331,52 @@ class ChemistController extends AccountBaseController
         abort_403(empty($accessibleIds) || !in_array($headquarterId, $accessibleIds, true), __('messages.permissionDenied'));
     }
 
+    /**
+     * Check if MSL number exists in doctors, chemists, or stockists tables
+     * 
+     * @param string $mslNumber
+     * @param int|null $excludeId ID to exclude from check (for updates)
+     * @param string|null $excludeTable Table to exclude from check (for updates)
+     * @return bool
+     */
+    private function mslNumberExists(string $mslNumber, ?int $excludeId = null, ?string $excludeTable = null): bool
+    {
+        // Check doctors table
+        if ($excludeTable !== 'doctors') {
+            $doctorQuery = Doctor::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'doctors') {
+                $doctorQuery->where('id', '!=', $excludeId);
+            }
+            if ($doctorQuery->exists()) {
+                return true;
+            }
+        }
+
+        // Check chemists table
+        if ($excludeTable !== 'chemists') {
+            $chemistQuery = Chemist::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'chemists') {
+                $chemistQuery->where('id', '!=', $excludeId);
+            }
+            if ($chemistQuery->exists()) {
+                return true;
+            }
+        }
+
+        // Check stockists table
+        if ($excludeTable !== 'stockists') {
+            $stockistQuery = Stockist::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'stockists') {
+                $stockistQuery->where('id', '!=', $excludeId);
+            }
+            if ($stockistQuery->exists()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function prepareAreaData(?int $currentHeadquarterId = null): void
     {
         $headquarters = $this->accessibleHeadquartersCollection();
@@ -346,7 +386,7 @@ class ChemistController extends AccountBaseController
         }
 
         if ($headquarters->isEmpty()) {
-            abort_403(!user()->hasRole('admin'), __('messages.permissionDenied'));
+            abort_403(!user()->hasAdminLikeAccess(), __('messages.permissionDenied'));
         }
 
         $this->headquarters = $headquarters;
@@ -363,11 +403,16 @@ class ChemistController extends AccountBaseController
             return $query->get();
         }
 
-        if (empty($accessibleIds)) {
-            return collect();
+        if (! empty($accessibleIds)) {
+            return $query->whereIn('id', $accessibleIds)->get();
         }
 
-        return $query->whereIn('id', $accessibleIds)->get();
+        $areaIds = $this->accessibleAreaIds();
+        if ($areaIds !== null && ! empty($areaIds)) {
+            return $query->where('company_id', company()->id)->whereIn('area_id', $areaIds)->get();
+        }
+
+        return collect();
     }
 
     private function formatHeadquarterStations(Collection $headquarters): array
@@ -556,7 +601,8 @@ class ChemistController extends AccountBaseController
                 }
             }
 
-            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, ChemistImport::class, ImportChemistJob::class);
+            $allowedHqIds = $this->accessibleHeadquarterIds();
+            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, ChemistImport::class, ImportChemistJob::class, $allowedHqIds);
 
             if (!$batch) {
                 Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
@@ -608,5 +654,92 @@ class ChemistController extends AccountBaseController
             \Log::error('Stack trace: ' . $e->getTraceAsString());
             return Reply::error('Error generating sample file: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Preview duplicate chemist groups (same mobile last 10 digits, or same shop name + headquarter if mobile missing).
+     */
+    public function mergeDuplicates()
+    {
+        $this->editPermission = user()->permission('edit_chemists');
+        abort_403(! in_array($this->editPermission, ['all', 'added']));
+
+        $service = new ChemistDuplicateMergeService;
+        $groups = $service->findDuplicateGroups($this->chemistsQueryForMerge());
+
+        $this->data['duplicateGroups'] = $groups->map(function ($group) use ($service) {
+            $sorted = $group->sortBy(function ($c) use ($service) {
+                return [-$service->completenessScore($c), $c->id];
+            })->values();
+            $winner = $sorted->first();
+            $scores = $sorted->mapWithKeys(fn ($c) => [$c->id => $service->completenessScore($c)]);
+
+            return [
+                'winner' => $winner,
+                'winner_score' => $scores[$winner->id] ?? 0,
+                'chemists' => $sorted,
+                'scores' => $scores,
+            ];
+        });
+
+        $this->pageTitle = 'Merge duplicate chemists';
+
+        return view('chemists.merge-duplicates', $this->data);
+    }
+
+    /**
+     * Merge all duplicate groups in scope: keep best-filled record, reassign DCR links, soft-delete others.
+     */
+    public function mergeDuplicatesRun(Request $request)
+    {
+        $this->editPermission = user()->permission('edit_chemists');
+        abort_403(! in_array($this->editPermission, ['all', 'added']));
+
+        $request->validate([
+            'confirm_merge' => 'required|accepted',
+        ]);
+
+        $service = new ChemistDuplicateMergeService;
+        $groups = $service->findDuplicateGroups($this->chemistsQueryForMerge());
+
+        if ($groups->isEmpty()) {
+            return redirect()
+                ->route('chemists.merge-duplicates')
+                ->with('success', __('No duplicate groups found for your access scope.'));
+        }
+
+        $stats = $service->mergeAllGroups($groups);
+
+        return redirect()
+            ->route('chemists.index')
+            ->with('success', __('Merged :groups duplicate group(s). Removed :removed duplicate chemist record(s).', [
+                'groups' => $stats['groups_merged'],
+                'removed' => $stats['chemists_removed'],
+            ]));
+    }
+
+    /**
+     * Chemists visible to current user (same geographic scope as list).
+     */
+    protected function chemistsQueryForMerge(): Builder
+    {
+        $query = Chemist::with(['headquarter', 'area', 'exstation', 'outstation'])
+            ->where('company_id', company()->id);
+
+        if (! user()->hasAdminLikeAccess()) {
+            $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+            $accessibleAreaIds = $this->accessibleAreaIds();
+            $accessibleStationIds = $this->accessibleStations();
+            if ($accessibleHeadquarterIds !== null) {
+                $this->applyCustomerGeoScope(
+                    $query,
+                    $accessibleHeadquarterIds,
+                    $accessibleAreaIds ?? [],
+                    $accessibleStationIds
+                );
+            }
+        }
+
+        return $query;
     }
 }

@@ -11,6 +11,7 @@ use App\DataTables\TimeLogsDataTable;
 use App\Enums\Salutation;
 use App\Helper\Files;
 use App\Helper\Reply;
+use App\Helpers\PharmaDesignationHelper;
 use App\Http\Requests\Admin\Employee\ImportProcessRequest;
 use App\Http\Requests\Admin\Employee\ImportRequest;
 use App\Http\Requests\Admin\Employee\StoreRequest;
@@ -33,6 +34,10 @@ use App\Models\LeaveType;
 use App\Models\Module;
 use App\Models\Notification;
 use App\Models\Passport;
+use App\Models\PharmaArea;
+use App\Models\PharmaHeadquarter;
+use App\Models\PharmaRegion;
+use App\Models\PharmaZone;
 use App\Models\ProjectTimeLog;
 use App\Models\ProjectTimeLogBreak;
 use App\Models\Role;
@@ -97,7 +102,7 @@ class EmployeeController extends AccountBaseController
     }
 
     /**
-     * XXXXXXXXXXX
+     * Show the form for creating a new employee.
      *
      * @return \Illuminate\Http\Response
      */
@@ -112,13 +117,15 @@ class EmployeeController extends AccountBaseController
         $this->teams = Team::all();
         $this->designations = Designation::allDesignations();
         
-        // Load pharma areas and regions for employee assignment
+        // Load pharma areas, regions and zones for employee assignment
         if (in_array('pharma_areas', $this->user->modules ?? [])) {
             $this->areas = \App\Models\PharmaArea::all();
             $this->regions = \App\Models\PharmaRegion::all();
+            $this->zones = \App\Models\PharmaZone::all();
         } else {
             $this->areas = collect();
             $this->regions = collect();
+            $this->zones = collect();
         }
 
         $this->skills = Skill::all()->pluck('name')->toArray();
@@ -400,7 +407,7 @@ class EmployeeController extends AccountBaseController
      */
     public function edit($id)
     {
-        $this->employee = User::withoutGlobalScope(ActiveScope::class)->with('employeeDetail', 'reportingTeam')->findOrFail($id);
+        $this->employee = User::withoutGlobalScope(ActiveScope::class)->with('employeeDetail.designation', 'reportingTeam')->findOrFail($id);
 
         $this->editPermission = user()->permission('edit_employees');
 
@@ -433,6 +440,17 @@ class EmployeeController extends AccountBaseController
         }
 
         $this->employees = User::allEmployees($exceptUsers, true);
+        
+        // Load pharma areas, regions and zones for employee assignment
+        if (in_array('pharma_areas', $this->user->modules ?? [])) {
+            $this->areas = \App\Models\PharmaArea::all();
+            $this->regions = \App\Models\PharmaRegion::all();
+            $this->zones = \App\Models\PharmaZone::all();
+        } else {
+            $this->areas = collect();
+            $this->regions = collect();
+            $this->zones = collect();
+        }
         
         // Load employment types from database
         $this->employmentTypes = \App\Models\EmploymentType::where('company_id', company()->id)
@@ -608,7 +626,7 @@ class EmployeeController extends AccountBaseController
         abort_403(!($this->deletePermission == 'all' || ($this->deletePermission == 'added' && $user->employeeDetail->added_by == user()->id)));
 
 
-        if ($user->hasRole('admin') && !in_array('admin', user_roles())) {
+        if ($user->hasAdminLikeAccess() && !in_array('admin', user_roles())) {
             return Reply::error(__('messages.adminCannotDelete'));
         }
 
@@ -652,6 +670,20 @@ class EmployeeController extends AccountBaseController
         abort_403(in_array('client', user_roles()));
 
         $tab = request('tab');
+
+        // Legacy bookmark: old tab name redirects to canonical territory-mapping.
+        if ($tab === 'area-mapping') {
+            $tab = 'territory-mapping';
+        }
+
+        $validEmployeeShowTabs = [
+            'tickets', 'projects', 'attendance', 'tasks', 'leaves', 'timelogs', 'documents',
+            'emergency-contacts', 'increment-promotions', 'appreciation', 'leaves-quota', 'shifts',
+            'permissions', 'activity', 'immigration', 'fnf', 'territory-mapping',
+        ];
+        if ($tab !== '' && !in_array($tab, $validEmployeeShowTabs, true)) {
+            $tab = '';
+        }
 
         if (
             $this->viewPermission == 'all'
@@ -715,6 +747,15 @@ class EmployeeController extends AccountBaseController
             return $this->tickets();
         case 'projects':
             return $this->projects();
+        case 'territory-mapping':
+            abort_403(!in_array('pharma_areas', user_modules()));
+            $this->employee->loadMissing([
+                'employeeDetail.designation',
+                'employeeDetail.headquarter.area.region.zone',
+            ]);
+            $this->territoryMapping = $this->buildTerritoryMappingDisplay($this->employee);
+            $this->view = 'employees.ajax.territory-mapping';
+            break;
         case 'attendance':
             return $this->attendance($this->employee->id);
         case 'tasks':
@@ -825,6 +866,9 @@ class EmployeeController extends AccountBaseController
         case 'permissions':
             abort_403(user()->permission('manage_role_permission_setting') != 'all');
 
+            $matrixRoleIds = RoleUser::where('user_id', $id)->pluck('role_id');
+            $matrixRoleName = Role::whereIn('id', $matrixRoleIds)->where('name', '<>', 'admin')->value('name');
+
             if($this->employee->customised_permissions === 1){
                 $this->modulesData = Module::with('permissions')->withCount('customPermissions')->get();
             }else{
@@ -850,6 +894,11 @@ class EmployeeController extends AccountBaseController
                                 ->toArray(),
                 ['settings', 'dashboards']
             );
+
+            $this->employeeModules = array_values(array_unique(array_merge(
+                $this->employeeModules,
+                ModuleSetting::pharmaFinanceMatrixUnlockModules($matrixRoleName)
+            )));
 
             $this->view = 'employees.ajax.permissions';
             break;
@@ -938,7 +987,7 @@ class EmployeeController extends AccountBaseController
     }
 
     /**
-     * XXXXXXXXXXX
+     * Get task chart data for the employee.
      *
      * @return array
      */
@@ -958,7 +1007,7 @@ class EmployeeController extends AccountBaseController
     }
 
     /**
-     * XXXXXXXXXXX
+     * Get ticket chart data for the employee.
      *
      * @return array
      */
@@ -1001,15 +1050,13 @@ class EmployeeController extends AccountBaseController
             $users = $users->where('employee_details.added_by', user()->id);
         }
 
-        $users = $users->select('users.*')->where('status', 'active')->get();
+        $users = $users->with('employeeDetail.designation')->select('users.*')->where('status', 'active')->get();
 
         $options = '';
 
         foreach ($users as $item) {
-            if($item->status == 'active'){
-                $content = ($item->status === 'deactive') ? "<span class='badge badge-pill badge-danger border align-center ml-2 px-2'>Inactive</span>" : '';
-
-                $options .= '<option  data-content="<div class=\'d-inline-block mr-1\'><img class=\'taskEmployeeImg rounded-circle\' src=' . $item->image_url . ' ></div>  ' . $item->name . $content . '" value="' . $item->id . '"> ' . $item->name . ' </option>';
+            if ($item->status == 'active') {
+                $options .= \App\Helper\EmployeeSelectLabel::bootstrapSelectOptionHtml($item, user() ? user()->id : null);
             }
         }
 
@@ -1154,7 +1201,7 @@ class EmployeeController extends AccountBaseController
     }
 
     /**
-     * XXXXXXXXXXX
+     * Send invite email to the specified email address.
      *
      * @return \Illuminate\Http\Response
      */
@@ -1178,7 +1225,7 @@ class EmployeeController extends AccountBaseController
     }
 
     /**
-     * XXXXXXXXXXX
+     * Create an invite link for new employee registration.
      *
      * @return \Illuminate\Http\Response
      */
@@ -1202,13 +1249,14 @@ class EmployeeController extends AccountBaseController
     {
         $employee->employee_id = $request->employee_id;
         $employee->address = $request->address;
+        $employee->permanent_address = $request->permanent_address;
         $employee->hourly_rate = $request->hourly_rate;
         $employee->slack_username = $request->slack_username;
         $employee->department_id = $request->department;
         $employee->designation_id = $request->designation;
-        $employee->headquarter_id = $request->headquarter_id; // Pharma headquarter
         $employee->company_address_id = $request->company_address;
         $employee->reporting_to = $request->reporting_to;
+        $employee->attendance_source = $request->attendance_source ?? 'office'; // SRS 3.1.3: office | field
         $employee->about_me = $request->about_me;
         $employee->joining_date = companyToYmd($request->joining_date);
         $employee->date_of_birth = $request->date_of_birth ? companyToYmd($request->date_of_birth) : null;
@@ -1219,8 +1267,65 @@ class EmployeeController extends AccountBaseController
         $employee->marital_status = $request->marital_status;
         $employee->marriage_anniversary_date = $request->marriage_anniversary_date ? companyToYmd($request->marriage_anniversary_date) : null;
         $employee->employment_type = $request->employment_type;
+        $employee->employment_status = $request->employment_status; // Requirement 3.1.1: Probation / Confirmed / Resigned
         $employee->internship_end_date = $request->internship_end_date ? companyToYmd($request->internship_end_date) : null;
         $employee->contract_end_date = $request->contract_end_date ? companyToYmd($request->contract_end_date) : null;
+
+        // Requirement 3.1.1: Bank and identity fields
+        $employee->bank_name = $request->bank_name;
+        $employee->bank_account_number = $request->bank_account_number;
+        $employee->ifsc_code = $request->ifsc_code;
+        $employee->bank_branch_name = $request->bank_branch_name;
+        $employee->uan_number = $request->uan_number;
+        $employee->pan_number = $request->pan_number;
+        $employee->aadhar_number = $request->aadhar_number;
+        
+        // Handle areas (ABM), regions (RBM) and zones (Zonal Manager) per designation
+        $designation = Designation::find($request->designation);
+        $isABM = PharmaDesignationHelper::isABM($designation);
+        $isRBM = PharmaDesignationHelper::isRBM($designation);
+        $isZM = PharmaDesignationHelper::isZM($designation);
+        $isMISExecutive = PharmaDesignationHelper::isMISExecutive($designation);
+
+        if ($isABM || $isRBM || $isZM || $isMISExecutive) {
+            $employee->headquarter_id = null; // Access derived from areas/regions/zones or full access for MIS Executive
+        } else {
+            $employee->headquarter_id = $request->headquarter_id; // Pharma headquarter for MR etc.
+        }
+        
+        if ($isABM) {
+            if ($request->has('area_ids') && is_array($request->area_ids) && !empty($request->area_ids)) {
+                $employee->areas = json_encode($request->area_ids);
+            } else {
+                $employee->areas = null;
+            }
+            $employee->regions = null;
+            $employee->zones = null;
+        } elseif ($isRBM) {
+            if ($request->has('region_ids') && is_array($request->region_ids) && !empty($request->region_ids)) {
+                $employee->regions = json_encode($request->region_ids);
+            } else {
+                $employee->regions = null;
+            }
+            $employee->areas = null;
+            $employee->zones = null;
+        } elseif ($isZM) {
+            if ($request->has('zone_ids') && is_array($request->zone_ids) && !empty($request->zone_ids)) {
+                $employee->zones = json_encode($request->zone_ids);
+            } else {
+                $employee->zones = null;
+            }
+            $employee->areas = null;
+            $employee->regions = null;
+        } elseif ($isMISExecutive) {
+            $employee->areas = null;
+            $employee->regions = null;
+            $employee->zones = null;
+        } else {
+            $employee->areas = null;
+            $employee->regions = null;
+            $employee->zones = null;
+        }
     }
 
     public function importMember()
@@ -1257,6 +1362,121 @@ class EmployeeController extends AccountBaseController
         $batch = $this->importJobProcess($request, EmployeeImport::class, ImportEmployeeJob::class);
 
         return Reply::successWithData(__('messages.importProcessStart'), ['batch' => $batch]);
+    }
+
+    private function buildTerritoryMappingDisplay(User $employee): array
+    {
+        $companyId = (int) company()->id;
+        $ed = $employee->employeeDetail;
+
+        $reportingChainBottomUp = [];
+        if ($ed && $ed->reporting_to) {
+            $nextId = (int) $ed->reporting_to;
+            $guard = 0;
+            while ($nextId && $guard++ < 40) {
+                $mgr = User::with('employeeDetail.designation')
+                    ->withoutGlobalScope(ActiveScope::class)
+                    ->find($nextId);
+                if (!$mgr) {
+                    break;
+                }
+                $reportingChainBottomUp[] = [
+                    'name' => $mgr->name,
+                    'designation' => $mgr->employeeDetail?->designation?->name,
+                ];
+                $nextId = (int) ($mgr->employeeDetail?->reporting_to ?? 0);
+                if ($nextId === 0) {
+                    break;
+                }
+            }
+        }
+
+        $reportingChainTopDown = array_reverse($reportingChainBottomUp);
+
+        $zones = [];
+        $regions = [];
+        $areas = [];
+        $headquarterLabel = null;
+        $hqHierarchy = null;
+
+        if ($ed) {
+            $zoneIds = collect(is_array($ed->zones) ? $ed->zones : (json_decode($ed->zones ?? '[]', true) ?: []))
+                ->map(fn ($z) => (int) $z)->filter()->unique()->values();
+            $regionIds = collect(is_array($ed->regions) ? $ed->regions : (json_decode($ed->regions ?? '[]', true) ?: []))
+                ->map(fn ($r) => (int) $r)->filter()->unique()->values();
+            $areaIds = collect(is_array($ed->areas) ? $ed->areas : (json_decode($ed->areas ?? '[]', true) ?: []))
+                ->map(fn ($a) => (int) $a)->filter()->unique()->values();
+
+            if ($zoneIds->isNotEmpty()) {
+                $zones = PharmaZone::where('company_id', $companyId)
+                    ->whereIn('id', $zoneIds)
+                    ->orderBy('name')
+                    ->pluck('name')
+                    ->values()
+                    ->all();
+            }
+
+            if ($regionIds->isNotEmpty()) {
+                $regions = PharmaRegion::with('zone')
+                    ->where('company_id', $companyId)
+                    ->whereIn('id', $regionIds)
+                    ->orderBy('name')
+                    ->get()
+                    ->map(function ($r) {
+                        $z = $r->zone->name ?? null;
+
+                        return $z ? ($r->name.' ('.$z.')') : $r->name;
+                    })
+                    ->values()
+                    ->all();
+            }
+
+            if ($areaIds->isNotEmpty()) {
+                $areas = PharmaArea::with('region.zone')
+                    ->where('company_id', $companyId)
+                    ->whereIn('id', $areaIds)
+                    ->orderBy('name')
+                    ->get()
+                    ->map(function ($a) {
+                        return [
+                            'name' => $a->name,
+                            'region' => $a->region->name ?? '—',
+                            'zone' => ($a->region && $a->region->zone) ? $a->region->zone->name : '—',
+                        ];
+                    })
+                    ->values()
+                    ->all();
+            }
+
+            $hqId = $ed->headquarter_id ?? $ed->pharma_headquarter_id ?? null;
+            if ($hqId) {
+                $hq = PharmaHeadquarter::with(['area.region.zone'])
+                    ->where('company_id', $companyId)
+                    ->find($hqId);
+                if ($hq) {
+                    $headquarterLabel = $hq->name;
+                    if ($hq->area) {
+                        $hqHierarchy = [
+                            'zone' => ($hq->area->region && $hq->area->region->zone) ? $hq->area->region->zone->name : '—',
+                            'region' => $hq->area->region->name ?? '—',
+                            'area' => $hq->area->name,
+                            'hq' => $hq->name,
+                        ];
+                    }
+                }
+            }
+        }
+
+        return [
+            'employeeName' => $employee->name,
+            'designation' => $ed?->designation?->name,
+            'reportingChainTopDown' => $reportingChainTopDown,
+            'zones' => $zones,
+            'regions' => $regions,
+            'areas' => $areas,
+            'headquarterLabel' => $headquarterLabel,
+            'hqHierarchy' => $hqHierarchy,
+        ];
     }
 
 }

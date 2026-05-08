@@ -88,7 +88,7 @@ class PurchaseVendorPaymentController extends AccountBaseController
      */
     public function store(StoreRequest $request)
     {
-        $redirectUrl = urldecode($request->redirect_url);
+        $redirectUrl = urldecode($request->redirect_url ?? '');
 
         if ($redirectUrl == '') {
             $redirectUrl = route('vendor-payments.index');

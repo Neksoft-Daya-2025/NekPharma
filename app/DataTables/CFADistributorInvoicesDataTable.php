@@ -111,13 +111,36 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
 
         $datatables->editColumn('status', function ($row) {
             $status = '';
+            $canUpdatePayment = ($this->addPaymentPermission == 'all' || ($this->addPaymentPermission == 'added' && $row->added_by == user()->id));
 
             if ($row->status == 'paid') {
-                $status = '<span class="badge badge-success">' . __('app.paid') . '</span>';
+                // Paid invoices - clickable to view payment history (read-only)
+                if ($canUpdatePayment) {
+                    $status = '<span class="badge badge-success payment-status-badge" style="cursor: pointer;" 
+                                    data-invoice-id="' . $row->id . '" 
+                                    data-current-status="paid" 
+                                    title="Click to view payment history">' . __('app.paid') . '</span>';
+                } else {
+                    $status = '<span class="badge badge-success">' . __('app.paid') . '</span>';
+                }
             } elseif ($row->status == 'unpaid') {
-                $status = '<span class="badge badge-danger">' . __('app.unpaid') . '</span>';
+                if ($canUpdatePayment) {
+                    $status = '<span class="badge badge-danger payment-status-badge" style="cursor: pointer;" 
+                                    data-invoice-id="' . $row->id . '" 
+                                    data-current-status="unpaid" 
+                                    title="Click to add payment">' . __('app.unpaid') . '</span>';
+                } else {
+                    $status = '<span class="badge badge-danger">' . __('app.unpaid') . '</span>';
+                }
             } elseif ($row->status == 'partial') {
-                $status = '<span class="badge badge-warning">' . __('app.partial') . '</span>';
+                if ($canUpdatePayment) {
+                    $status = '<span class="badge badge-warning payment-status-badge" style="cursor: pointer;" 
+                                    data-invoice-id="' . $row->id . '" 
+                                    data-current-status="partial" 
+                                    title="Click to add payment">' . __('app.partial') . '</span>';
+                } else {
+                    $status = '<span class="badge badge-warning">' . __('app.partial') . '</span>';
+                }
             } elseif ($row->status == 'canceled') {
                 $status = '<span class="badge badge-secondary">' . __('app.canceled') . '</span>';
             } else {
@@ -138,6 +161,22 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
 
         $datatables->editColumn('due_date', function ($row) {
             return $row->due_date->format(company()->date_format);
+        });
+
+        $datatables->editColumn('delivery_status', function ($row) {
+            $isReceived = ($row->delivery_status ?? 'in_transit') == 'received';
+            $statusText = $isReceived ? 'Received' : 'In Transit';
+            $statusClass = $isReceived ? 'success' : 'warning';
+            
+            return '<div class="d-flex align-items-center">
+                <label class="switch switch-sm mr-2">
+                    <input type="checkbox" class="delivery-status-toggle" 
+                           data-invoice-id="' . $row->id . '" 
+                           ' . ($isReceived ? 'checked' : '') . '>
+                    <span class="slider round"></span>
+                </label>
+                <span class="badge badge-' . $statusClass . '">' . $statusText . '</span>
+            </div>';
         });
 
         $datatables->addColumn('invoice', function ($row) {
@@ -164,7 +203,7 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
             return $row->amountDue();
         });
 
-        $datatables->rawColumns(['invoice_number', 'status', 'action']);
+        $datatables->rawColumns(['invoice_number', 'status', 'action', 'delivery_status']);
 
         return $datatables;
     }
@@ -231,6 +270,7 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
                 'invoices.added_by',
                 'invoices.hash',
                 'invoices.custom_invoice_number',
+                'invoices.delivery_status',
             ])
             ->addSelect('invoices.company_id')
             ->distinct();
@@ -279,7 +319,8 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
         }
 
         if (in_array('client', user_roles())) {
-            $model = $model->where('invoices.send_status', 1);
+            // CFA distributors (client role) should always see their own CFA invoices,
+            // regardless of send_status — they are the consignee, not a regular customer.
             $model = $model->where('invoices.client_id', $userId);
         }
 
@@ -345,10 +386,11 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
             __('modules.invoices.invoiceDate') => ['data' => 'issue_date', 'name' => 'invoices.issue_date', 'title' => __('modules.invoices.invoiceDate')],
             __('app.dueDate') => ['data' => 'due_date', 'name' => 'invoices.due_date', 'title' => __('app.dueDate')],
             __('modules.invoices.total') => ['data' => 'total', 'name' => 'invoices.total', 'class' => 'text-right', 'exportable' => false, 'visible' => true, 'title' => __('modules.invoices.total')],
-            __('modules.invoices.total') . ' ' . __('modules.invoices.amount') => ['data' => 'export_total', 'name' => 'export_total', 'visible' => false, 'exportable' => true, 'title' => __('modules.invoices.total') . ' ' . __('modules.invoices.amount')],
-            __('modules.invoices.paid') => ['data' => 'export_paid', 'name' => 'paid', 'visible' => false, 'title' => __('modules.invoices.paid') . ' ' . __('modules.invoices.amount')],
-            __('modules.invoices.unpaid') => ['data' => 'export_unpaid', 'name' => 'unpaid', 'visible' => false, 'title' => __('modules.invoices.unpaid') . ' ' . __('modules.invoices.amount')],
-            __('app.status') => ['data' => 'status', 'name' => 'invoices.status', 'width' => '10%', 'title' => __('app.status')]
+            __('modules.invoices.total') . ' ' . __('modules.invoices.amount') => ['data' => 'export_total', 'name' => 'invoices.total', 'visible' => false, 'exportable' => true, 'orderable' => false, 'title' => __('modules.invoices.total') . ' ' . __('modules.invoices.amount')],
+            __('modules.invoices.paid') => ['data' => 'export_paid', 'name' => 'cfa_dist_export_paid', 'visible' => false, 'orderable' => false, 'searchable' => false, 'title' => __('modules.invoices.paid') . ' ' . __('modules.invoices.amount')],
+            __('modules.invoices.unpaid') => ['data' => 'export_unpaid', 'name' => 'cfa_dist_export_unpaid', 'visible' => false, 'orderable' => false, 'searchable' => false, 'title' => __('modules.invoices.unpaid') . ' ' . __('modules.invoices.amount')],
+            __('app.status') => ['data' => 'status', 'name' => 'invoices.status', 'width' => '10%', 'title' => __('app.status')],
+            __('Delivery Status') => ['data' => 'delivery_status', 'name' => 'invoices.delivery_status', 'width' => '12%', 'title' => __('Delivery Status'), 'orderable' => false, 'searchable' => false]
         ];
 
         $action = [
@@ -360,7 +402,31 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
                 ->addClass('text-right pr-20')
         ];
 
-        return array_merge($data, CustomFieldGroup::customFieldsDataMerge(new Invoice()), $action);
+        // Get custom fields and hide Mfr column
+        $customFields = CustomFieldGroup::customFieldsDataMerge(new Invoice());
+        
+        // Remove Mfr column completely - check all possible variations
+        $fieldsToRemove = [];
+        foreach ($customFields as $key => $field) {
+            $fieldKey = strtolower($key);
+            $fieldTitle = strtolower($field['title'] ?? '');
+            
+            // Mark for removal if key or title matches Mfr, MFR, Manufacturer, or any variation
+            if ($fieldKey === 'mfr' || 
+                $fieldTitle === 'mfr' || 
+                $fieldTitle === 'manufacturer' ||
+                strpos($fieldTitle, 'mfr') !== false ||
+                strpos($fieldKey, 'mfr') !== false) {
+                $fieldsToRemove[] = $key;
+            }
+        }
+        
+        // Remove the Mfr fields from the array
+        foreach ($fieldsToRemove as $key) {
+            unset($customFields[$key]);
+        }
+
+        return array_merge($data, $customFields, $action);
     }
 }
 

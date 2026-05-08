@@ -764,6 +764,21 @@ if (!function_exists('abort_403')) {
 
 }
 
+if (!function_exists('user_is_admin_like')) {
+
+    /**
+     * True when the current user is admin or senior-manager-pmt (non-HR "super" technical access).
+     */
+    // @codingStandardsIgnoreLine
+    function user_is_admin_like(): bool
+    {
+        $u = user();
+
+        return $u && $u->hasAdminLikeAccess();
+    }
+
+}
+
 if (!function_exists('sidebar_user_perms')) {
 
     // @codingStandardsIgnoreLine
@@ -817,6 +832,9 @@ if (!function_exists('sidebar_user_perms')) {
                 'manage_award',
                 'view_lead_report',
                 'view_sales_report',
+                'view_dcr_report',
+                'view_zero_sales_report',
+                'view_tp_deviation_report',
                 'view_deals',
                 'view_stockists',
             ];
@@ -1141,6 +1159,37 @@ if (!function_exists('user_role_ids')) {
         }
 
         return null;
+    }
+
+}
+
+if (!function_exists('user_hierarchy_level')) {
+
+    /**
+     * Requirement 2.1: Highest hierarchy level of the user's roles (1 = MR, 8 = Admin).
+     *
+     * @param \App\Models\User|null $user
+     * @return int|null
+     */
+    function user_hierarchy_level($user = null)
+    {
+        return \App\Helper\RoleHierarchy::userHierarchyLevel($user);
+    }
+
+}
+
+if (!function_exists('can_view_user_by_hierarchy')) {
+
+    /**
+     * Requirement 2.2: Whether viewer can view target's data (higher can view lower).
+     *
+     * @param \App\Models\User|null $viewer
+     * @param \App\Models\User|null $target
+     * @return bool
+     */
+    function can_view_user_by_hierarchy($viewer = null, $target = null)
+    {
+        return \App\Helper\RoleHierarchy::canViewUserData($viewer, $target);
     }
 
 }

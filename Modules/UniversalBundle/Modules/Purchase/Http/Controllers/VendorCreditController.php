@@ -166,7 +166,7 @@ class VendorCreditController extends AccountBaseController
         $vendorCredit->bill_id = $request->billId;
         $vendorCredit->save();
 
-        $redirectUrl = urldecode($request->redirect_url);
+        $redirectUrl = urldecode($request->redirect_url ?? '');
 
         if ($redirectUrl == '') {
             $redirectUrl = route('vendor-credits.index');

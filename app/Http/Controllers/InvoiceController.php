@@ -8,6 +8,7 @@ use App\Models\Tax;
 use App\Models\User;
 use App\Helper\Files;
 use App\Helper\Reply;
+use App\Helpers\PharmaDesignationHelper;
 use App\Models\Order;
 use App\Models\Invoice;
 use App\Models\Payment;
@@ -28,6 +29,7 @@ use App\Models\InvoiceSetting;
 use App\Models\ProjectTimeLog;
 use App\Events\NewInvoiceEvent;
 use App\Models\ProductCategory;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use App\Models\InvoiceItemImage;
 use App\Models\ProjectMilestone;
@@ -37,6 +39,9 @@ use App\Events\NewPaymentEvent;
 use App\Models\OfflinePaymentMethod;
 use App\DataTables\InvoicesDataTable;
 use App\DataTables\CFADistributorInvoicesDataTable;
+use App\DataTables\CFAStockistInvoicesDataTable;
+use App\DataTables\CFADistributorInventoryDataTable;
+use App\DataTables\CFAStockistInventoryDataTable;
 use App\Traits\EmployeeActivityTrait;
 use App\Http\Requests\InvoiceFileStore;
 use App\Models\PaymentGatewayCredentials;
@@ -46,8 +51,11 @@ use App\Http\Requests\Payments\InvoicePayment;
 use Modules\Purchase\Entities\PurchaseProduct;
 use App\Http\Requests\Stripe\StoreStripeDetail;
 use Modules\Purchase\Entities\PurchaseStockAdjustment;
+use Modules\Purchase\Entities\PurchaseBatchStock;
 use App\Models\ProductPurchaseDetail;
 use App\Models\CFADistributorStock;
+use App\Models\CFAStockist;
+use App\Models\CFAStockistStock;
 use App\Http\Requests\Admin\Client\StoreShippingAddressRequest;
 use App\Models\InvoicePaymentDetail;
 use App\Helper\UserService;
@@ -345,7 +353,7 @@ class InvoiceController extends AccountBaseController
             }
         }
 
-        $redirectUrl = urldecode($request->redirect_url);
+        $redirectUrl = urldecode($request->redirect_url ?? '');
 
         if ($redirectUrl == '') {
             $redirectUrl = route('invoices.index');
@@ -546,14 +554,18 @@ class InvoiceController extends AccountBaseController
     {
         $firstInvoice = Invoice::orderBy('id', 'desc')->first();
         $invoice = Invoice::findOrFail($id);
-        $this->deletePermission = user()->permission('delete_invoices');
-        $userId = UserService::getUserId();
-        abort_403(!(
-            $this->deletePermission == 'all'
-            || ($this->deletePermission == 'added' && $invoice->added_by == $userId || $invoice->added_by == user()->id)
-            || ($this->deletePermission == 'owned' && $invoice->client_id == $userId)
-            || ($this->deletePermission == 'both' && ($invoice->client_id == $userId) || ($invoice->added_by == $userId || $invoice->added_by == user()->id))
-        ));
+        if (CFAStockistStock::where('invoice_id', $invoice->id)->exists()) {
+            abort_403(!$this->userCanDeleteCfaStockistInvoice($invoice));
+        } else {
+            $this->deletePermission = user()->permission('delete_invoices');
+            $userId = UserService::getUserId();
+            abort_403(!(
+                $this->deletePermission == 'all'
+                || ($this->deletePermission == 'added' && $invoice->added_by == $userId || $invoice->added_by == user()->id)
+                || ($this->deletePermission == 'owned' && $invoice->client_id == $userId)
+                || ($this->deletePermission == 'both' && ($invoice->client_id == $userId) || ($invoice->added_by == $userId || $invoice->added_by == user()->id))
+            ));
+        }
 
         // if ($firstInvoice->id == $id) {
             if (CreditNotes::where('invoice_id', $id)->exists()) {
@@ -680,18 +692,22 @@ class InvoiceController extends AccountBaseController
         $items = InvoiceItems::whereNotNull('taxes')->where('invoice_id', $this->invoice->id)->get();
 
         foreach ($items as $item) {
-
-            foreach (json_decode($item->taxes) as $tax) {
+            $taxes = json_decode($item->taxes, true);
+            if (!is_array($taxes)) {
+                continue;
+            }
+            
+            foreach ($taxes as $tax) {
                 $this->tax = InvoiceItems::taxbyid($tax)->first();
 
-                if (!isset($taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'])) {
+                if ($this->tax && !isset($taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'])) {
 
                     if ($this->invoice->calculate_tax == 'after_discount' && $this->discount > 0) {
                         $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = ($item->amount - ($item->amount / $this->invoice->sub_total) * $this->discount) * ($this->tax->rate_percent / 100);
                     } else {
                         $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $item->amount * ($this->tax->rate_percent / 100);
                     }
-                } else {
+                } elseif ($this->tax) {
                     if ($this->invoice->calculate_tax == 'after_discount' && $this->discount > 0) {
                         $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] + (($item->amount - ($item->amount / $this->invoice->sub_total) * $this->discount) * ($this->tax->rate_percent / 100));
                     } else {
@@ -709,9 +725,19 @@ class InvoiceController extends AccountBaseController
 
         $this->payments = Payment::with(['offlineMethod'])->where('invoice_id', $this->invoice->id)->where('status', 'complete')->orderByDesc('paid_on')->get();
 
-        // Check if this is a CFA/Distributor invoice
+        // Check if this is a CFA/Distributor invoice or CFA/Stockist invoice
         $isCFAInvoice = false;
-        if ($this->invoice->cfaDistributorStocks && $this->invoice->cfaDistributorStocks->count() > 0) {
+        $isCFAStockistInvoice = false;
+        $isIGSTInvoice = request('type') == 'igst' || request()->has('igst');
+        // Also check stored invoice type
+        if (!$isIGSTInvoice && $this->invoice->note && strpos($this->invoice->note, '<!--IGST_INVOICE-->') !== false) {
+            $isIGSTInvoice = true;
+        }
+        
+        if ($this->invoice->cfaStockistStocks && $this->invoice->cfaStockistStocks->count() > 0) {
+            $isCFAStockistInvoice = true;
+            $isCFAInvoice = true;
+        } elseif ($this->invoice->cfaDistributorStocks && $this->invoice->cfaDistributorStocks->count() > 0) {
             $isCFAInvoice = true;
         } elseif ($this->invoice->items) {
             // Check if any item has purchase_entry_id
@@ -727,19 +753,33 @@ class InvoiceController extends AccountBaseController
         $pdf->setOption('enable_php', true);
         $pdf->setOption('isHtml5ParserEnabled', true);
         $pdf->setOption('isRemoteEnabled', true);
+        $pdf->setOption('dpi', 150);
         $pdf->setPaper('a4', 'landscape'); // Set landscape orientation for CFA invoices
 
         $customCss = '<style>
                 * { text-transform: none !important; }
             </style>';
 
-        // Use pharmaceutical template for CFA/Distributor invoices
+        // Use pharmaceutical template for CFA/Distributor or CFA/Stockist invoices
         if ($isCFAInvoice) {
             // Load complete HTML document for PDF
-            $htmlContent = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>GST Invoice - ' . $this->invoice->invoice_number . '</title>' . $customCss . '</head><body>';
-            $htmlContent .= view('invoices.cfa-distributor.pharma-invoice', $this->data)->render();
+            $template = 'invoices.cfa-distributor.pharma-invoice';
+            
+            // Determine which template to use
+            if ($isIGSTInvoice) {
+                if ($isCFAStockistInvoice) {
+                    $template = 'invoices.cfa-stockist.igst-invoice';
+                } else {
+                    $template = 'invoices.cfa-distributor.igst-invoice';
+                }
+            } elseif ($isCFAStockistInvoice) {
+                $template = 'invoices.cfa-stockist.pharma-invoice';
+            }
+            
+            $htmlContent = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' . ($isIGSTInvoice ? 'IGST' : 'GST') . ' Invoice - ' . $this->invoice->invoice_number . '</title><meta name="viewport" content="width=device-width, initial-scale=1.0">' . $customCss . '</head><body style="margin:0;padding:0;">';
+            $htmlContent .= view($template, $this->data)->render();
             $htmlContent .= '</body></html>';
-            $pdf->loadHTML($htmlContent);
+            $pdf->loadHTML($htmlContent, 'UTF-8');
             $pdf->setPaper('a4', 'landscape'); // Ensure landscape for PDF
         } else {
             $pdf->loadHTML($customCss . view('invoices.pdf.' . $this->invoiceSetting->template, $this->data)->render());
@@ -782,8 +822,12 @@ class InvoiceController extends AccountBaseController
             ->get();
 
         foreach ($items as $item) {
-
-            foreach (json_decode($item->taxes) as $tax) {
+            $taxes = json_decode($item->taxes, true);
+            if (!is_array($taxes)) {
+                continue;
+            }
+            
+            foreach ($taxes as $tax) {
                 $this->tax = InvoiceItems::taxbyid($tax)->first();
 
                 if ($this->tax) {
@@ -1170,18 +1214,22 @@ class InvoiceController extends AccountBaseController
             ->get();
 
         foreach ($items as $item) {
-
-            foreach (json_decode($item->taxes) as $tax) {
+            $taxes = json_decode($item->taxes, true);
+            if (!is_array($taxes)) {
+                continue;
+            }
+            
+            foreach ($taxes as $tax) {
                 $this->tax = InvoiceItems::taxbyid($tax)->first();
 
-                if (!isset($taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'])) {
+                if ($this->tax && !isset($taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'])) {
 
                     if ($this->invoice->calculate_tax == 'after_discount' && $this->discount > 0) {
                         $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = ($item->amount - ($item->amount / $this->invoice->sub_total) * $this->discount) * ($this->tax->rate_percent / 100);
                     } else {
                         $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $item->amount * ($this->tax->rate_percent / 100);
                     }
-                } else {
+                } elseif ($this->tax) {
                     if ($this->invoice->calculate_tax == 'after_discount' && $this->discount > 0) {
                         $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] + (($item->amount - ($item->amount / $this->invoice->sub_total) * $this->discount) * ($this->tax->rate_percent / 100));
                     } else {
@@ -1300,6 +1348,307 @@ class InvoiceController extends AccountBaseController
         // Load invoice settings for HSN code display
         $this->invoiceSetting = invoice_setting();
         
+        // Check if this is for CFA Stockist invoice (uses CFA Distributor Stock)
+        if ($request->has('cfa_distributor_stock_id') && $request->cfa_distributor_stock_id) {
+            $cfaDistributorStock = CFADistributorStock::with([
+                'product' => function($query) {
+                    $query->select('id', 'name', 'hsn_sac_code', 'sku', 'packing', 'vendor_id', 'unit_id', 'taxes', 'company_id');
+                },
+                'product.vendor:id,primary_name,company_name',
+                'product.unit:id,unit_type',
+                'invoice',
+                'purchaseEntry' => function($query) {
+                    $query->select('id', 'product_id', 'vendor_id', 'scheme_enabled', 'total_quantity', 'free_quantity', 'batch', 'expiry', 'mrp', 'pts', 'ptr', 'dis', 'tax');
+                },
+                'purchaseEntry.vendor:id,primary_name,company_name'
+            ])
+            ->where('id', $request->cfa_distributor_stock_id)
+            ->where('company_id', company()->id)
+            ->first();
+            
+            if (!$cfaDistributorStock || !$cfaDistributorStock->product) {
+                return Reply::error('CFA Distributor Stock not found.');
+            }
+            
+            // Set items to the product from CFA Distributor Stock
+            $this->items = $cfaDistributorStock->product;
+            
+            // Ensure product has required properties
+            if (!$this->items) {
+                return Reply::error('Product not found for this CFA Distributor Stock entry.');
+            }
+            
+            // Calculate total available stock for this product from all CFA Distributor Stock entries
+            // This shows the total stock available across all batches for the product
+            $productId = $cfaDistributorStock->product_id;
+            $cfaDistributorId = $cfaDistributorStock->cfa_distributor_id;
+            
+            try {
+                $totalAvailableStock = CFADistributorStock::where('product_id', $productId)
+                    ->where('cfa_distributor_id', $cfaDistributorId)
+                    ->where('available_quantity', '>', 0)
+                    ->where('company_id', company()->id)
+                    ->whereHas('invoice', function($query) {
+                        $query->where('delivery_status', 'received');
+                    })
+                    ->sum('available_quantity');
+            } catch (\Exception $e) {
+                // Fallback: if delivery_status column doesn't exist or relationship fails, get all available stocks
+                \Log::warning('Error loading total available stock with delivery_status filter', ['error' => $e->getMessage()]);
+                $totalAvailableStock = CFADistributorStock::where('product_id', $productId)
+                    ->where('cfa_distributor_id', $cfaDistributorId)
+                    ->where('available_quantity', '>', 0)
+                    ->where('company_id', company()->id)
+                    ->sum('available_quantity');
+            }
+            
+            // Add stock information - use total available stock from all batches
+            $this->items->available_stock = max(0, $totalAvailableStock ?? 0);
+            $this->items->cfa_distributor_stock_id = $cfaDistributorStock->id;
+            $this->items->batch = $cfaDistributorStock->batch ?? '';
+            // Format expiry date as month-year only (YYYY-MM format for month input)
+            if ($cfaDistributorStock->expiry) {
+                if ($cfaDistributorStock->expiry instanceof \Carbon\Carbon) {
+                    $this->items->expiry = $cfaDistributorStock->expiry->format('Y-m');
+                } elseif (is_string($cfaDistributorStock->expiry)) {
+                    // Extract year-month from date string
+                    $this->items->expiry = substr($cfaDistributorStock->expiry, 0, 7);
+                } else {
+                    $this->items->expiry = $cfaDistributorStock->expiry;
+                }
+            } else {
+                $this->items->expiry = null;
+            }
+            $this->items->pts = $cfaDistributorStock->pts ?? 0;
+            $this->items->ptr = $cfaDistributorStock->ptr ?? 0;
+            $this->items->mrp = $cfaDistributorStock->mrp ?? 0;
+            $this->items->dis = $cfaDistributorStock->dis ?? 0;
+            
+            // Set HSN/SKU code - same priority as CFA Distributor invoice: hsn_sac_code ?? sku
+            // Ensure both fields are explicitly set on items object for the view
+            $productSku = $cfaDistributorStock->product->sku ?? null;
+            $productHsnSac = $cfaDistributorStock->product->hsn_sac_code ?? null;
+            
+            // Get HSN/SKU code - priority: hsn_sac_code ?? sku
+            $hsnCode = $productHsnSac ?? $productSku ?? null;
+            
+            if ($hsnCode) {
+                // Set hsn_sac_code (primary field)
+                $this->items->hsn_sac_code = $hsnCode;
+                // Also set sku if product has it, otherwise use hsn_sac_code as fallback
+                $this->items->sku = $productSku ?? $hsnCode;
+            } else {
+                // If still empty, try to get it directly from database
+                $productFromDb = \App\Models\Product::select('id', 'hsn_sac_code', 'sku')
+                    ->where('id', $cfaDistributorStock->product->id)
+                    ->first();
+                if ($productFromDb) {
+                    $hsnCode = $productFromDb->hsn_sac_code ?? $productFromDb->sku ?? null;
+                    if ($hsnCode) {
+                        $this->items->hsn_sac_code = $hsnCode;
+                        $this->items->sku = $productFromDb->sku ?? $hsnCode;
+                    }
+                }
+            }
+            
+            // Ensure packing is set (from product)
+            if (!isset($this->items->packing)) {
+                $this->items->packing = $cfaDistributorStock->product->packing ?? '';
+            }
+            
+            // Add vendor information (MFR) - prioritize purchase entry vendor over product vendor
+            // Prioritize company_name over primary_name for MFR display
+            if ($cfaDistributorStock->purchaseEntry && $cfaDistributorStock->purchaseEntry->vendor) {
+                $this->items->vendor_name = $cfaDistributorStock->purchaseEntry->vendor->company_name ?? ($cfaDistributorStock->purchaseEntry->vendor->primary_name ?? '');
+            } elseif ($cfaDistributorStock->product->vendor) {
+                $this->items->vendor_name = $cfaDistributorStock->product->vendor->company_name ?? ($cfaDistributorStock->product->vendor->primary_name ?? '');
+            } else {
+                $this->items->vendor_name = '';
+            }
+            
+            // Load scheme from purchase entry if available
+            // Check if purchase entry exists and has scheme enabled
+            if ($cfaDistributorStock->purchaseEntry) {
+                $purchaseEntry = $cfaDistributorStock->purchaseEntry;
+                // Check scheme_enabled (can be boolean true, integer 1, or string '1')
+                $schemeEnabled = $purchaseEntry->scheme_enabled ?? false;
+                if ($schemeEnabled == true || $schemeEnabled == 1 || $schemeEnabled === '1') {
+                    $schemeInfo = '';
+                    $totalQty = $purchaseEntry->total_quantity ?? null;
+                    $freeQty = $purchaseEntry->free_quantity ?? null;
+                    
+                    if ($totalQty && $freeQty) {
+                        $schemeInfo = $totalQty . '+' . $freeQty;
+                    } elseif ($totalQty) {
+                        $schemeInfo = (string)$totalQty;
+                    }
+                    $this->items->scheme = $schemeInfo;
+                } else {
+                    $this->items->scheme = '';
+                }
+            } else {
+                $this->items->scheme = '';
+            }
+            
+            // Load batches from CFA Distributor Stock for this product
+            $productId = $cfaDistributorStock->product->id;
+            $cfaDistributorId = $cfaDistributorStock->cfa_distributor_id;
+            
+            // Load batches - only include stocks from invoices with delivery_status = 'received'
+            try {
+                $batchesQuery = CFADistributorStock::where('product_id', $productId)
+                    ->where('cfa_distributor_id', $cfaDistributorId)
+                    ->where('available_quantity', '>', 0)
+                    ->where('company_id', company()->id)
+                    ->whereHas('invoice', function($query) {
+                        $query->where('delivery_status', 'received');
+                    })
+                    ->select('id', 'batch', 'expiry', 'mrp', 'pts', 'ptr', 'dis', 'available_quantity', 'created_at')
+                    ->orderBy('created_at', 'desc')
+                    ->get();
+            } catch (\Exception $e) {
+                // Fallback: if delivery_status column doesn't exist or relationship fails, get all available stocks
+                \Log::warning('Error loading batches with delivery_status filter', ['error' => $e->getMessage()]);
+                $batchesQuery = CFADistributorStock::where('product_id', $productId)
+                    ->where('cfa_distributor_id', $cfaDistributorId)
+                    ->where('available_quantity', '>', 0)
+                    ->where('company_id', company()->id)
+                    ->select('id', 'batch', 'expiry', 'mrp', 'pts', 'ptr', 'dis', 'available_quantity', 'created_at')
+                    ->orderBy('created_at', 'desc')
+                    ->get();
+            }
+            
+            // Process batches
+            $this->batches = $batchesQuery->map(function($stock) {
+                return (object)[
+                    'id' => $stock->id,
+                    'cfa_distributor_stock_id' => $stock->id,
+                    'batch' => $stock->batch ?? 'No Batch',
+                    'expiry' => $stock->expiry,
+                    'mrp' => $stock->mrp ?? 0,
+                    'pts' => $stock->pts ?? 0,
+                    'ptr' => $stock->ptr ?? 0,
+                    'dis' => $stock->dis ?? 0,
+                    'display_dis' => $stock->dis ?? 0,
+                    'available_quantity' => $stock->available_quantity ?? 0,
+                    'created_at' => $stock->created_at
+                ];
+            });
+            
+            // Set purchaseEntry for CFA Stockist invoices (from CFA Distributor Stock)
+            $this->purchaseEntry = $cfaDistributorStock->purchaseEntry ?? null;
+            
+            // Check if we're loading an existing invoice item (for edit mode)
+            $invoiceItem = null;
+            if ($request->has('invoice_item_id') && $request->invoice_item_id) {
+                $invoiceItem = InvoiceItems::find($request->invoice_item_id);
+            }
+            
+            try {
+                $exchangeRate = Currency::findOrFail($request->currencyId);
+                
+                if ($exchangeRate->exchange_rate == $request->exchangeRate) {
+                    $exRate = $exchangeRate->exchange_rate;
+                } else {
+                    $exRate = floatval($request->exchangeRate ?: 1);
+                }
+            } catch (\Exception $e) {
+                // Fallback to default exchange rate if currency not found
+                $exRate = floatval($request->exchangeRate ?: 1);
+            }
+            
+            // If loading existing invoice item, use saved values; otherwise use CFA Distributor Stock defaults
+            if ($invoiceItem) {
+                $this->items->price = $invoiceItem->unit_price ?? 0;
+                $this->items->taxes = $invoiceItem->taxes;
+                // Use saved scheme, MFR from invoice item if available
+                if (isset($invoiceItem->scheme)) {
+                    $this->items->scheme = $invoiceItem->scheme;
+                }
+                if (isset($invoiceItem->mfr)) {
+                    $this->items->vendor_name = $invoiceItem->mfr;
+                }
+            } else {
+                // Use PTS as default price for CFA Distributor Stock
+                // Convert to invoice currency if exchange rate is not 1
+                $basePrice = $cfaDistributorStock->pts ?? 0;
+                if ($exRate > 0 && $exRate != 1) {
+                    $this->items->price = floatval($basePrice) / floatval($exRate);
+                } else {
+                    $this->items->price = floatval($basePrice);
+                }
+                $this->items->price = number_format((float)$this->items->price, 2, '.', '');
+                
+                // Load taxes - prioritize purchase entry taxes over product taxes
+                // Purchase entry taxes are more specific and reflect the actual taxes used in the CFA Distributor invoice
+                $purchaseEntryTaxes = null;
+                if ($cfaDistributorStock->purchaseEntry && $cfaDistributorStock->purchaseEntry->tax) {
+                    $purchaseEntryTaxes = $cfaDistributorStock->purchaseEntry->tax;
+                    // Purchase entry tax is cast as array in the model
+                    if (is_array($purchaseEntryTaxes) && !empty($purchaseEntryTaxes)) {
+                        $this->items->taxes = json_encode($purchaseEntryTaxes);
+                    } elseif (is_string($purchaseEntryTaxes)) {
+                        $decoded = json_decode($purchaseEntryTaxes, true);
+                        $this->items->taxes = is_array($decoded) && !empty($decoded) ? json_encode($decoded) : $purchaseEntryTaxes;
+                    } else {
+                        $this->items->taxes = null;
+                    }
+                }
+                
+                // Fallback to product taxes if purchase entry doesn't have taxes
+                if (empty($this->items->taxes) || $this->items->taxes === null) {
+                    $productTaxes = $cfaDistributorStock->product->taxes ?? null;
+                    if ($productTaxes) {
+                        // If taxes is a JSON string, ensure it's valid JSON
+                        if (is_string($productTaxes)) {
+                            $decodedTaxes = json_decode($productTaxes, true);
+                            // If decoding succeeded and it's an array, use it; otherwise keep original
+                            if (is_array($decodedTaxes) && !empty($decodedTaxes)) {
+                                $this->items->taxes = json_encode($decodedTaxes);
+                            } else {
+                                // Try to parse as comma-separated values or single value
+                                $this->items->taxes = $productTaxes;
+                            }
+                        } elseif (is_array($productTaxes) && !empty($productTaxes)) {
+                            // If it's already an array, encode it
+                            $this->items->taxes = json_encode($productTaxes);
+                        } else {
+                            $this->items->taxes = $productTaxes;
+                        }
+                    } else {
+                        $this->items->taxes = null;
+                    }
+                }
+            }
+            
+            $this->exchangeRate = $exRate;
+            $this->invoiceItem = $invoiceItem;
+            
+            $this->taxes = Tax::all();
+            $this->units = UnitType::all();
+            
+            // Pass type parameter to view for IGST invoice handling
+            $this->invoiceType = $request->get('type', '');
+            $this->data['invoiceType'] = $this->invoiceType;
+            $this->data['isIGSTInvoice'] = ($this->invoiceType == 'igst');
+            
+            // Ensure batches is set (even if empty)
+            if (!isset($this->batches)) {
+                $this->batches = collect([]);
+            }
+            
+            try {
+                $view = view('invoices.cfa-stockist.ajax.add-item', $this->data)->render();
+                return Reply::dataOnly(['status' => 'success', 'view' => $view]);
+            } catch (\Exception $e) {
+                \Log::error('Error rendering CFA Stockist add-item view', [
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+                return Reply::error('Error loading product: ' . $e->getMessage());
+            }
+        }
+        
         // Load purchase entry directly (invoice is ONLY associated with purchase entries)
         $purchaseEntry = null;
         
@@ -1402,14 +1751,15 @@ class InvoiceController extends AccountBaseController
         }
         
         // Add vendor information from purchase entry (not product vendor)
+        // Prioritize company_name over primary_name for MFR display
         if ($purchaseEntry->vendor) {
             $this->items->purchase_entry_vendor = $purchaseEntry->vendor;
-            $this->items->vendor_name = $purchaseEntry->vendor->primary_name ?? ($purchaseEntry->vendor->company_name ?? '');
+            $this->items->vendor_name = $purchaseEntry->vendor->company_name ?? ($purchaseEntry->vendor->primary_name ?? '');
         } else {
             // Fallback to product vendor if purchase entry vendor is not set
             $this->items->purchase_entry_vendor = $purchaseEntry->product->vendor ?? null;
             if ($purchaseEntry->product->vendor) {
-                $this->items->vendor_name = $purchaseEntry->product->vendor->primary_name ?? ($purchaseEntry->product->vendor->company_name ?? '');
+                $this->items->vendor_name = $purchaseEntry->product->vendor->company_name ?? ($purchaseEntry->product->vendor->primary_name ?? '');
             } else {
                 $this->items->vendor_name = '';
             }
@@ -1472,13 +1822,18 @@ class InvoiceController extends AccountBaseController
             $invoiceItem = InvoiceItems::find($request->invoice_item_id);
         }
         
-        // Stock from purchase entry - use the quantity from this specific purchase entry
-        // This represents the stock associated with this purchase entry (the actual stock from this entry)
-        $purchaseEntryStock = $purchaseEntry->quantity ?? 0;
+        // Get TOTAL product stock from PurchaseStockAdjustment (net_quantity)
+        // This is the actual available stock for the product across all purchase entries
+        $productId = $purchaseEntry->product_id;
+        $stockAdjustment = \Modules\Purchase\Entities\PurchaseStockAdjustment::where('product_id', $productId)
+            ->where('company_id', company()->id)
+            ->first();
+        
+        $totalProductStock = $stockAdjustment ? $stockAdjustment->net_quantity : 0;
         
         // Add stock information to items
-        // available_stock = stock from this purchase entry (for display and calculation)
-        $this->items->available_stock = max(0, $purchaseEntryStock);
+        // available_stock = total product stock (what's actually available to sell)
+        $this->items->available_stock = max(0, $totalProductStock);
         
         $this->invoiceSetting = invoice_setting();
 
@@ -1492,7 +1847,7 @@ class InvoiceController extends AccountBaseController
 
         // If loading existing invoice item, use saved values; otherwise use purchase entry defaults
         if ($invoiceItem) {
-            // Use saved values from invoice item
+            // Use saved values from invoice item for editable fields
             $this->items->price = $invoiceItem->unit_price ?? 0;
             $this->items->taxes = $invoiceItem->taxes;
             $this->items->quantity = $invoiceItem->quantity ?? 1;
@@ -1503,18 +1858,23 @@ class InvoiceController extends AccountBaseController
             $this->items->mfr = $invoiceItem->mfr;
             $this->items->batch = $invoiceItem->batch;
             $this->items->exp = $invoiceItem->exp;
-            $this->items->mrp = $invoiceItem->mrp;
-            $this->items->pts = $invoiceItem->pts;
-            $this->items->ptr = $invoiceItem->ptr;
-            $this->items->dis = $invoiceItem->dis;
             
-            // Update purchase entry with saved values for display
-            if ($invoiceItem->mrp !== null) $purchaseEntry->mrp = $invoiceItem->mrp;
-            if ($invoiceItem->pts !== null) $purchaseEntry->pts = $invoiceItem->pts;
-            if ($invoiceItem->ptr !== null) $purchaseEntry->ptr = $invoiceItem->ptr;
-            if ($invoiceItem->dis !== null) $purchaseEntry->dis = $invoiceItem->dis;
-            if ($invoiceItem->batch) $purchaseEntry->batch = $invoiceItem->batch;
-            if ($invoiceItem->exp) $purchaseEntry->expiry = $invoiceItem->exp;
+            // IMPORTANT: PTS, PTR, MRP, DIS should come from purchase entry (source of truth)
+            // Only use invoice item values if purchase entry doesn't have them
+            $this->items->mrp = $purchaseEntry->mrp ?? $invoiceItem->mrp ?? null;
+            $this->items->pts = $purchaseEntry->pts ?? $invoiceItem->pts ?? null;
+            $this->items->ptr = $purchaseEntry->ptr ?? $invoiceItem->ptr ?? null;
+            $this->items->dis = $purchaseEntry->dis ?? $purchaseEntry->discount ?? $invoiceItem->dis ?? null;
+            
+            // For display in view, keep purchase entry values as-is (don't overwrite with invoice item)
+            // Purchase entry is the source of truth for PTS, PTR, MRP, DIS
+            // Only update batch/expiry if they differ (these can be edited per invoice)
+            if ($invoiceItem->batch && $invoiceItem->batch != $purchaseEntry->batch) {
+                $purchaseEntry->batch = $invoiceItem->batch;
+            }
+            if ($invoiceItem->exp && $invoiceItem->exp != $purchaseEntry->expiry) {
+                $purchaseEntry->expiry = $invoiceItem->exp;
+            }
         } else {
             // For CFA/Distributor invoices, use PTS (Price to Stockist) as the base price
             // Priority: PTS > PTR > MRP
@@ -1556,6 +1916,10 @@ class InvoiceController extends AccountBaseController
         
         $this->taxes = Tax::all();
         $this->units = UnitType::all();
+        
+        // Pass type parameter to view for IGST invoice handling
+        $this->invoiceType = $request->get('type', '');
+        
         $view = view('invoices.ajax.add_item', $this->data)->render();
 
         return Reply::dataOnly(['status' => 'success', 'view' => $view]);
@@ -2301,8 +2665,12 @@ class InvoiceController extends AccountBaseController
      */
     public function indexCFADistributorInvoices(CFADistributorInvoicesDataTable $dataTable)
     {
-        $viewPermission = user()->permission('view_invoices');
-        abort_403(!in_array($viewPermission, ['all', 'added', 'owned', 'both']));
+        // Admin, accountant, and FSA Executive users have full access
+        // Also allow clients (CFA Distributors) to view their own invoices
+        if (!PharmaDesignationHelper::hasFullCFAAccess() && !in_array('client', user_roles())) {
+            $viewPermission = user()->permission('view_cfa_distributor_invoices');
+            abort_403(!in_array($viewPermission, ['all', 'added', 'owned', 'both']));
+        }
 
         if (!request()->ajax()) {
             // Load CFA/Distributor clients for filter
@@ -2335,38 +2703,33 @@ class InvoiceController extends AccountBaseController
 
     public function createCFADistributorInvoice()
     {
-        $this->addPermission = user()->permission('add_invoices');
-        abort_403(!in_array($this->addPermission, ['all', 'added']));
+        // Admin, accountant, and FSA Executive users have full access
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            $this->addPermission = 'all';
+        } else {
+            $this->addPermission = user()->permission('add_cfa_distributor_invoices');
+            abort_403(!in_array($this->addPermission, ['all', 'added']));
+        }
 
         $this->pageTitle = __('CFA/Distributor Invoice');
 
-        // Load only CFA/Distributor clients
-        // Build query similar to allClients() but filter for CFA/Distributor categories or clients with areas
-        $cfaDistributorQuery = User::without('session')
+        // Load all active clients for CFA/Distributor invoice creation
+        // Show all clients so user can select any distributor (not just those with specific category/area)
+        $this->cfaDistributors = User::without('session')
             ->join('role_user', 'role_user.user_id', '=', 'users.id')
             ->join('roles', 'roles.id', '=', 'role_user.role_id')
             ->join('client_details', 'users.id', '=', 'client_details.user_id')
-            ->leftJoin('client_categories', 'client_details.category_id', '=', 'client_categories.id')
-            ->leftJoin('client_areas', 'client_details.id', '=', 'client_areas.client_detail_id')
-            ->select('users.id', 'users.name', 'users.email', 'users.created_at', 'client_details.company_name', 'users.image', 'users.email_notifications', 'users.mobile', 'users.country_id', 'users.salutation', 'users.status', 'users.is_client_contact')
             ->whereNull('users.is_client_contact')
             ->where('roles.name', 'client')
             ->where('users.status', 'active')
             ->where('users.company_id', company()->id)
-            ->where(function($query) {
-                // Filter by category name containing 'cfa' or 'distributor'
-                $query->where(function($q) {
-                    $q->whereRaw('LOWER(client_categories.category_name) LIKE ?', ['%cfa%'])
-                      ->orWhereRaw('LOWER(client_categories.category_name) LIKE ?', ['%distributor%']);
-                })
-                // OR clients with areas assigned
-                ->orWhereNotNull('client_areas.area_id');
+            ->select('users.id', 'users.name', 'users.email', 'users.created_at', 'client_details.company_name', 'users.image', 'users.email_notifications', 'users.mobile', 'users.country_id', 'users.salutation', 'users.status', 'users.is_client_contact')
+            ->distinct()
+            ->get()
+            ->sortBy(function($user) {
+                return $user->company_name ?? $user->name;
             })
-            ->groupBy('users.id', 'users.name', 'users.email', 'users.created_at', 'client_details.company_name', 'users.image', 'users.email_notifications', 'users.mobile', 'users.country_id', 'users.salutation', 'users.status', 'users.is_client_contact')
-            ->orderBy('client_details.company_name', 'asc')
-            ->orderBy('users.name', 'asc');
-        
-        $this->cfaDistributors = $cfaDistributorQuery->get();
+            ->values();
 
         // Load products from purchase entries only
         if (module_enabled('Purchase')) {
@@ -2413,6 +2776,12 @@ class InvoiceController extends AccountBaseController
                 $this->zero = '0' . $this->zero;
             }
         }
+        
+        // Check if this is an IGST invoice creation
+        $isIGSTInvoice = request('type') == 'igst' || request()->has('igst');
+        $this->invoiceType = $isIGSTInvoice ? 'igst' : '';
+        $this->data['invoiceType'] = $this->invoiceType;
+        $this->data['isIGSTInvoice'] = $isIGSTInvoice;
 
         return view('invoices.cfa-distributor.create', $this->data);
     }
@@ -2422,34 +2791,27 @@ class InvoiceController extends AccountBaseController
      */
     public function getCFADistributors(Request $request)
     {
-        // Build query similar to createCFADistributorInvoice but return simplified data
+        // Get all active clients (same as createCFADistributorInvoice)
         $cfaDistributors = User::without('session')
             ->join('role_user', 'role_user.user_id', '=', 'users.id')
             ->join('roles', 'roles.id', '=', 'role_user.role_id')
             ->join('client_details', 'users.id', '=', 'client_details.user_id')
-            ->leftJoin('client_categories', 'client_details.category_id', '=', 'client_categories.id')
-            ->leftJoin('client_areas', 'client_details.id', '=', 'client_areas.client_detail_id')
             ->whereNull('users.is_client_contact')
             ->where('roles.name', 'client')
             ->where('users.status', 'active')
             ->where('users.company_id', company()->id)
-            ->where(function($query) {
-                // Filter by category name containing 'cfa' or 'distributor'
-                $query->where(function($q) {
-                    $q->whereRaw('LOWER(client_categories.category_name) LIKE ?', ['%cfa%'])
-                      ->orWhereRaw('LOWER(client_categories.category_name) LIKE ?', ['%distributor%']);
-                })
-                // OR clients with areas assigned
-                ->orWhereNotNull('client_areas.area_id');
+            ->select('users.id', 'users.name', 'users.email', 'client_details.company_name')
+            ->distinct()
+            ->get()
+            ->sortBy(function($user) {
+                return $user->company_name ?? $user->name;
             })
-            ->groupBy('users.id', 'users.name', 'users.email')
-            ->select('users.id', 'users.name', 'users.email')
-            ->orderBy('users.name', 'asc')
-            ->get();
+            ->values();
 
         $options = '<option value="">Select CFA/Distributor</option>';
         foreach ($cfaDistributors as $distributor) {
-            $options .= '<option value="' . $distributor->id . '">' . $distributor->name . '</option>';
+            $displayName = $distributor->company_name ?? $distributor->name;
+            $options .= '<option value="' . $distributor->id . '">' . htmlspecialchars($displayName) . '</option>';
         }
 
         return Reply::dataOnly(['status' => 'success', 'data' => $options]);
@@ -2462,6 +2824,15 @@ class InvoiceController extends AccountBaseController
     {
         try {
             $userId = UserService::getUserId();
+            
+            // Debug: Log request data for stock reduction debugging
+            \Log::info('CFA Distributor Invoice Creation - Request Data:', [
+                'product_ids' => $request->product_id ?? [],
+                'purchase_entry_ids' => $request->purchase_entry_id ?? [],
+                'quantities' => $request->quantity ?? [],
+                'item_names' => $request->item_name ?? [],
+                'client_id' => $request->client_id
+            ]);
             
             // Validate items
             $items = $request->item_name;
@@ -2522,7 +2893,21 @@ class InvoiceController extends AccountBaseController
             $invoice->calculate_tax = $request->calculate_tax;
             $invoice->lr_number = $request->lr_number ?? null;
             $invoice->lr_date = $request->lr_date ? companyToYmd($request->lr_date) : null;
+            $invoice->delivery_status = $request->delivery_status ?? 'in_transit';
+            $invoice->company_address_id = $request->filled('company_address_id')
+                ? $request->company_address_id
+                : $this->defaultCompanyAddressId();
+            $this->applyCfaPharmaTaxInvoiceMeta($invoice, $request);
             $invoice->recurring = 'no';
+            // Store IGST invoice type if applicable
+            // Check both request parameter and hidden form field
+            $isIGSTInvoice = ($request->has('type') && $request->type == 'igst') || 
+                             ($request->has('invoice_type') && $request->invoice_type == 'igst');
+            if ($isIGSTInvoice) {
+                $invoice->invoice_type = 'igst';
+            } else {
+                $invoice->invoice_type = 'sgst_cgst'; // Default to SGST/CGST
+            }
             $invoice->save();
 
             // Add custom fields data
@@ -2577,26 +2962,102 @@ class InvoiceController extends AccountBaseController
                     'field_order' => $savedItemsCount
                 ]);
 
-                // Create CFA/Distributor stock entry
-                if (!empty($request->purchase_entry_id[$key])) {
-                    $purchaseEntry = ProductPurchaseDetail::find($request->purchase_entry_id[$key]);
+                // Create CFA/Distributor stock entry and reduce main product stock
+                $invoiceQuantity = $request->quantity[$key] ?? 0;
+                $productId = $request->product_id[$key] ?? null;
+                $purchaseEntryId = $request->purchase_entry_id[$key] ?? null;
+                
+                // Get product_id - prefer from purchase_entry, fallback to direct product_id
+                $finalProductId = null;
+                $purchaseEntry = null;
+                
+                if (!empty($purchaseEntryId)) {
+                    $purchaseEntry = ProductPurchaseDetail::find($purchaseEntryId);
+                    if ($purchaseEntry) {
+                        $finalProductId = $purchaseEntry->product_id;
+                    }
+                }
+                
+                // Fallback: use product_id directly if purchase_entry_id is not available
+                if (empty($finalProductId) && !empty($productId)) {
+                    $finalProductId = $productId;
+                }
+                
+                // Only proceed if we have a valid product_id and quantity
+                if (!empty($finalProductId) && $invoiceQuantity > 0) {
+                    // Create CFA Distributor Stock entry if purchase_entry exists
                     if ($purchaseEntry) {
                         CFADistributorStock::create([
                             'company_id' => company()->id,
                             'cfa_distributor_id' => $request->client_id,
-                            'product_id' => $purchaseEntry->product_id,
+                            'product_id' => $finalProductId,
                             'purchase_entry_id' => $purchaseEntry->id,
                             'invoice_id' => $invoice->id,
                             'batch' => $request->batch[$key] ?? $purchaseEntry->batch,
                             'expiry' => $request->exp[$key] ?? $purchaseEntry->expiry,
-                            'quantity' => $request->quantity[$key] ?? 0,
-                            'available_quantity' => $request->quantity[$key] ?? 0, // Initially all quantity is available
+                            'quantity' => $invoiceQuantity,
+                            'available_quantity' => $invoiceQuantity, // Initially all quantity is available
                             'pts' => $request->pts[$key] ?? $purchaseEntry->pts ?? 0,
                             'ptr' => $request->ptr[$key] ?? $purchaseEntry->ptr ?? 0,
                             'mrp' => $request->mrp[$key] ?? $purchaseEntry->mrp ?? 0,
                             'dis' => $request->dis[$key] ?? $purchaseEntry->dis ?? 0,
                         ]);
+                    } else {
+                        // Create CFA Distributor Stock entry without purchase_entry_id
+                        CFADistributorStock::create([
+                            'company_id' => company()->id,
+                            'cfa_distributor_id' => $request->client_id,
+                            'product_id' => $finalProductId,
+                            'purchase_entry_id' => null,
+                            'invoice_id' => $invoice->id,
+                            'batch' => $request->batch[$key] ?? null,
+                            'expiry' => $request->exp[$key] ? date('Y-m-d', strtotime($request->exp[$key])) : null,
+                            'quantity' => $invoiceQuantity,
+                            'available_quantity' => $invoiceQuantity,
+                            'pts' => $request->pts[$key] ?? 0,
+                            'ptr' => $request->ptr[$key] ?? 0,
+                            'mrp' => $request->mrp[$key] ?? 0,
+                            'dis' => $request->dis[$key] ?? 0,
+                        ]);
                     }
+                    
+                    // Reduce stock from PurchaseStockAdjustment when invoice is created/billed
+                    // Stock should reduce immediately on billing, not on delivery toggle
+                    $stockAdjustment = PurchaseStockAdjustment::firstOrCreate(
+                        ['product_id' => $finalProductId, 'company_id' => company()->id],
+                        ['net_quantity' => 0]
+                    );
+                    
+                    // Get current stock before reduction
+                    $stockBefore = $stockAdjustment->net_quantity;
+                    
+                    // Reduce stock (subtract from net_quantity)
+                    $stockAdjustment->net_quantity = max(0, $stockAdjustment->net_quantity - $invoiceQuantity);
+                    $stockAdjustment->save();
+
+                    // Batch-wise: deduct from purchase_batch_stock (FEFO)
+                    PurchaseBatchStock::deductFefo((int) company()->id, (int) $finalProductId, (float) $invoiceQuantity);
+                    
+                    \Log::info('Reduced product stock for CFA Distributor invoice', [
+                        'invoice_id' => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'product_id' => $finalProductId,
+                        'product_name' => $item,
+                        'quantity_reduced' => $invoiceQuantity,
+                        'stock_before' => $stockBefore,
+                        'stock_after' => $stockAdjustment->net_quantity,
+                        'invoice_type' => $invoice->invoice_type ?? 'sgst_cgst',
+                        'purchase_entry_id' => $purchaseEntryId,
+                        'has_purchase_entry' => !empty($purchaseEntry)
+                    ]);
+                } else {
+                    \Log::warning('Skipping stock reduction - missing product_id or quantity', [
+                        'invoice_id' => $invoice->id,
+                        'item_name' => $item,
+                        'product_id' => $productId,
+                        'purchase_entry_id' => $purchaseEntryId,
+                        'quantity' => $invoiceQuantity
+                    ]);
                 }
             }
 
@@ -2628,7 +3089,31 @@ class InvoiceController extends AccountBaseController
      */
     public function editCFADistributorInvoice($id)
     {
-        $this->invoice = Invoice::with('client', 'client.clientDetails.areas', 'items', 'items.purchaseEntry.product.unit', 'items.purchaseEntry.product.vendor', 'items.purchaseEntry.vendor', 'items.unit', 'cfaDistributorStocks')->findOrFail($id)->withCustomFields();
+        // Admin, accountant, and FSA Executive users have full access
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            $this->editPermission = 'all';
+        } else {
+            $this->editPermission = user()->permission('edit_cfa_distributor_invoices');
+            abort_403(!in_array($this->editPermission, ['all', 'added', 'owned', 'both']));
+        }
+        
+        $this->invoice = Invoice::with([
+            'client', 
+            'client.clientDetails.areas', 
+            'items', 
+            'items.purchaseEntry' => function($query) {
+                // Load all purchase entry fields including PTS, PTR, MRP, DIS, tax
+                $query->select('id', 'product_id', 'vendor_id', 'batch', 'expiry', 'mrp', 'pts', 'ptr', 'dis', 'discount', 'tax', 'scheme_enabled', 'total_quantity', 'free_quantity');
+            },
+            'items.purchaseEntry.product' => function($query) {
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id', 'unit_id', 'taxes');
+            },
+            'items.purchaseEntry.product.unit', 
+            'items.purchaseEntry.product.vendor', 
+            'items.purchaseEntry.vendor', 
+            'items.unit', 
+            'cfaDistributorStocks'
+        ])->findOrFail($id)->withCustomFields();
         
         // If items don't have purchase_entry_id, try to get it from CFADistributorStock
         foreach ($this->invoice->items as $item) {
@@ -2728,6 +3213,30 @@ class InvoiceController extends AccountBaseController
             $this->fields = $getCustomFieldGroupsWithFields->fields;
         }
 
+        // Check if this is an IGST invoice
+        // Priority 1: Check database field (most reliable)
+        $isIGSTInvoice = false;
+        if (isset($this->invoice->invoice_type)) {
+            $isIGSTInvoice = $this->invoice->invoice_type === 'igst';
+        }
+        
+        // Priority 2: Check request parameter
+        if (!$isIGSTInvoice && (request('type') == 'igst' || request()->has('igst'))) {
+            $isIGSTInvoice = true;
+        }
+        
+        // Priority 3: Check stored invoice type marker in note field (for backward compatibility)
+        if (!$isIGSTInvoice && $this->invoice->note && strpos($this->invoice->note, '<!--IGST_INVOICE-->') !== false) {
+            $isIGSTInvoice = true;
+            // Update database field
+            $this->invoice->invoice_type = 'igst';
+            $this->invoice->save();
+        }
+        
+        $this->invoiceType = $isIGSTInvoice ? 'igst' : '';
+        $this->data['invoiceType'] = $this->invoiceType;
+        $this->data['isIGSTInvoice'] = $isIGSTInvoice;
+
         return view('invoices.cfa-distributor.edit', $this->data);
     }
 
@@ -2747,6 +3256,14 @@ class InvoiceController extends AccountBaseController
      */
     public function updateCFADistributorInvoice(UpdateInvoice $request, $id)
     {
+        // Admin, accountant, and FSA Executive users have full access
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            $this->editPermission = 'all';
+        } else {
+            $this->editPermission = user()->permission('edit_cfa_distributor_invoices');
+            abort_403(!in_array($this->editPermission, ['all', 'added', 'owned', 'both']));
+        }
+        
         try {
             $userId = UserService::getUserId();
             $invoice = Invoice::findOrFail($id);
@@ -2820,9 +3337,24 @@ class InvoiceController extends AccountBaseController
             $invoice->currency_id = $request->currency_id;
             $invoice->exchange_rate = $request->exchange_rate ?? 1;
             $invoice->status = $request->status;
-            $invoice->note = trim_editor($request->note);
+            // Update invoice type based on request
+            $note = trim_editor($request->note);
+            $hasIGSTMarker = $invoice->note && strpos($invoice->note, '<!--IGST_INVOICE-->') !== false;
+            // Check both request parameter and hidden form field, or existing database field, or marker
+            $isIGSTInvoice = ($request->has('type') && $request->type == 'igst') || 
+                             ($request->has('invoice_type') && $request->invoice_type == 'igst') ||
+                             (isset($invoice->invoice_type) && $invoice->invoice_type === 'igst') ||
+                             $hasIGSTMarker;
+            if ($isIGSTInvoice) {
+                $invoice->invoice_type = 'igst';
+            } else {
+                $invoice->invoice_type = 'sgst_cgst'; // Default to SGST/CGST
+            }
+            $invoice->note = $note;
             $invoice->invoice_number = $request->invoice_number;
-            $invoice->company_address_id = $request->company_address_id;
+            $invoice->company_address_id = $request->filled('company_address_id')
+                ? $request->company_address_id
+                : ($invoice->company_address_id ?? $this->defaultCompanyAddressId());
             $invoice->bank_account_id = $request->bank_account_id;
             $invoice->payment_status = $request->payment_status == null ? '0' : $request->payment_status;
             $invoice->invoice_payment_id = $request->invoice_payment_id;
@@ -2832,6 +3364,8 @@ class InvoiceController extends AccountBaseController
             $invoice->due_amount = round($request->total, 2);
             $invoice->lr_number = $request->lr_number ?? null;
             $invoice->lr_date = $request->lr_date ? companyToYmd($request->lr_date) : null;
+            $invoice->delivery_status = $request->delivery_status ?? 'in_transit';
+            $this->applyCfaPharmaTaxInvoiceMeta($invoice, $request);
             $invoice->recurring = 'no';
             $invoice->save();
 
@@ -2840,6 +3374,44 @@ class InvoiceController extends AccountBaseController
                 $invoice->updateCustomFieldData($request->custom_fields_data);
             }
 
+            // Get existing CFA Distributor Stock entries to restore main product stock
+            $existingStocks = CFADistributorStock::where('invoice_id', $invoice->id)->get();
+            
+            // Restore stock that was previously reduced when invoice was created (product-level and batch-level)
+            foreach ($existingStocks as $existingStock) {
+                if ($existingStock->product_id && $existingStock->quantity > 0) {
+                    $stockAdjustment = PurchaseStockAdjustment::where('product_id', $existingStock->product_id)
+                        ->where('company_id', company()->id)
+                        ->first();
+                    
+                    if ($stockAdjustment) {
+                        // Restore the stock (add back the quantity)
+                        $stockAdjustment->net_quantity += $existingStock->quantity;
+                        $stockAdjustment->save();
+                        
+                        \Log::info('Restored product stock for CFA Distributor invoice update', [
+                            'invoice_id' => $invoice->id,
+                            'product_id' => $existingStock->product_id,
+                            'quantity_restored' => $existingStock->quantity,
+                            'new_stock' => $stockAdjustment->net_quantity
+                        ]);
+                    }
+
+                    // Batch-wise: restore to purchase_batch_stock (same batch/expiry as existing stock)
+                    $batchStock = PurchaseBatchStock::firstOrCreate(
+                        [
+                            'company_id' => company()->id,
+                            'product_id' => $existingStock->product_id,
+                            'batch'      => $existingStock->batch ?? null,
+                            'expiry'     => $existingStock->expiry ?? null,
+                        ],
+                        ['quantity' => 0]
+                    );
+                    $batchStock->quantity = (float) $batchStock->quantity + (float) $existingStock->quantity;
+                    $batchStock->save();
+                }
+            }
+            
             // Delete existing items and stocks
             InvoiceItems::where('invoice_id', $invoice->id)->delete();
             CFADistributorStock::where('invoice_id', $invoice->id)->delete();
@@ -2925,7 +3497,7 @@ class InvoiceController extends AccountBaseController
                         'field_order' => $key + 1,
                     ]);
 
-                    // Create CFA/Distributor stock entry
+                    // Create CFA/Distributor stock entry and reduce main product stock
                     if (!empty($purchaseEntryId)) {
                         $purchaseEntry = ProductPurchaseDetail::find($purchaseEntryId);
                         if ($purchaseEntry) {
@@ -2938,6 +3510,7 @@ class InvoiceController extends AccountBaseController
                             $stockMrp = $mrp ?? $purchaseEntry->mrp ?? null;
                             $stockDis = $dis ?? $purchaseEntry->dis ?? null;
                             
+                            // Create CFA Distributor Stock entry
                             CFADistributorStock::create([
                                 'company_id' => company()->id,
                                 'cfa_distributor_id' => $request->client_id,
@@ -2953,6 +3526,30 @@ class InvoiceController extends AccountBaseController
                                 'mrp' => $stockMrp,
                                 'dis' => $stockDis,
                             ]);
+                            
+                            // Reduce stock from PurchaseStockAdjustment when invoice is updated/billed
+                            // Stock should reduce immediately on billing, not on delivery toggle
+                            if ($stockQuantity > 0) {
+                                $stockAdjustment = PurchaseStockAdjustment::firstOrCreate(
+                                    ['product_id' => $purchaseEntry->product_id, 'company_id' => company()->id],
+                                    ['net_quantity' => 0]
+                                );
+                                
+                                // Reduce stock (subtract from net_quantity)
+                                $stockAdjustment->net_quantity = max(0, $stockAdjustment->net_quantity - $stockQuantity);
+                                $stockAdjustment->save();
+
+                                // Batch-wise: deduct from purchase_batch_stock (FEFO)
+                                PurchaseBatchStock::deductFefo((int) company()->id, (int) $purchaseEntry->product_id, (float) $stockQuantity);
+                                
+                                \Log::info('Reduced product stock for CFA Distributor invoice update', [
+                                    'invoice_id' => $invoice->id,
+                                    'product_id' => $purchaseEntry->product_id,
+                                    'quantity_reduced' => $stockQuantity,
+                                    'remaining_stock' => $stockAdjustment->net_quantity,
+                                    'invoice_type' => $invoice->invoice_type ?? 'sgst_cgst'
+                                ]);
+                            }
                         }
                     }
                 }
@@ -2987,11 +3584,308 @@ class InvoiceController extends AccountBaseController
     }
 
     /**
+     * Update delivery status for CFA/Distributor invoice
+     */
+    public function updateDeliveryStatus(Request $request, $id)
+    {
+        try {
+            $invoice = Invoice::findOrFail($id);
+
+            if ((int) $invoice->company_id !== (int) company()->id) {
+                abort_403();
+            }
+            $isCfaDistributorFlow = $invoice->cfaDistributorStocks()->exists();
+            if (!$isCfaDistributorFlow) {
+                $isOwnClient = in_array('client', user_roles(), true)
+                    && (int) $invoice->client_id === (int) (user()->id ?? 0);
+                if (!$isOwnClient) {
+                    abort_403();
+                }
+            }
+            if (!$this->userCanEditCfaDistributorInvoice($invoice)) {
+                abort_403();
+            }
+
+            $deliveryStatus = $request->delivery_status;
+            
+            if (!in_array($deliveryStatus, ['in_transit', 'received'])) {
+                return Reply::error('Invalid delivery status');
+            }
+            
+            $invoice->delivery_status = $deliveryStatus;
+            $invoice->save();
+            
+            return Reply::successWithData(__('messages.updateSuccess'), [
+                'delivery_status' => $deliveryStatus,
+                'status_text' => $deliveryStatus == 'received' ? 'Received' : 'In Transit',
+                'status_class' => $deliveryStatus == 'received' ? 'success' : 'warning'
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error updating delivery status: ' . $e->getMessage());
+            return Reply::error('Error updating delivery status: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Show payment modal for CFA Distributor invoice
+     */
+    public function showPaymentModal(Request $request)
+    {
+        $invoiceId = $request->invoice_id;
+        $this->invoice = Invoice::findOrFail($invoiceId);
+        
+        // Check permissions
+        $addPaymentPermission = user()->permission('add_payments');
+        abort_403(!(
+            $addPaymentPermission == 'all'
+            || ($addPaymentPermission == 'added' && $this->invoice->added_by == user()->id)
+        ));
+
+        // Detect which route was called to determine route prefix
+        $routeName = $request->route()->getName();
+        if (strpos($routeName, 'cfa-stockist-invoices') !== false) {
+            $routePrefix = 'cfa-stockist-invoices';
+        } else {
+            $routePrefix = 'cfa-distributor-invoices';
+        }
+
+        $this->data['paymentRoutePrefix'] = $routePrefix;
+
+        return view('cfa-distributor-invoices.payment-modal', $this->data);
+    }
+
+    /**
+     * Update payment status for CFA Distributor invoice - supports multiple partial payments
+     */
+    public function updatePaymentStatus(Request $request)
+    {
+        try {
+            \Log::info('Payment status update request', $request->all());
+            
+            $request->validate([
+                'invoice_id' => 'required|exists:invoices,id',
+                'payment_mode' => 'required|string',
+                'payment_date' => 'required|date',
+                'payment_amount' => 'required|numeric|min:0.01',
+                'edit_payment_id' => 'nullable|exists:payments,id'
+            ]);
+
+            $invoice = Invoice::findOrFail($request->invoice_id);
+            
+            // Check permissions
+            $addPaymentPermission = user()->permission('add_payments');
+            abort_403(!(
+                $addPaymentPermission == 'all'
+                || ($addPaymentPermission == 'added' && $invoice->added_by == user()->id)
+            ));
+
+            $paymentAmount = floatval($request->payment_amount);
+            
+            // Check if this is an edit or new payment
+            if ($request->edit_payment_id) {
+                // Edit existing payment
+                $payment = Payment::findOrFail($request->edit_payment_id);
+                
+                // Store old amount for recalculation
+                $oldAmount = $payment->amount;
+                
+                $payment->amount = $paymentAmount;
+                $payment->gateway = $request->payment_mode;
+                $payment->transaction_id = $request->payment_reference ?? null;
+                $payment->paid_on = \Carbon\Carbon::parse($request->payment_date);
+                $payment->remarks = $request->payment_notes ?? null;
+                $payment->save();
+                
+                \Log::info('Payment updated', [
+                    'payment_id' => $payment->id,
+                    'old_amount' => $oldAmount,
+                    'new_amount' => $paymentAmount
+                ]);
+            } else {
+                // Create new payment record
+                $payment = new Payment();
+                $payment->company_id = company()->id;
+                $payment->project_id = $invoice->project_id;
+                $payment->invoice_id = $invoice->id;
+                $payment->currency_id = $invoice->currency_id;
+                $payment->amount = $paymentAmount;
+                $payment->gateway = $request->payment_mode;
+                $payment->transaction_id = $request->payment_reference ?? null;
+                $payment->paid_on = \Carbon\Carbon::parse($request->payment_date);
+                $payment->status = 'complete';
+                $payment->remarks = $request->payment_notes ?? null;
+                $payment->save();
+                
+                \Log::info('New payment created', [
+                    'payment_id' => $payment->id,
+                    'amount' => $paymentAmount
+                ]);
+            }
+
+            // Recalculate invoice status
+            $totalPaid = $invoice->getPaidAmount();
+            $newDueAmount = $invoice->total - $totalPaid;
+
+            // Update invoice status based on total paid amount
+            if ($newDueAmount <= 0.01) {
+                // Fully paid (with small tolerance for rounding)
+                $invoice->status = 'paid';
+                $invoice->due_amount = 0;
+            } else if ($totalPaid > 0) {
+                // Partially paid
+                $invoice->status = 'partial';
+                $invoice->due_amount = $newDueAmount;
+            } else {
+                // No payment yet
+                $invoice->status = 'unpaid';
+                $invoice->due_amount = $invoice->total;
+            }
+            
+            $invoice->save();
+
+            \Log::info('Invoice status updated', [
+                'invoice_id' => $invoice->id,
+                'total_paid' => $totalPaid,
+                'new_due_amount' => $invoice->due_amount,
+                'new_status' => $invoice->status
+            ]);
+
+            return Reply::successWithData(__('Payment recorded successfully'), [
+                'invoice_id' => $invoice->id,
+                'payment_id' => $payment->id,
+                'payment_amount' => number_format($paymentAmount, 2),
+                'new_status' => $invoice->status,
+                'total_paid' => $totalPaid,
+                'due_amount' => max(0, $invoice->due_amount),
+                'is_fully_paid' => $invoice->status == 'paid'
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('Validation error in payment update', [
+                'errors' => $e->errors()
+            ]);
+            return Reply::error($e->validator->errors()->first());
+        } catch (\Exception $e) {
+            \Log::error('Error updating payment status', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return Reply::error('Error updating payment status: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Delete a payment record and update invoice status
+     */
+    public function deletePayment(Request $request)
+    {
+        try {
+            \Log::info('Delete payment request', $request->all());
+            
+            $request->validate([
+                'payment_id' => 'required|exists:payments,id',
+                'invoice_id' => 'required|exists:invoices,id'
+            ]);
+
+            $payment = Payment::findOrFail($request->payment_id);
+            $invoice = Invoice::findOrFail($request->invoice_id);
+            
+            // Check permissions
+            $deletePaymentPermission = user()->permission('delete_payments');
+            if (!$deletePaymentPermission || $deletePaymentPermission == 'none') {
+                $deletePaymentPermission = user()->permission('add_payments'); // Fallback to add_payments permission
+            }
+            
+            abort_403(!(
+                $deletePaymentPermission == 'all'
+                || ($deletePaymentPermission == 'added' && $invoice->added_by == user()->id)
+            ));
+
+            // Verify payment belongs to invoice
+            if ($payment->invoice_id != $invoice->id) {
+                return Reply::error('Payment does not belong to this invoice');
+            }
+
+            $deletedAmount = $payment->amount;
+            
+            // Delete the payment
+            $payment->delete();
+            
+            \Log::info('Payment deleted', [
+                'payment_id' => $request->payment_id,
+                'amount' => $deletedAmount,
+                'invoice_id' => $invoice->id
+            ]);
+
+            // Recalculate invoice status
+            $totalPaid = $invoice->getPaidAmount();
+            $newDueAmount = $invoice->total - $totalPaid;
+
+            // Update invoice status
+            if ($newDueAmount <= 0.01 && $totalPaid > 0) {
+                $invoice->status = 'paid';
+                $invoice->due_amount = 0;
+            } else if ($totalPaid > 0) {
+                $invoice->status = 'partial';
+                $invoice->due_amount = $newDueAmount;
+            } else {
+                $invoice->status = 'unpaid';
+                $invoice->due_amount = $invoice->total;
+            }
+            
+            $invoice->save();
+
+            \Log::info('Invoice status updated after payment deletion', [
+                'invoice_id' => $invoice->id,
+                'new_status' => $invoice->status,
+                'new_due_amount' => $invoice->due_amount,
+                'total_paid' => $totalPaid
+            ]);
+
+            return Reply::successWithData(__('Payment deleted successfully'), [
+                'invoice_id' => $invoice->id,
+                'deleted_amount' => number_format($deletedAmount, 2),
+                'new_status' => $invoice->status,
+                'total_paid' => $totalPaid,
+                'due_amount' => $invoice->due_amount
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('Validation error in payment delete', [
+                'errors' => $e->errors()
+            ]);
+            return Reply::error($e->validator->errors()->first());
+        } catch (\Exception $e) {
+            \Log::error('Error deleting payment', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return Reply::error('Error deleting payment: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Display a CFA/Distributor invoice
      */
     public function showCFADistributorInvoice($id)
     {
+        // Admin, accountant, and FSA Executive users have full access
+        // Also allow clients (CFA Distributors) to view their own invoices
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            $this->viewPermission = 'all';
+        } else {
+            // Check if user is a client and this is their invoice
+            $invoice = Invoice::findOrFail($id);
+            if (in_array('client', user_roles()) && $invoice->client_id == user()->id) {
+                $this->viewPermission = 'owned';
+            } else {
+                $this->viewPermission = user()->permission('view_cfa_distributor_invoices');
+                abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
+            }
+        }
+        
         $this->invoice = Invoice::with([
+            'order',
             'client', 
             'client.clientDetails', 
             'items' => function($query) {
@@ -2999,17 +3893,17 @@ class InvoiceController extends AccountBaseController
             }, 
             'items.unit', 
             'items.product' => function($query) {
-                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id');
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id', 'taxes');
             }, 
             'items.purchaseEntry',
             'items.purchaseEntry.product' => function($query) {
-                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id');
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id', 'taxes');
             },
             'items.purchaseEntry.product.vendor', 
             'items.purchaseEntry.product.unit', 
             'cfaDistributorStocks', 
             'cfaDistributorStocks.product' => function($query) {
-                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id');
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id', 'taxes');
             },
             'address'
         ])->findOrFail($id)->withCustomFields();
@@ -3036,13 +3930,9 @@ class InvoiceController extends AccountBaseController
         
         $this->userId = UserService::getUserId();
 
-        $this->viewPermission = user()->permission('view_invoices');
-        abort_403(!(
-            $this->viewPermission == 'all'
-            || ($this->viewPermission == 'added' && ($this->invoice->added_by == $this->userId || $this->invoice->added_by == user()->id))
-            || ($this->viewPermission == 'owned' && $this->invoice->client_id == $this->userId && $this->invoice->send_status)
-            || ($this->viewPermission == 'both' && ($this->invoice->added_by == $this->userId || $this->invoice->added_by == user()->id || $this->invoice->client_id == $this->userId))
-        ));
+        // Do not re-check view_invoices: access is already set above (full CFA, own client, or
+        // view_cfa_distributor_invoices). A second check against view_invoices + send_status
+        // would wrongly block CFA distributors and staff with distributor-invoice–only view rights.
 
         $getCustomFieldGroupsWithFields = $this->invoice->getCustomFieldGroupsWithFields();
         if ($getCustomFieldGroupsWithFields) {
@@ -3075,7 +3965,12 @@ class InvoiceController extends AccountBaseController
             ->get();
 
         foreach ($items as $item) {
-            foreach (json_decode($item->taxes) as $tax) {
+            $taxes = json_decode($item->taxes, true);
+            if (!is_array($taxes)) {
+                continue;
+            }
+            
+            foreach ($taxes as $tax) {
                 $this->tax = InvoiceItems::taxbyid($tax)->first();
                 if ($this->tax) {
                     if (!isset($taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'])) {
@@ -3109,7 +4004,1543 @@ class InvoiceController extends AccountBaseController
         $this->addInvoicesPermission = user()->permission('add_invoices');
         $this->editInvoicesPermission = user()->permission('edit_invoices');
 
+        // Check if this is an IGST invoice
+        // Priority 1: Check database field (most reliable)
+        $isIGSTInvoice = false;
+        if (isset($this->invoice->invoice_type)) {
+            $isIGSTInvoice = $this->invoice->invoice_type === 'igst';
+        }
+        
+        // Priority 2: Check request parameter (for backward compatibility)
+        if (!$isIGSTInvoice && (request('type') == 'igst' || request()->has('igst'))) {
+            $isIGSTInvoice = true;
+            // Update database field if missing
+            if (!isset($this->invoice->invoice_type) || $this->invoice->invoice_type !== 'igst') {
+                $this->invoice->invoice_type = 'igst';
+                $this->invoice->save();
+            }
+        }
+        
+        // Priority 3: Check stored invoice type marker in note field (for backward compatibility)
+        if (!$isIGSTInvoice && $this->invoice->note && strpos($this->invoice->note, '<!--IGST_INVOICE-->') !== false) {
+            $isIGSTInvoice = true;
+            // Update database field
+            $this->invoice->invoice_type = 'igst';
+            $this->invoice->save();
+        }
+        
+        // Priority 4: Check invoice items for IGST tax (if tax name contains IGST)
+        if (!$isIGSTInvoice && $this->invoice->items) {
+            foreach ($this->invoice->items as $item) {
+                if ($item->taxes) {
+                    $taxes = [];
+                    if (is_string($item->taxes)) {
+                        $decoded = json_decode($item->taxes, true);
+                        if (is_array($decoded)) {
+                            $taxes = $decoded;
+                        } elseif (is_numeric($item->taxes)) {
+                            $taxes = [(int)$item->taxes];
+                        }
+                    } elseif (is_array($item->taxes)) {
+                        $taxes = $item->taxes;
+                    }
+                    
+                    foreach ($taxes as $taxId) {
+                        if (empty($taxId)) continue;
+                        $tax = \App\Models\Tax::find($taxId);
+                        if ($tax && stripos($tax->tax_name ?? '', 'IGST') !== false) {
+                            $isIGSTInvoice = true;
+                            // Update database field
+                            $this->invoice->invoice_type = 'igst';
+                            $this->invoice->save();
+                            break 2; // Break out of both loops
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Store invoice type in data for view
+        $this->invoiceType = $isIGSTInvoice ? 'igst' : '';
+        $this->data['invoiceType'] = $this->invoiceType;
+        $this->data['isIGSTInvoice'] = $isIGSTInvoice;
+        
         // Use pharmaceutical-specific template for CFA/Distributor invoices
+        if ($isIGSTInvoice) {
+            return view('invoices.cfa-distributor.igst-show', $this->data);
+        }
         return view('invoices.cfa-distributor.pharma-show', $this->data);
+    }
+
+    /**
+     * CFA/Stockist Invoice Methods
+     * TODO: Implement full functionality
+     */
+    public function indexCFAStockistInvoices(CFAStockistInvoicesDataTable $dataTable)
+    {
+        // Admin, accountant, and FSA Executive users have full access
+        // Also allow clients (CFA Distributors/Stockists) to view their invoices
+        if (!PharmaDesignationHelper::hasFullCFAAccess() && !in_array('client', user_roles())) {
+            $viewPermission = user()->permission('view_cfa_stockist_invoices');
+            abort_403(!in_array($viewPermission, ['all', 'added', 'owned', 'both']));
+        }
+
+        if (!request()->ajax()) {
+            // Load CFA Stockists for filter
+            // If admin, show all stockists; if CFA/Distributor, show only their stockists
+            if (PharmaDesignationHelper::hasFullCFAAccess()) {
+                $this->cfaStockists = \App\Models\CFAStockist::all();
+            } else {
+                $cfaDistributorId = user()->id; // Current user (CFA/Distributor)
+                $this->cfaStockists = \App\Models\CFAStockist::whereHas('cfaDistributors', function($query) use ($cfaDistributorId) {
+                    $query->where('cfa_distributor_id', $cfaDistributorId);
+                })->get();
+            }
+        }
+
+        return $dataTable->render('invoices.cfa-stockist.index', $this->data);
+    }
+
+    public function createCFAStockistInvoice()
+    {
+        abort_403(!$this->userCanAddCfaStockistInvoice());
+
+        $this->pageTitle = __('CFA/Stockist Invoice');
+        $this->setupCfaStockistInvoiceForm(null);
+
+        return view('invoices.cfa-stockist.create', $this->data);
+    }
+
+    /**
+     * @param  \App\Models\Invoice|null  $editingInvoice
+     */
+    private function setupCfaStockistInvoiceForm($editingInvoice = null)
+    {
+        if ($editingInvoice) {
+            $this->editingInvoice = $editingInvoice;
+            $this->pageTitle = __('Edit CFA/Stockist Invoice') . ' - ' . $editingInvoice->invoice_number;
+            $this->editingLineItems = $this->buildCfaStockistInvoiceEditLineItems($editingInvoice);
+            $this->editingCfaStockistId = CFAStockistStock::where('invoice_id', $editingInvoice->id)->value('cfa_stockist_id');
+            $tz = company()->timezone;
+            $this->cfaInvoiceIssueDate = $editingInvoice->issue_date
+                ? $editingInvoice->issue_date->timezone($tz)->format(company()->date_format) : null;
+            $this->cfaInvoiceDueDate = $editingInvoice->due_date
+                ? $editingInvoice->due_date->timezone($tz)->format(company()->date_format) : null;
+        } else {
+            $this->editingInvoice = null;
+            $this->editingLineItems = [];
+            $this->editingCfaStockistId = null;
+            $this->cfaInvoiceIssueDate = null;
+            $this->cfaInvoiceDueDate = null;
+        }
+
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            $this->cfaDistributors = User::without('session')
+                ->join('role_user', 'role_user.user_id', '=', 'users.id')
+                ->join('roles', 'roles.id', '=', 'role_user.role_id')
+                ->join('client_details', 'users.id', '=', 'client_details.user_id')
+                ->select('users.id', 'users.name', 'users.email', 'client_details.company_name')
+                ->whereNull('users.is_client_contact')
+                ->where('roles.name', 'client')
+                ->where('users.status', 'active')
+                ->where('users.company_id', company()->id)
+                ->distinct()
+                ->get()
+                ->sortBy(function ($user) {
+                    return $user->company_name ?? $user->name;
+                })
+                ->values();
+
+            $cfaDistributorId = $editingInvoice ? (int) $editingInvoice->client_id : null;
+        } else {
+            $cfaDistributorId = user()->id;
+            $this->cfaDistributors = collect([user()]);
+        }
+
+        if ($cfaDistributorId) {
+            $query = CFAStockist::whereHas('cfaDistributors', function ($q) use ($cfaDistributorId) {
+                $q->where('cfa_distributor_id', $cfaDistributorId);
+            });
+            $cfaUser = User::with('clientDetails.areas', 'clientDetails.headquarters')->find($cfaDistributorId);
+            if ($cfaUser && $cfaUser->clientDetails) {
+                $areaIds = $cfaUser->clientDetails->areas->pluck('id')->filter()->toArray();
+                $hqIds = $cfaUser->clientDetails->headquarters->pluck('id')->filter()->toArray();
+                if (!empty($areaIds) || !empty($hqIds)) {
+                    $query->where(function ($q) use ($areaIds, $hqIds) {
+                        if (!empty($areaIds) && !empty($hqIds)) {
+                            $q->whereIn('area_id', $areaIds)->orWhereIn('headquarter_id', $hqIds);
+                        } elseif (!empty($areaIds)) {
+                            $q->whereIn('area_id', $areaIds);
+                        } else {
+                            $q->whereIn('headquarter_id', $hqIds);
+                        }
+                    });
+                }
+            }
+            $this->cfaStockists = $query->get();
+        } else {
+            $this->cfaStockists = CFAStockist::all();
+        }
+
+        if ($cfaDistributorId) {
+            $availableStock = CFADistributorStock::with(['product.unit', 'product.vendor', 'cfaDistributor'])
+                ->where('cfa_distributor_id', $cfaDistributorId)
+                ->where('available_quantity', '>', 0)
+                ->where('company_id', company()->id)
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+            $productsGrouped = [];
+            foreach ($availableStock as $stock) {
+                $key = $stock->product_id . '_' . ($stock->batch ?? 'no_batch');
+                if (!isset($productsGrouped[$key])) {
+                    $productsGrouped[$key] = [
+                        'product' => $stock->product,
+                        'stocks' => []
+                    ];
+                }
+                $productsGrouped[$key]['stocks'][] = $stock;
+            }
+            $this->products = collect($productsGrouped);
+        } else {
+            $this->products = collect([]);
+        }
+
+        $this->currencies = Currency::all();
+        $this->taxes = Tax::all();
+        $this->invoiceSetting = invoice_setting();
+        $this->projects = Project::allProjects();
+        $this->units = UnitType::all();
+        $this->bankAccounts = BankAccount::all();
+
+        if ($editingInvoice) {
+            $this->lastInvoice = $editingInvoice->custom_invoice_number ?: preg_replace(
+                '/^' . preg_quote($this->invoiceSetting->invoice_prefix . $this->invoiceSetting->invoice_number_separator, '/') . '/',
+                '',
+                (string) $editingInvoice->invoice_number
+            );
+            if ($this->lastInvoice === '' || $this->lastInvoice === null) {
+                $this->lastInvoice = $editingInvoice->invoice_number;
+            }
+        } else {
+            $this->lastInvoice = Invoice::lastInvoiceNumber() + 1;
+        }
+        $this->companyCurrency = Currency::where('id', company()->currency_id)->first();
+
+        $this->zero = '';
+        $len = is_string($this->lastInvoice) ? strlen($this->lastInvoice) : strlen((string) $this->lastInvoice);
+        if ($len < $this->invoiceSetting->invoice_digit) {
+            $condition = $this->invoiceSetting->invoice_digit - $len;
+            for ($i = 0; $i < $condition; $i++) {
+                $this->zero = '0' . $this->zero;
+            }
+        }
+
+        if ($editingInvoice) {
+            $isIGSTInvoice = ($editingInvoice->invoice_type ?? '') === 'igst' || request('type') == 'igst' || request()->has('igst');
+        } else {
+            $isIGSTInvoice = request('type') == 'igst' || request()->has('igst');
+        }
+        $this->invoiceType = $isIGSTInvoice ? 'igst' : '';
+        $this->data['invoiceType'] = $this->invoiceType;
+        $this->data['isIGSTInvoice'] = $isIGSTInvoice;
+    }
+
+    private function buildCfaStockistInvoiceEditLineItems(Invoice $editingInvoice): array
+    {
+        $editingInvoice->load(['items' => function ($q) {
+            $q->where('type', 'item')->orderBy('id');
+        }, 'cfaStockistStocks' => function ($q) {
+            $q->orderBy('id');
+        }]);
+        $items = $editingInvoice->items;
+        $stocks = $editingInvoice->cfaStockistStocks;
+        $lines = [];
+        for ($i = 0; $i < $items->count(); $i++) {
+            $item = $items->get($i);
+            $st = $stocks->get($i);
+            if (! $item || ! $st || ! $item->product_id) {
+                continue;
+            }
+            $lines[] = [
+                'product_id' => (int) $item->product_id,
+                'cfa_distributor_stock_id' => (int) $st->cfa_distributor_stock_id,
+                'quantity' => (float) $item->quantity,
+            ];
+        }
+
+        return $lines;
+    }
+
+    /**
+     * Create invoice line items and CFA stockist stock rows (shared by store and update).
+     *
+     * @return string|null  Error message, or null on success
+     */
+    private function persistCfaStockistInvoiceLineItems(Invoice $invoice, StoreInvoice $request): ?string
+    {
+        $savedItemsCount = 0;
+        foreach ($request->item_name as $key => $item) {
+            if (is_null($item) || trim($item) === '') {
+                \Log::warning('Skipping empty item at index ' . $key . ' for invoice ' . $invoice->id);
+                continue;
+            }
+
+            $skuValue = $request->sku[$key] ?? null;
+            $hsnSacCode = $request->hsn_sac_code[$key] ?? $skuValue ?? null;
+
+            $paidQty = floatval($request->quantity[$key] ?? 0);
+            $scheme = ($request->scheme[$key] ?? '') ? trim($request->scheme[$key]) : '';
+            $totalQty = $paidQty;
+            $freeQty = 0;
+
+            if ($scheme && strpos($scheme, '+') !== false) {
+                $schemeParts = explode('+', $scheme);
+                $schemePaid = floatval($schemeParts[0] ?? 0);
+                $schemeFree = floatval($schemeParts[1] ?? 0);
+
+                if ($schemePaid > 0 && $paidQty > 0) {
+                    $freePercentage = ($schemeFree / $schemePaid) * 100;
+                    $freeQty = floor(($paidQty * $freePercentage) / 100);
+                    $totalQty = $paidQty + $freeQty;
+                }
+            }
+
+            $invoiceItem = InvoiceItems::create([
+                'invoice_id' => $invoice->id,
+                'item_name' => $item,
+                'item_summary' => $request->item_summary[$key] ?? null,
+                'type' => 'item',
+                'quantity' => $paidQty,
+                'unit_price' => round($request->cost_per_item[$key] ?? 0, 2),
+                'amount' => round($request->amount[$key] ?? 0, 2),
+                'taxes' => isset($request->taxes[$key]) && !empty($request->taxes[$key]) ? json_encode($request->taxes[$key]) : null,
+                'hsn_sac_code' => $hsnSacCode,
+                'product_id' => $request->product_id[$key] ?? null,
+                'unit_id' => $request->unit_id[$key] ?? null,
+                'purchase_entry_id' => null,
+                'scheme' => $scheme,
+                'pack' => $request->pack[$key] ?? null,
+                'mfr' => $request->mfr[$key] ?? null,
+                'batch' => $request->batch[$key] ?? null,
+                'exp' => $request->exp[$key] ? date('Y-m-d', strtotime($request->exp[$key])) : null,
+                'mrp' => isset($request->mrp[$key]) ? round($request->mrp[$key] ?? 0, 2) : null,
+                'pts' => isset($request->pts[$key]) ? round($request->pts[$key] ?? 0, 2) : null,
+                'ptr' => isset($request->ptr[$key]) ? round($request->ptr[$key] ?? 0, 2) : null,
+                'dis' => isset($request->dis[$key]) ? round($request->dis[$key] ?? 0, 2) : null,
+                'field_order' => $savedItemsCount + 1,
+            ]);
+
+            $savedItemsCount++;
+
+            if (!empty($request->cfa_distributor_stock_id[$key])) {
+                $distributorStock = CFADistributorStock::find($request->cfa_distributor_stock_id[$key]);
+
+                if ($distributorStock) {
+                    if ($distributorStock->available_quantity < $totalQty) {
+                        \Log::error('Insufficient stock for invoice item', [
+                            'invoice_id' => $invoice->id,
+                            'item_index' => $key,
+                            'distributor_stock_id' => $distributorStock->id,
+                            'required_qty' => $totalQty,
+                            'available_qty' => $distributorStock->available_quantity
+                        ]);
+                        return 'Insufficient stock available. Required: ' . $totalQty . ', Available: ' . $distributorStock->available_quantity;
+                    }
+
+                    $distributorStock->available_quantity -= $totalQty;
+                    $distributorStock->save();
+
+                    CFAStockistStock::create([
+                        'company_id' => company()->id,
+                        'cfa_distributor_id' => $request->cfa_distributor_id,
+                        'cfa_stockist_id' => $request->cfa_stockist_id,
+                        'product_id' => $distributorStock->product_id,
+                        'cfa_distributor_stock_id' => $distributorStock->id,
+                        'invoice_id' => $invoice->id,
+                        'batch' => $request->batch[$key] ?? $distributorStock->batch,
+                        'expiry' => $request->exp[$key] ? date('Y-m-d', strtotime($request->exp[$key])) : ($distributorStock->expiry ? $distributorStock->expiry->format('Y-m-d') : null),
+                        'quantity' => $totalQty,
+                        'pts' => isset($request->pts[$key]) ? round($request->pts[$key] ?? 0, 2) : ($distributorStock->pts ?? 0),
+                        'ptr' => isset($request->ptr[$key]) ? round($request->ptr[$key] ?? 0, 2) : ($distributorStock->ptr ?? 0),
+                        'mrp' => isset($request->mrp[$key]) ? round($request->mrp[$key] ?? 0, 2) : ($distributorStock->mrp ?? 0),
+                        'dis' => isset($request->dis[$key]) ? round($request->dis[$key] ?? 0, 2) : ($distributorStock->dis ?? 0),
+                    ]);
+                } else {
+                    \Log::error('CFA Distributor Stock not found', [
+                        'cfa_distributor_stock_id' => $request->cfa_distributor_stock_id[$key]
+                    ]);
+                    return 'Stock entry not found for item: ' . $item;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public function storeCFAStockistInvoice(StoreInvoice $request)
+    {
+        try {
+            abort_403(!$this->userCanAddCfaStockistInvoice());
+
+            // CFA distributors (client role) always bill as themselves; ignore tampered distributor id
+            if (in_array('client', user_roles(), true)) {
+                $request->merge(['cfa_distributor_id' => user()->id]);
+            }
+
+            $userId = UserService::getUserId();
+            
+            // Validate required fields
+            if (empty($request->cfa_distributor_id)) {
+                return Reply::error('CFA/Distributor is required.');
+            }
+            
+            if (empty($request->cfa_stockist_id)) {
+                return Reply::error('CFA Stockist is required.');
+            }
+            
+            // Validate items
+            $items = $request->item_name;
+            if (empty($items)) {
+                return Reply::error(__('messages.addItem'));
+            }
+
+            foreach ($items as $itm) {
+                if (is_null($itm)) {
+                    return Reply::error(__('messages.itemBlank'));
+                }
+            }
+
+            foreach ($request->quantity as $qty) {
+                if (!is_numeric($qty) && (intval($qty) < 1)) {
+                    return Reply::error(__('messages.quantityNumber'));
+                }
+            }
+            
+            // Validate cost_per_item and amount arrays
+            if (empty($request->cost_per_item) || empty($request->amount)) {
+                return Reply::error(__('messages.addItem'));
+            }
+            
+            foreach ($request->cost_per_item as $rate) {
+                if (!is_numeric($rate)) {
+                    return Reply::error(__('messages.unitPriceNumber'));
+                }
+            }
+            
+            foreach ($request->amount as $amt) {
+                if (!is_numeric($amt)) {
+                    return Reply::error(__('messages.amountNumber'));
+                }
+            }
+
+            // Create invoice
+            $invoice = new Invoice();
+            $invoice->company_id = company()->id;
+            $invoice->added_by = $userId;
+            // Set client_id to CFA/Distributor (the one billing)
+            $invoice->client_id = $request->cfa_distributor_id;
+            $invoice->issue_date = companyToYmd($request->issue_date);
+            $invoice->due_date = companyToYmd($request->due_date);
+            $invoice->sub_total = round($request->sub_total, 2);
+            $invoice->discount = round($request->discount, 2);
+            $invoice->discount_type = $request->discount_type;
+            $invoice->total = round($request->total, 2);
+            $invoice->due_amount = round($request->total, 2);
+            $invoice->currency_id = $request->currency_id;
+            $invoice->default_currency_id = company()->currency_id;
+            $invoice->exchange_rate = $request->exchange_rate;
+            $invoice->status = $request->status;
+            $invoice->note = trim_editor($request->note);
+            $invoice->invoice_number = $request->invoice_number;
+            $invoice->company_address_id = $request->company_address_id;
+            $invoice->bank_account_id = $request->bank_account_id;
+            $invoice->payment_status = $request->payment_status == null ? '0' : $request->payment_status;
+            $invoice->invoice_payment_id = $request->invoice_payment_id;
+            $invoice->calculate_tax = $request->calculate_tax;
+            $invoice->lr_number = $request->lr_number ?? null;
+            $invoice->lr_date = $request->lr_date ? companyToYmd($request->lr_date) : null;
+            $invoice->recurring = 'no';
+            // Store IGST invoice type if applicable
+            // Check both request parameter and hidden form field
+            $isIGSTInvoice = ($request->has('type') && $request->type == 'igst') || 
+                             ($request->has('invoice_type') && $request->invoice_type == 'igst');
+            if ($isIGSTInvoice) {
+                $invoice->invoice_type = 'igst';
+            } else {
+                $invoice->invoice_type = 'sgst_cgst'; // Default to SGST/CGST
+            }
+            $invoice->save();
+
+            // Add custom fields data
+            if ($request->custom_fields_data) {
+                $invoice->updateCustomFieldData($request->custom_fields_data);
+            }
+
+            $lineErr = $this->persistCfaStockistInvoiceLineItems($invoice, $request);
+            if ($lineErr !== null) {
+                return Reply::error($lineErr);
+            }
+
+            // Log activity
+            if (user()) {
+                self::createEmployeeActivity($userId, 'cfa-stockist-invoice-created', $invoice->id, 'invoice');
+            }
+            
+            \Log::info('CFA/Stockist Invoice created successfully', [
+                'invoice_id' => $invoice->id,
+                'cfa_distributor_id' => $request->cfa_distributor_id,
+                'cfa_stockist_id' => $request->cfa_stockist_id
+            ]);
+
+            return Reply::successWithData(__('messages.recordSaved'), [
+                'redirectUrl' => route('cfa-stockist-invoices.show', $invoice->id),
+                'invoiceID' => $invoice->id
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error storing CFA/Stockist invoice: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return Reply::error('Error creating invoice: ' . $e->getMessage());
+        }
+    }
+
+    public function editCFAStockistInvoice($id)
+    {
+        $invoice = Invoice::where('company_id', company()->id)->findOrFail($id);
+        abort_403(!$this->userCanEditCfaStockistInvoice($invoice));
+        abort_unless(CFAStockistStock::where('invoice_id', $invoice->id)->exists(), 404);
+
+        $this->setupCfaStockistInvoiceForm($invoice);
+
+        return view('invoices.cfa-stockist.create', $this->data);
+    }
+
+    public function updateCFAStockistInvoice(StoreInvoice $request, $id)
+    {
+        try {
+            $invoice = Invoice::where('company_id', company()->id)->findOrFail($id);
+            abort_403(!$this->userCanEditCfaStockistInvoice($invoice));
+            abort_unless(CFAStockistStock::where('invoice_id', $invoice->id)->exists(), 404);
+
+            if (in_array('client', user_roles(), true)) {
+                $request->merge(['cfa_distributor_id' => user()->id]);
+            }
+
+            $userId = UserService::getUserId();
+
+            if (empty($request->cfa_distributor_id)) {
+                return Reply::error('CFA/Distributor is required.');
+            }
+            if (empty($request->cfa_stockist_id)) {
+                return Reply::error('CFA Stockist is required.');
+            }
+            $items = $request->item_name;
+            if (empty($items)) {
+                return Reply::error(__('messages.addItem'));
+            }
+            foreach ($items as $itm) {
+                if (is_null($itm)) {
+                    return Reply::error(__('messages.itemBlank'));
+                }
+            }
+            foreach ($request->quantity as $qty) {
+                if (!is_numeric($qty) && (intval($qty) < 1)) {
+                    return Reply::error(__('messages.quantityNumber'));
+                }
+            }
+            if (empty($request->cost_per_item) || empty($request->amount)) {
+                return Reply::error(__('messages.addItem'));
+            }
+            foreach ($request->cost_per_item as $rate) {
+                if (!is_numeric($rate)) {
+                    return Reply::error(__('messages.unitPriceNumber'));
+                }
+            }
+            foreach ($request->amount as $amt) {
+                if (!is_numeric($amt)) {
+                    return Reply::error(__('messages.amountNumber'));
+                }
+            }
+
+            DB::beginTransaction();
+
+            foreach (CFAStockistStock::where('invoice_id', $invoice->id)->get() as $st) {
+                $ds = CFADistributorStock::find($st->cfa_distributor_stock_id);
+                if ($ds) {
+                    $ds->available_quantity += $st->quantity;
+                    $ds->save();
+                }
+            }
+            CFAStockistStock::where('invoice_id', $invoice->id)->delete();
+            InvoiceItems::where('invoice_id', $invoice->id)->delete();
+
+            $invoice->client_id = $request->cfa_distributor_id;
+            $invoice->issue_date = companyToYmd($request->issue_date);
+            $invoice->due_date = companyToYmd($request->due_date);
+            $invoice->sub_total = round($request->sub_total, 2);
+            $invoice->discount = round($request->discount, 2);
+            $invoice->discount_type = $request->discount_type;
+            $invoice->total = round($request->total, 2);
+            $invoice->due_amount = round($request->total, 2);
+            $invoice->currency_id = $request->currency_id;
+            $invoice->default_currency_id = company()->currency_id;
+            $invoice->exchange_rate = $request->exchange_rate;
+            $invoice->status = $request->status;
+            $invoice->note = trim_editor($request->note);
+            $invoice->invoice_number = $request->invoice_number;
+            $invoice->company_address_id = $request->company_address_id;
+            $invoice->bank_account_id = $request->bank_account_id;
+            $invoice->payment_status = $request->payment_status == null ? '0' : $request->payment_status;
+            $invoice->invoice_payment_id = $request->invoice_payment_id;
+            $invoice->calculate_tax = $request->calculate_tax;
+            $invoice->lr_number = $request->lr_number ?? null;
+            $invoice->lr_date = $request->lr_date ? companyToYmd($request->lr_date) : null;
+            $isIGSTInvoice = ($request->has('type') && $request->type == 'igst')
+                || ($request->has('invoice_type') && $request->invoice_type == 'igst');
+            if ($isIGSTInvoice) {
+                $invoice->invoice_type = 'igst';
+            } else {
+                $invoice->invoice_type = 'sgst_cgst';
+            }
+            $invoice->save();
+
+            if ($request->custom_fields_data) {
+                $invoice->updateCustomFieldData($request->custom_fields_data);
+            }
+
+            $lineErr = $this->persistCfaStockistInvoiceLineItems($invoice, $request);
+            if ($lineErr !== null) {
+                DB::rollBack();
+                return Reply::error($lineErr);
+            }
+
+            DB::commit();
+
+            if (user()) {
+                self::createEmployeeActivity($userId, 'cfa-stockist-invoice-updated', $invoice->id, 'invoice');
+            }
+
+            return Reply::successWithData(__('messages.updateSuccess'), [
+                'redirectUrl' => route('cfa-stockist-invoices.show', $invoice->id),
+                'invoiceID' => $invoice->id,
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Error updating CFA/Stockist invoice: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return Reply::error('Error updating invoice: ' . $e->getMessage());
+        }
+    }
+
+    public function showCFAStockistInvoice($id)
+    {
+        // Admin, accountant, and FSA Executive users have full access
+        // Also allow clients (CFA Distributors) to view their stockist invoices
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            $this->viewPermission = 'all';
+        } else {
+            // Check if user is a client and this invoice belongs to them
+            $invoice = Invoice::findOrFail($id);
+            if (in_array('client', user_roles()) && $invoice->client_id == user()->id) {
+                $this->viewPermission = 'owned';
+            } else {
+                $this->viewPermission = user()->permission('view_cfa_stockist_invoices');
+                abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
+            }
+        }
+        
+        $this->invoice = Invoice::with([
+            'order',
+            'client', 
+            'client.clientDetails', 
+            'items' => function($query) {
+                $query->where('type', 'item')->orderBy('field_order', 'asc')->orderBy('id', 'asc');
+            }, 
+            'items.unit', 
+            'items.product' => function($query) {
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id');
+            }, 
+            'cfaStockistStocks', 
+            'cfaStockistStocks.product' => function($query) {
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id');
+            },
+            'cfaStockistStocks.cfaDistributorStock',
+            'cfaStockistStocks.cfaDistributorStock.purchaseEntry' => function($query) {
+                $query->select('id', 'product_id', 'vendor_id', 'batch', 'expiry', 'mrp', 'pts', 'ptr', 'dis', 'discount', 'tax', 'scheme_enabled', 'total_quantity', 'free_quantity');
+            },
+            'cfaStockistStocks.cfaDistributorStock.purchaseEntry.vendor' => function($query) {
+                $query->select('id', 'primary_name', 'company_name');
+            },
+            'cfaStockistStocks.cfaDistributorStock.purchaseEntry.product' => function($query) {
+                $query->select('id', 'name', 'packing', 'sku', 'hsn_sac_code', 'vendor_id');
+            },
+            'cfaStockistStocks.cfaDistributorStock',
+            'cfaStockistStocks.cfaStockist.area',
+            'cfaStockistStocks.cfaStockist',
+            'cfaStockistStocks.cfaDistributor',
+            'address'
+        ])->findOrFail($id)->withCustomFields();
+        
+        // Ensure items are properly ordered
+        if ($this->invoice->items) {
+            $this->invoice->items = $this->invoice->items->unique('id')->sortBy(function($item) {
+                return $item->field_order ?? ($item->id ?? 999999);
+            })->values();
+        }
+        
+        $this->userId = UserService::getUserId();
+
+        // Do not re-check view_invoices: access is already set above (full CFA, own client, or
+        // view_cfa_stockist_invoices). A second check against view_invoices + send_status
+        // would wrongly block CFA distributors and staff with stockist-invoice–only view rights.
+
+        $getCustomFieldGroupsWithFields = $this->invoice->getCustomFieldGroupsWithFields();
+        if ($getCustomFieldGroupsWithFields) {
+            $this->fields = $getCustomFieldGroupsWithFields->fields;
+        }
+
+        $this->paidAmount = $this->invoice->getPaidAmount();
+        $this->pageTitle = $this->invoice->invoice_number;
+
+        $this->discount = 0;
+        if ($this->invoice->discount > 0) {
+            if ($this->invoice->discount_type == 'percent') {
+                $this->discount = (($this->invoice->discount / 100) * $this->invoice->sub_total);
+            } else {
+                $this->discount = $this->invoice->discount;
+            }
+        }
+
+        if ($this->invoice->discount_type == 'percent') {
+            $discountAmount = $this->invoice->discount;
+            $this->discountType = $discountAmount . '%';
+        } else {
+            $discountAmount = $this->invoice->discount;
+            $this->discountType = currency_format($discountAmount, $this->invoice->currency_id);
+        }
+
+        $taxList = array();
+        $items = InvoiceItems::whereNotNull('taxes')
+            ->where('invoice_id', $this->invoice->id)
+            ->get();
+
+        foreach ($items as $item) {
+            $taxes = json_decode($item->taxes, true);
+            if (!is_array($taxes)) {
+                continue;
+            }
+            
+            foreach ($taxes as $tax) {
+                $this->tax = InvoiceItems::taxbyid($tax)->first();
+                if ($this->tax) {
+                    if (!isset($taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'])) {
+                        if ($this->invoice->calculate_tax == 'after_discount' && $this->discount > 0) {
+                            $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = ($item->amount - ($item->amount / $this->invoice->sub_total) * $this->discount) * ($this->tax->rate_percent / 100);
+                        } else {
+                            $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $item->amount * ($this->tax->rate_percent / 100);
+                        }
+                    } else {
+                        if ($this->invoice->calculate_tax == 'after_discount' && $this->discount > 0) {
+                            $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] + (($item->amount - ($item->amount / $this->invoice->sub_total) * $this->discount) * ($this->tax->rate_percent / 100));
+                        } else {
+                            $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] = $taxList[$this->tax->tax_name . ': ' . $this->tax->rate_percent . '%'] + ($item->amount * ($this->tax->rate_percent / 100));
+                        }
+                    }
+                }
+            }
+        }
+
+        $this->taxes = $taxList;
+        $this->company = $this->invoice->company;
+        $this->settings = company();
+        $this->invoiceSetting = $this->company->invoiceSetting;
+        $this->creditNote = 0;
+        $this->firstInvoice = Invoice::where('company_id', company()->id)->orderBy('id', 'desc')->first();
+        $this->credentials = PaymentGatewayCredentials::first();
+        $this->methods = OfflinePaymentMethod::activeMethod();
+        $this->user = $this->invoice->client; // CFA/Distributor who is billing
+        $this->payments = Payment::with(['offlineMethod'])->where('invoice_id', $this->invoice->id)->where('status', 'complete')->orderByDesc('paid_on')->get();
+        $this->deletePermission = user()->permission('delete_invoices');
+        $this->addInvoicesPermission = user()->permission('add_invoices');
+        $this->editInvoicesPermission = user()->permission('edit_invoices');
+        $this->canEditCfaStockistInvoice = $this->userCanEditCfaStockistInvoice($this->invoice);
+        $this->canDeleteCfaStockistInvoice = $this->userCanDeleteCfaStockistInvoice($this->invoice);
+
+        // Get CFA Stockist from stock entries
+        $firstStock = $this->invoice->cfaStockistStocks->first();
+        $this->cfaStockist = $firstStock ? $firstStock->cfaStockist : null;
+
+        // Check if this is an IGST invoice - same logic as CFA Distributor invoices
+        $isIGSTInvoice = false;
+        
+        // Priority 1: Check invoice_type field
+        if (isset($this->invoice->invoice_type) && $this->invoice->invoice_type === 'igst') {
+            $isIGSTInvoice = true;
+        }
+        
+        // Priority 2: Check request parameter
+        if (!$isIGSTInvoice && (request('type') == 'igst' || request()->has('igst'))) {
+            $isIGSTInvoice = true;
+            // Update database field if not already set
+            if (!isset($this->invoice->invoice_type) || $this->invoice->invoice_type !== 'igst') {
+                $this->invoice->invoice_type = 'igst';
+                $this->invoice->save();
+            }
+        }
+        
+        // Priority 3: Check invoice note for IGST marker
+        if (!$isIGSTInvoice && $this->invoice->note && strpos($this->invoice->note, '<!--IGST_INVOICE-->') !== false) {
+            $isIGSTInvoice = true;
+            // Update database field if not already set
+            if (!isset($this->invoice->invoice_type) || $this->invoice->invoice_type !== 'igst') {
+                $this->invoice->invoice_type = 'igst';
+                $this->invoice->save();
+            }
+        }
+        
+        // Priority 4: Check invoice items for IGST tax (if tax name contains IGST)
+        if (!$isIGSTInvoice && $this->invoice->items) {
+            foreach ($this->invoice->items as $item) {
+                if ($item->taxes) {
+                    $taxes = [];
+                    if (is_string($item->taxes)) {
+                        $decoded = json_decode($item->taxes, true);
+                        if (is_array($decoded)) {
+                            $taxes = $decoded;
+                        } elseif (is_numeric($item->taxes)) {
+                            $taxes = [(int)$item->taxes];
+                        }
+                    } elseif (is_array($item->taxes)) {
+                        $taxes = $item->taxes;
+                    }
+                    
+                    foreach ($taxes as $taxId) {
+                        if (empty($taxId)) continue;
+                        $tax = \App\Models\Tax::find($taxId);
+                        if ($tax && stripos($tax->tax_name ?? '', 'IGST') !== false) {
+                            $isIGSTInvoice = true;
+                            // Update database field
+                            $this->invoice->invoice_type = 'igst';
+                            $this->invoice->save();
+                            break 2; // Break out of both loops
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Store invoice type in data for view
+        $this->invoiceType = $isIGSTInvoice ? 'igst' : '';
+        $this->data['invoiceType'] = $this->invoiceType;
+        $this->data['isIGSTInvoice'] = $isIGSTInvoice;
+        
+        // Use pharmaceutical-specific template for CFA/Stockist invoices
+        if ($isIGSTInvoice) {
+            return view('invoices.cfa-stockist.igst-show', $this->data);
+        }
+        return view('invoices.cfa-stockist.pharma-show', $this->data);
+    }
+
+    public function getCFAStockists(Request $request)
+    {
+        $cfaDistributorId = $request->cfa_distributor_id;
+        
+        if (!$cfaDistributorId) {
+            return Reply::dataOnly(['status' => 'success', 'data' => '<option value="">-- Select Stockist --</option>']);
+        }
+
+        $cfaDistributor = User::where('company_id', company()->id)->findOrFail($cfaDistributorId);
+        $cfaStockists = $cfaDistributor->cfaStockists()
+            ->where('cfa_stockists.company_id', company()->id)
+            ->get();
+
+        $options = '<option value="">-- Select CFA Stockist --</option>';
+        foreach ($cfaStockists as $stockist) {
+            $displayText = ($stockist->cfa_stockist_id ? $stockist->cfa_stockist_id . ' - ' : '') . $stockist->shopname;
+            if ($stockist->fullname) {
+                $displayText .= ' - ' . $stockist->fullname;
+            }
+            $options .= '<option value="' . $stockist->id . '">' . $displayText . '</option>';
+        }
+
+        return Reply::dataOnly(['status' => 'success', 'data' => $options]);
+    }
+
+    /**
+     * Get products from CFA/Distributor's available stock
+     */
+    public function getProductsFromStock(Request $request)
+    {
+        $cfaDistributorId = $request->cfa_distributor_id;
+        
+        if (!$cfaDistributorId) {
+            return Reply::dataOnly(['status' => 'success', 'data' => []]);
+        }
+
+        $availableStock = $this->cfaDistributorStockForStockistInvoiceProducts((int) $cfaDistributorId);
+
+        // Group by product_id
+        $productsGrouped = [];
+        foreach ($availableStock as $stock) {
+            $productId = $stock->product_id;
+            if (!isset($productsGrouped[$productId])) {
+                $productsGrouped[$productId] = [
+                    'product_id' => $productId,
+                    'product_name' => $stock->product->name ?? 'Unknown Product'
+                ];
+            }
+        }
+
+        return Reply::dataOnly(['status' => 'success', 'data' => array_values($productsGrouped)]);
+    }
+
+    /**
+     * Prefer stock tied to invoices marked delivered; if that yields nothing, use any available rows
+     * (strict filter alone often emptied the product dropdown when delivery_status was never set).
+     */
+    private function cfaDistributorStockForStockistInvoiceProducts(int $cfaDistributorId)
+    {
+        $loose = function () use ($cfaDistributorId) {
+            return CFADistributorStock::with(['product.unit', 'product.vendor'])
+                ->where('cfa_distributor_id', $cfaDistributorId)
+                ->where('available_quantity', '>', 0)
+                ->where('company_id', company()->id);
+        };
+
+        try {
+            $strict = $loose()
+                ->whereHas('invoice', function ($query) {
+                    $query->where('delivery_status', 'received');
+                })
+                ->get();
+            if ($strict->isNotEmpty()) {
+                return $strict;
+            }
+        } catch (\Exception $e) {
+            \Log::warning('CFA stockist invoice products: strict delivery filter failed', ['error' => $e->getMessage()]);
+        }
+
+        return $loose()->get();
+    }
+
+    /**
+     * Get batches for a product from CFA/Distributor's available stock
+     */
+    public function getStockBatches(Request $request)
+    {
+        $productId = $request->product_id;
+        $cfaDistributorId = $request->cfa_distributor_id;
+        
+        if (!$productId || !$cfaDistributorId) {
+            return Reply::dataOnly(['status' => 'success', 'data' => []]);
+        }
+
+        $stockTable = (new CFADistributorStock)->getTable();
+
+        try {
+            $availableStock = CFADistributorStock::with(['product.unit', 'product.vendor'])
+                ->join('invoices', 'invoices.id', '=', $stockTable . '.invoice_id')
+                ->where($stockTable . '.cfa_distributor_id', $cfaDistributorId)
+                ->where($stockTable . '.product_id', $productId)
+                ->where($stockTable . '.available_quantity', '>', 0)
+                ->where($stockTable . '.company_id', company()->id)
+                ->where('invoices.delivery_status', 'received')
+                ->select($stockTable . '.*')
+                ->orderBy($stockTable . '.created_at', 'desc')
+                ->get();
+        } catch (\Exception $e) {
+            \Log::warning('CFA stockist getStockBatches: strict query failed', ['error' => $e->getMessage()]);
+            $availableStock = collect();
+        }
+
+        if ($availableStock->isEmpty()) {
+            $availableStock = CFADistributorStock::with(['product.unit', 'product.vendor'])
+                ->where('cfa_distributor_id', $cfaDistributorId)
+                ->where('product_id', $productId)
+                ->where('available_quantity', '>', 0)
+                ->where('company_id', company()->id)
+                ->orderBy('created_at', 'desc')
+                ->get();
+        }
+
+        $batches = [];
+        foreach ($availableStock as $stock) {
+            $batch = $stock->batch ?? 'No Batch';
+            $batches[] = [
+                'cfa_distributor_stock_id' => $stock->id,
+                'batch' => $batch,
+                'expiry' => $stock->expiry ? $stock->expiry->format('Y-m-d') : null,
+                'available_quantity' => $stock->available_quantity,
+                'pts' => $stock->pts ?? 0,
+                'ptr' => $stock->ptr ?? 0,
+                'mrp' => $stock->mrp ?? 0,
+                'dis' => $stock->dis ?? 0,
+                'created_month' => $stock->created_at ? $stock->created_at->format('F Y') : 'Unknown'
+            ];
+        }
+
+        return Reply::dataOnly(['status' => 'success', 'data' => $batches]);
+    }
+
+    /**
+     * Display CFA/Distributor Inventory
+     */
+    public function indexCFADistributorInventory(CFADistributorInventoryDataTable $dataTable)
+    {
+        // Admin, accountant, and FSA Executive users have full access
+        // Also allow clients (CFA Distributors) to view their own inventory
+        if (!PharmaDesignationHelper::hasFullCFAAccess() && !in_array('client', user_roles())) {
+            $viewPermission = user()->permission('view_invoices');
+            abort_403(!in_array($viewPermission, ['all', 'added', 'owned', 'both']));
+        }
+
+        if (!request()->ajax()) {
+            // Load CFA/Distributors for filter (admin only)
+            if (PharmaDesignationHelper::hasFullCFAAccess()) {
+                $this->cfaDistributors = User::without('session')
+                    ->join('role_user', 'role_user.user_id', '=', 'users.id')
+                    ->join('roles', 'roles.id', '=', 'role_user.role_id')
+                    ->join('client_details', 'users.id', '=', 'client_details.user_id')
+                    ->leftJoin('client_categories', 'client_details.category_id', '=', 'client_categories.id')
+                    ->leftJoin('client_areas', 'client_details.id', '=', 'client_areas.client_detail_id')
+                    ->select('users.id', 'users.name', 'users.email', 'client_details.company_name')
+                    ->whereNull('users.is_client_contact')
+                    ->where('roles.name', 'client')
+                    ->where('users.status', 'active')
+                    ->where('users.company_id', company()->id)
+                    ->where(function($query) {
+                        $query->where(function($q) {
+                            $q->whereRaw('LOWER(client_categories.category_name) LIKE ?', ['%cfa%'])
+                              ->orWhereRaw('LOWER(client_categories.category_name) LIKE ?', ['%distributor%']);
+                        })
+                        ->orWhereNotNull('client_areas.area_id');
+                    })
+                    ->groupBy('users.id', 'users.name', 'users.email', 'client_details.company_name')
+                    ->orderBy('client_details.company_name', 'asc')
+                    ->get();
+            } else {
+                $this->cfaDistributors = collect([]);
+            }
+        }
+
+        $this->pageTitle = __('CFA/Distributor Inventory');
+        return $dataTable->render('cfa-distributor-inventory.index', $this->data);
+    }
+
+    /**
+     * Check if current user can access CFA distributor stock (same logic as index).
+     */
+    private function canAccessCFADistributorStock(?int $cfaDistributorId): bool
+    {
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            return true;
+        }
+        if (in_array('client', user_roles())) {
+            return $cfaDistributorId !== null && (int) $cfaDistributorId === (int) user()->id;
+        }
+        $viewPermission = user()->permission('view_invoices');
+        return in_array($viewPermission, ['all', 'added', 'owned', 'both']);
+    }
+
+    /**
+     * List batches for a product+distributor (CFA Distributor Inventory detail).
+     */
+    public function batchesCFADistributorInventory()
+    {
+        $productId = request('product_id');
+        $cfaDistributorId = request('cfa_distributor_id');
+        if (!$productId || !$cfaDistributorId) {
+            abort(404);
+        }
+        if (!$this->canAccessCFADistributorStock((int) $cfaDistributorId)) {
+            abort_403(__('messages.permissionDenied'));
+        }
+
+        $batches = CFADistributorStock::with(['product', 'invoice', 'cfaDistributor.clientDetails'])
+            ->where('company_id', company()->id)
+            ->where('product_id', $productId)
+            ->where('cfa_distributor_id', $cfaDistributorId)
+            ->orderBy('batch')
+            ->orderBy('expiry')
+            ->get();
+
+        $product = $batches->first()->product ?? Product::find($productId);
+        $distributor = $batches->first()->cfaDistributor ?? User::with('clientDetails')->find($cfaDistributorId);
+        $distributorName = $distributor ? ($distributor->clientDetails->company_name ?? $distributor->name ?? '-') : '-';
+
+        $this->pageTitle = __('app.batches') . ' – ' . ($product->name ?? '-') . ' / ' . $distributorName;
+        return view('cfa-distributor-inventory.batches', [
+            'batches' => $batches,
+            'product' => $product,
+            'distributorName' => $distributorName,
+            'productId' => $productId,
+            'cfaDistributorId' => $cfaDistributorId,
+        ] + $this->data);
+    }
+
+    /**
+     * Edit form for one CFA distributor stock batch (modal content).
+     */
+    public function editBatchCFADistributorInventory($id)
+    {
+        $stock = CFADistributorStock::where('company_id', company()->id)->findOrFail($id);
+        if (!$this->canAccessCFADistributorStock((int) $stock->cfa_distributor_id)) {
+            abort_403(__('messages.permissionDenied'));
+        }
+        $data = ['batch' => $stock] + $this->data;
+        if (request()->ajax() || request()->wantsJson()) {
+            $html = view('cfa-distributor-inventory.ajax.edit_batch', $data)->render();
+            return Reply::dataOnly(['status' => 'success', 'html' => $html, 'title' => __('app.editBatch')]);
+        }
+        return view('cfa-distributor-inventory.ajax.edit_batch', $data);
+    }
+
+    /**
+     * Update one CFA distributor stock batch.
+     */
+    public function updateBatchCFADistributorInventory(\Illuminate\Http\Request $request, $id)
+    {
+        $stock = CFADistributorStock::where('company_id', company()->id)->findOrFail($id);
+        if (!$this->canAccessCFADistributorStock((int) $stock->cfa_distributor_id)) {
+            return Reply::error(__('messages.permissionDenied'));
+        }
+
+        $request->validate([
+            'batch' => 'nullable|string|max:255',
+            'expiry' => 'nullable|date',
+            'quantity' => 'required|numeric|min:0',
+            'available_quantity' => 'required|numeric|min:0',
+            'pts' => 'nullable|numeric|min:0',
+            'ptr' => 'nullable|numeric|min:0',
+            'mrp' => 'nullable|numeric|min:0',
+            'dis' => 'nullable|numeric|min:0',
+        ]);
+
+        $available = (float) $request->available_quantity;
+        $quantity = (float) $request->quantity;
+        if ($available > $quantity) {
+            return Reply::error(__('app.availableQuantityCannotExceedTotal'));
+        }
+
+        $stock->fill([
+            'batch' => $request->batch,
+            'expiry' => $request->expiry ?: null,
+            'quantity' => $quantity,
+            'available_quantity' => $available,
+            'pts' => $request->pts ?: null,
+            'ptr' => $request->ptr ?: null,
+            'mrp' => $request->mrp ?: null,
+            'dis' => $request->dis ?: null,
+        ]);
+        $stock->save();
+
+        if ($request->ajax() || $request->wantsJson()) {
+            return Reply::successWithData(__('messages.updateSuccess'), [
+                'redirectUrl' => route('cfa-distributor-inventory.batches', [
+                    'product_id' => $stock->product_id,
+                    'cfa_distributor_id' => $stock->cfa_distributor_id,
+                ]),
+            ]);
+        }
+        return redirect()->route('cfa-distributor-inventory.batches', [
+            'product_id' => $stock->product_id,
+            'cfa_distributor_id' => $stock->cfa_distributor_id,
+        ])->with('success', __('messages.updateSuccess'));
+    }
+
+    /**
+     * Delete one CFA distributor stock batch.
+     */
+    public function destroyBatchCFADistributorInventory($id)
+    {
+        $stock = CFADistributorStock::where('company_id', company()->id)->findOrFail($id);
+        if (!$this->canAccessCFADistributorStock((int) $stock->cfa_distributor_id)) {
+            return Reply::error(__('messages.permissionDenied'));
+        }
+
+        $usedByStockist = CFAStockistStock::where('cfa_distributor_stock_id', $id)->exists();
+        if ($usedByStockist) {
+            return Reply::error(__('app.thisBatchUsedByStockistDeleteWillCascade'));
+        }
+
+        $productId = $stock->product_id;
+        $cfaDistributorId = $stock->cfa_distributor_id;
+        $stock->delete();
+
+        if (request()->ajax() || request()->wantsJson()) {
+            return Reply::successWithData(__('messages.deleteSuccess'), [
+                'redirectUrl' => route('cfa-distributor-inventory.batches', [
+                    'product_id' => $productId,
+                    'cfa_distributor_id' => $cfaDistributorId,
+                ]),
+            ]);
+        }
+        return redirect()->route('cfa-distributor-inventory.batches', [
+            'product_id' => $productId,
+            'cfa_distributor_id' => $cfaDistributorId,
+        ])->with('success', __('messages.deleteSuccess'));
+    }
+
+    /**
+     * Check if current user can access CFA stockist stock (same logic as stockist invoices).
+     */
+    private function canAccessCFAStockistStock(?int $cfaStockistId): bool
+    {
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            return true;
+        }
+        if (in_array('client', user_roles())) {
+            return $cfaStockistId !== null && CFAStockist::where('id', $cfaStockistId)
+                ->whereHas('cfaDistributors', fn($q) => $q->where('cfa_distributor_id', user()->id))
+                ->exists();
+        }
+        $viewPermission = user()->permission('view_cfa_stockist_invoices');
+        return in_array($viewPermission, ['all', 'added', 'owned', 'both']);
+    }
+
+    /**
+     * Display CFA Stockist Inventory.
+     */
+    public function indexCFAStockistInventory(CFAStockistInventoryDataTable $dataTable)
+    {
+        if (!PharmaDesignationHelper::hasFullCFAAccess() && !in_array('client', user_roles())) {
+            $viewPermission = user()->permission('view_cfa_stockist_invoices');
+            abort_403(!in_array($viewPermission, ['all', 'added', 'owned', 'both']));
+        }
+
+        if (!request()->ajax()) {
+            if (PharmaDesignationHelper::hasFullCFAAccess()) {
+                $this->cfaStockists = CFAStockist::where('company_id', company()->id)->orderBy('shopname')->get();
+                $this->cfaDistributors = User::without('session')
+                    ->join('role_user', 'role_user.user_id', '=', 'users.id')
+                    ->join('roles', 'roles.id', '=', 'role_user.role_id')
+                    ->join('client_details', 'users.id', '=', 'client_details.user_id')
+                    ->select('users.id', 'users.name', 'client_details.company_name')
+                    ->where('roles.name', 'client')
+                    ->where('users.company_id', company()->id)
+                    ->groupBy('users.id', 'users.name', 'client_details.company_name')
+                    ->orderBy('client_details.company_name')
+                    ->get();
+            } else {
+                $this->cfaStockists = CFAStockist::where('company_id', company()->id)
+                    ->whereHas('cfaDistributors', fn($q) => $q->where('cfa_distributor_id', user()->id))
+                    ->orderBy('shopname')
+                    ->get();
+                $this->cfaDistributors = collect([]);
+            }
+        }
+
+        $this->pageTitle = __('app.cfaStockistInventory');
+        return $dataTable->render('cfa-stockist-inventory.index', $this->data);
+    }
+
+    /**
+     * List batches for a product+stockist (CFA Stockist Inventory detail).
+     */
+    public function batchesCFAStockistInventory()
+    {
+        $productId = request('product_id');
+        $cfaStockistId = request('cfa_stockist_id');
+        if (!$productId || !$cfaStockistId) {
+            abort(404);
+        }
+        if (!$this->canAccessCFAStockistStock((int) $cfaStockistId)) {
+            abort_403(__('messages.permissionDenied'));
+        }
+
+        $batches = CFAStockistStock::with(['product', 'invoice', 'cfaStockist', 'cfaDistributor.clientDetails'])
+            ->where('company_id', company()->id)
+            ->where('product_id', $productId)
+            ->where('cfa_stockist_id', $cfaStockistId)
+            ->orderBy('batch')
+            ->orderBy('expiry')
+            ->get();
+
+        $product = $batches->first()->product ?? Product::find($productId);
+        $stockist = $batches->first()->cfaStockist ?? CFAStockist::find($cfaStockistId);
+        $stockistName = $stockist ? ($stockist->shopname ?? $stockist->fullname ?? '-') : '-';
+
+        $this->pageTitle = __('app.batches') . ' – ' . ($product->name ?? '-') . ' / ' . $stockistName;
+        return view('cfa-stockist-inventory.batches', [
+            'batches' => $batches,
+            'product' => $product,
+            'stockistName' => $stockistName,
+            'productId' => $productId,
+            'cfaStockistId' => $cfaStockistId,
+        ] + $this->data);
+    }
+
+    /**
+     * Edit form for one CFA stockist stock batch (modal content).
+     */
+    public function editBatchCFAStockistInventory($id)
+    {
+        $stock = CFAStockistStock::where('company_id', company()->id)->findOrFail($id);
+        if (!$this->canAccessCFAStockistStock((int) $stock->cfa_stockist_id)) {
+            abort_403(__('messages.permissionDenied'));
+        }
+        $data = ['batch' => $stock] + $this->data;
+        if (request()->ajax() || request()->wantsJson()) {
+            $html = view('cfa-stockist-inventory.ajax.edit_batch', $data)->render();
+            return Reply::dataOnly(['status' => 'success', 'html' => $html, 'title' => __('app.editBatch')]);
+        }
+        return view('cfa-stockist-inventory.ajax.edit_batch', $data);
+    }
+
+    /**
+     * Update one CFA stockist stock batch.
+     */
+    public function updateBatchCFAStockistInventory(\Illuminate\Http\Request $request, $id)
+    {
+        $stock = CFAStockistStock::where('company_id', company()->id)->findOrFail($id);
+        if (!$this->canAccessCFAStockistStock((int) $stock->cfa_stockist_id)) {
+            return Reply::error(__('messages.permissionDenied'));
+        }
+
+        $request->validate([
+            'batch' => 'nullable|string|max:255',
+            'expiry' => 'nullable|date',
+            'quantity' => 'required|numeric|min:0',
+            'pts' => 'nullable|numeric|min:0',
+            'ptr' => 'nullable|numeric|min:0',
+            'mrp' => 'nullable|numeric|min:0',
+            'dis' => 'nullable|numeric|min:0',
+        ]);
+
+        $stock->fill([
+            'batch' => $request->batch,
+            'expiry' => $request->expiry ?: null,
+            'quantity' => (float) $request->quantity,
+            'pts' => $request->pts ?: null,
+            'ptr' => $request->ptr ?: null,
+            'mrp' => $request->mrp ?: null,
+            'dis' => $request->dis ?: null,
+        ]);
+        $stock->save();
+
+        if ($request->ajax() || $request->wantsJson()) {
+            return Reply::successWithData(__('messages.updateSuccess'), [
+                'redirectUrl' => route('cfa-stockist-inventory.batches', [
+                    'product_id' => $stock->product_id,
+                    'cfa_stockist_id' => $stock->cfa_stockist_id,
+                ]),
+            ]);
+        }
+        return redirect()->route('cfa-stockist-inventory.batches', [
+            'product_id' => $stock->product_id,
+            'cfa_stockist_id' => $stock->cfa_stockist_id,
+        ])->with('success', __('messages.updateSuccess'));
+    }
+
+    /**
+     * Delete one CFA stockist stock batch.
+     */
+    public function destroyBatchCFAStockistInventory($id)
+    {
+        $stock = CFAStockistStock::where('company_id', company()->id)->findOrFail($id);
+        if (!$this->canAccessCFAStockistStock((int) $stock->cfa_stockist_id)) {
+            return Reply::error(__('messages.permissionDenied'));
+        }
+
+        $productId = $stock->product_id;
+        $cfaStockistId = $stock->cfa_stockist_id;
+        $stock->delete();
+
+        if (request()->ajax() || request()->wantsJson()) {
+            return Reply::successWithData(__('messages.deleteSuccess'), [
+                'redirectUrl' => route('cfa-stockist-inventory.batches', [
+                    'product_id' => $productId,
+                    'cfa_stockist_id' => $cfaStockistId,
+                ]),
+            ]);
+        }
+        return redirect()->route('cfa-stockist-inventory.batches', [
+            'product_id' => $productId,
+            'cfa_stockist_id' => $cfaStockistId,
+        ])->with('success', __('messages.deleteSuccess'));
+    }
+
+    /**
+     * CFA distributors (client role) may create CFA stockist invoices without add_cfa_stockist_invoices.
+     */
+    private function userCanAddCfaStockistInvoice(): bool
+    {
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            return true;
+        }
+        $perm = user()->permission('add_cfa_stockist_invoices');
+        if (in_array($perm, ['all', 'added'], true)) {
+            return true;
+        }
+
+        return in_array('client', user_roles(), true);
+    }
+
+    /**
+     * CFA distributor (client) may edit their own distributor invoices without matrix permission.
+     * Staff need edit_cfa_distributor_invoices (scoped by type when invoice is set).
+     */
+    private function userCanEditCfaDistributorInvoice(?Invoice $invoice = null): bool
+    {
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            return true;
+        }
+        $userId = (int) UserService::getUserId();
+        $uid = (int) (user()->id ?? 0);
+        $perm = user()->permission('edit_cfa_distributor_invoices');
+        if (in_array($perm, ['all', 'added', 'owned', 'both'], true)) {
+            if ($invoice === null) {
+                return true;
+            }
+            if ($perm === 'all') {
+                return true;
+            }
+            if ($perm === 'added' && ((int) $invoice->added_by === $userId || (int) $invoice->added_by === $uid)) {
+                return true;
+            }
+            if ($perm === 'owned' && (int) $invoice->client_id === $userId) {
+                return true;
+            }
+            if ($perm === 'both' && ((int) $invoice->client_id === $userId || (int) $invoice->added_by === $userId || (int) $invoice->added_by === $uid)) {
+                return true;
+            }
+        }
+
+        return in_array('client', user_roles(), true)
+            && $invoice !== null
+            && (int) $invoice->client_id === $uid;
+    }
+
+    /**
+     * CFA distributor (client) may edit their own stockist invoices without matrix permission.
+     * Staff need edit_cfa_stockist_invoices (scoped by type when invoice is set).
+     */
+    private function userCanEditCfaStockistInvoice(?Invoice $invoice = null): bool
+    {
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            return true;
+        }
+        $userId = (int) UserService::getUserId();
+        $uid = (int) (user()->id ?? 0);
+        $perm = user()->permission('edit_cfa_stockist_invoices');
+        if (in_array($perm, ['all', 'added', 'owned', 'both'], true)) {
+            if ($invoice === null) {
+                return true;
+            }
+            if ($perm === 'all') {
+                return true;
+            }
+            if ($perm === 'added' && ((int) $invoice->added_by === $userId || (int) $invoice->added_by === $uid)) {
+                return true;
+            }
+            if ($perm === 'owned' && (int) $invoice->client_id === $userId) {
+                return true;
+            }
+            if ($perm === 'both' && ((int) $invoice->client_id === $userId || (int) $invoice->added_by === $userId || (int) $invoice->added_by === $uid)) {
+                return true;
+            }
+        }
+
+        return in_array('client', user_roles(), true)
+            && $invoice !== null
+            && (int) $invoice->client_id === $uid;
+    }
+
+    /**
+     * Delete CFA stockist invoice: own invoice for client CFAs, or delete_cfa_stockist_invoices for staff.
+     */
+    private function userCanDeleteCfaStockistInvoice(Invoice $invoice): bool
+    {
+        if (PharmaDesignationHelper::hasFullCFAAccess()) {
+            return true;
+        }
+        $userId = (int) UserService::getUserId();
+        $uid = (int) (user()->id ?? 0);
+        $perm = user()->permission('delete_cfa_stockist_invoices');
+        if (in_array($perm, ['all', 'added', 'owned', 'both'], true)) {
+            if ($perm === 'all') {
+                return true;
+            }
+            if ($perm === 'added' && ((int) $invoice->added_by === $userId || (int) $invoice->added_by === $uid)) {
+                return true;
+            }
+            if ($perm === 'owned' && (int) $invoice->client_id === $userId) {
+                return true;
+            }
+            if ($perm === 'both' && ((int) $invoice->client_id === $userId || (int) $invoice->added_by === $userId || (int) $invoice->added_by === $uid)) {
+                return true;
+            }
+        }
+
+        return in_array('client', user_roles(), true) && (int) $invoice->client_id === $uid;
+    }
+
+    /**
+     * Copy CFA/pharma tax-invoice meta fields (IRN, e-way bill, dispatch,
+     * customer order ref, classification and address overrides) from the
+     * request onto the invoice. Only columns that exist on the table are
+     * touched, so this is safe on installs where the related migration
+     * has not been applied yet.
+     */
+    private function applyCfaPharmaTaxInvoiceMeta($invoice, $request): void
+    {
+        $fields = [
+            'irn_number',
+            'eway_bill_number',
+            'eway_bill_date',
+            'dispatch_through',
+            'lr_cases',
+            'customer_order_reference',
+            'tax_invoice_classification',
+            'place_of_supply_override',
+            'ship_to_address_override',
+        ];
+
+        foreach ($fields as $field) {
+            if (!Schema::hasColumn('invoices', $field)) {
+                continue;
+            }
+
+            if (!$request->has($field)) {
+                continue;
+            }
+
+            $value = $request->input($field);
+
+            if ($field === 'eway_bill_date') {
+                $value = $value ? companyToYmd($value) : null;
+            } elseif (is_string($value)) {
+                $trimmed = trim($value);
+                $value = $trimmed === '' ? null : $trimmed;
+            }
+
+            $invoice->{$field} = $value;
+        }
+    }
+
+    /**
+     * Resolve the id of the current company's default address, with a
+     * fallback to any existing address for the company so invoice save
+     * does not fail when `is_default` has not been set yet.
+     */
+    private function defaultCompanyAddressId()
+    {
+        $companyId = company() ? company()->id : (user() ? user()->company_id : null);
+
+        if (!$companyId) {
+            return null;
+        }
+
+        $defaultId = CompanyAddress::where('company_id', $companyId)
+            ->where('is_default', 1)
+            ->value('id');
+
+        if ($defaultId) {
+            return $defaultId;
+        }
+
+        return CompanyAddress::where('company_id', $companyId)->value('id');
     }
 }

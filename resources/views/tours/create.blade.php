@@ -170,8 +170,31 @@
         <form action="{{ route('tours.store') }}" method="POST" id="tour-plan-form">
             @csrf
             
+            @if(user()->hasAdminLikeAccess() && isset($employees) && $employees->isNotEmpty())
+            <!-- Admin: Create tour plan for self or another employee -->
+            <div class="row mb-3">
+                <div class="col-md-4">
+                    <label for="for-employee-selector" class="my-3 f-14 text-dark-grey mb-12 text-capitalize">
+                        Create tour plan for
+                    </label>
+                    <select class="form-control height-35 f-14 select-picker" name="for_employee_id" id="for-employee-selector" data-live-search="true" data-html="true">
+                        @php
+                            $myselfLabel = \App\Helper\EmployeeSelectLabel::plain(user()) . ' — Myself';
+                        @endphp
+                        <option value="" {{ (!isset($targetUserId) || $targetUserId == user()->id) ? 'selected' : '' }}>{{ $myselfLabel }}</option>
+                        @foreach($employees as $emp)
+                            @if($emp->id != user()->id)
+                                <x-user-option :user="$emp" :employeeSelect="true" :selected="isset($targetUserId) && (int) $targetUserId === (int) $emp->id" />
+                            @endif
+                        @endforeach
+                    </select>
+                    <small class="form-text text-muted">Select employee to create tour plan on their behalf</small>
+                </div>
+            </div>
+            @endif
+
             <!-- Month and HeadQuarter Selector -->
-            <div class="row mb-4">
+            <div class="row mb-4 align-items-start">
                 <div class="col-md-3">
                     <x-forms.label class="my-3" fieldId="month" :fieldLabel="__('Select Month')" fieldRequired="true" />
                     <input type="month" class="form-control height-35 f-14" name="month" 
@@ -180,80 +203,88 @@
                 </div>
                 <div class="col-md-3">
                     <x-forms.label class="my-3" fieldId="headquarter" :fieldLabel="'HeadQuarter'" fieldRequired="true" />
-                    @if(user()->hasRole('admin'))
-                        <select class="form-control height-35 f-14 select-picker" name="headquarter" id="headquarter-selector" data-live-search="true" required>
-                            <option value="">-- Select HeadQuarter --</option>
-                            @foreach($headquarters as $hq)
-                                <option value="{{ $hq->id }}">
-                                    {{ $hq->name }}
-                                    @if($hq->area) ({{ $hq->area->name }}) @endif
-                                </option>
-                            @endforeach
-                        </select>
-                        <small class="form-text text-muted">Select HQ to plan tours for</small>
+                    @if($headquarters->isNotEmpty() && $userHeadquarter)
+                        @php
+                            $hqReadonly = $userHeadquarterWithArea ?? \App\Models\PharmaHeadquarter::with('area')->find($userHeadquarter);
+                        @endphp
+                        <input type="hidden" name="headquarter" id="headquarter-selector" value="{{ $userHeadquarter }}">
+                        <div class="form-control height-35 f-14 bg-light d-flex align-items-center" aria-readonly="true">
+                            <span class="badge badge-secondary mr-2"><i class="fa fa-lock"></i></span>
+                            @if($hqReadonly)
+                                <span>{{ $hqReadonly->name }}@if($hqReadonly->area) ({{ $hqReadonly->area->name }}) @endif</span>
+                            @else
+                                <span>—</span>
+                            @endif
+                        </div>
+                        <small class="form-text text-muted invisible mb-0" aria-hidden="true">&nbsp;</small>
+                    @elseif($headquarters->isEmpty())
+                        <div class="form-control height-35 f-14 bg-danger text-white">
+                            <i class="fa fa-exclamation-triangle"></i> No headquarters available
+                        </div>
+                        <small class="form-text text-danger">Contact admin to configure headquarters.</small>
                     @else
-                        @if($userHeadquarter)
-                            <input type="hidden" name="headquarter" value="{{ $userHeadquarter }}">
-                            <div class="form-control height-35 f-14 bg-light" style="display: flex; align-items: center;">
-                                <span class="badge badge-success mr-2">
-                                    <i class="fa fa-lock"></i>
-                                </span>
-                                {{ \App\Models\PharmaHeadquarter::find($userHeadquarter)->name }}
-                            </div>
-                            <small class="form-text text-muted">Your assigned headquarter</small>
-                        @else
-                            <div class="form-control height-35 f-14 bg-danger text-white">
-                                <i class="fa fa-exclamation-triangle"></i> Not Assigned
-                            </div>
-                            <small class="form-text text-danger">Contact admin to assign a headquarter</small>
-                        @endif
+                        <div class="form-control height-35 f-14 bg-danger text-white">
+                            <i class="fa fa-exclamation-triangle"></i> Not assigned
+                        </div>
+                        <small class="form-text text-danger">Contact admin to assign a headquarter.</small>
                     @endif
                 </div>
                 <div class="col-md-3">
                     <label for="submitted-to-selector" class="my-3 f-14 text-dark-grey mb-12 text-capitalize">
-                        Submit To (Manager) <sup class="f-14 mr-1 text-danger">*</sup>
+                        Submit To (Reporting Manager) <sup class="f-14 mr-1 text-danger">*</sup>
                     </label>
-                    <select class="form-control height-35 f-14 select-picker" name="submitted_to" id="submitted-to-selector" data-live-search="true" required>
-                        <option value="">-- Select Manager --</option>
-                        @if($reportingManagerId)
-                            @php
-                                $reportingManager = $managers->firstWhere('id', $reportingManagerId);
-                            @endphp
-                            @if($reportingManager)
-                                <option value="{{ $reportingManager->id }}" selected style="background-color: #e7f3ff; font-weight: bold;">
-                                    ⭐ {{ $reportingManager->name }} (Your Reporting Manager)
-                                    @if($reportingManager->employeeDetail && $reportingManager->employeeDetail->designation)
-                                        - {{ $reportingManager->employeeDetail->designation->name }}
-                                    @endif
-                                </option>
+                    @if(isset($managers) && $managers->isEmpty())
+                        <div class="form-control height-35 f-14 bg-light" style="display: flex; align-items: center;">
+                            <span class="text-danger"><i class="fa fa-exclamation-triangle"></i> No reporting manager assigned</span>
+                        </div>
+                        <small class="form-text text-danger">No reporting manager assigned in HR. Contact HR to assign a reporting manager before submitting tour plan.</small>
+                        <input type="hidden" name="submitted_to" value="">
+                    @elseif(isset($managers) && $managers->count() === 1)
+                        @php
+                            $reportingManager = $managers->first();
+                        @endphp
+                        <div class="form-control height-35 f-14 bg-success text-white" style="display: flex; align-items: center;">
+                            <i class="fa fa-user-check mr-2"></i>
+                            <strong>{{ $reportingManager->name }}</strong>
+                            @if($reportingManager->employeeDetail && $reportingManager->employeeDetail->designation)
+                                <span class="ml-1">({{ $reportingManager->employeeDetail->designation->name }})</span>
                             @endif
-                        @endif
-                        @foreach($managers as $manager)
-                            @if($manager->id != $reportingManagerId)
-                                <option value="{{ $manager->id }}">
-                                    {{ $manager->name }}
-                                    @if($manager->employeeDetail && $manager->employeeDetail->designation)
-                                        ({{ $manager->employeeDetail->designation->name }})
-                                    @endif
-                                </option>
+                        </div>
+                        <small class="form-text text-success"><i class="fa fa-check-circle"></i> Tour plan will be auto-sent to your Reporting Manager</small>
+                        <input type="hidden" name="submitted_to" value="{{ $reportingManager->id }}">
+                    @else
+                        <select class="form-control height-35 f-14 select-picker" name="submitted_to" id="submitted-to-selector" data-live-search="true" required>
+                            <option value="">-- Select Manager --</option>
+                            @if($reportingManagerId && $managers->isNotEmpty())
+                                @php
+                                    $reportingManager = $managers->firstWhere('id', $reportingManagerId);
+                                @endphp
+                                @if($reportingManager)
+                                    <option value="{{ $reportingManager->id }}" selected>
+                                        {{ $reportingManager->name }} (Reporting Manager)
+                                        @if($reportingManager->employeeDetail && $reportingManager->employeeDetail->designation)
+                                            - {{ $reportingManager->employeeDetail->designation->name }}
+                                        @endif
+                                    </option>
+                                @endif
                             @endif
-                        @endforeach
-                    </select>
-                    <small class="form-text text-muted">
-                        @if($reportingManagerId)
-                            <span class="text-success"><i class="fa fa-check-circle"></i> Your reporting manager is pre-selected</span>
-                        @else
-                            <span class="text-warning"><i class="fa fa-exclamation-triangle"></i> No reporting manager assigned in HR</span>
-                        @endif
-                    </small>
+                        </select>
+                        <small class="form-text text-muted">Tour plan is submitted to your Reporting Manager only</small>
+                    @endif
                 </div>
-                <div class="col-md-3 d-flex align-items-end pb-3">
-                    <button type="button" class="btn btn-success btn-sm mr-2" id="quick-fill-all">
-                        <i class="fa fa-magic"></i> Quick Fill All Days
-                    </button>
-                    <button type="button" class="btn btn-secondary btn-sm" id="clear-form">
-                        <i class="fa fa-eraser"></i> Clear All
-                    </button>
+                <div class="col-md-3">
+                    <span class="d-block my-3 f-14 text-dark-grey mb-12 invisible user-select-none" aria-hidden="true">&nbsp;</span>
+                    <div class="d-flex flex-wrap align-items-center" style="min-height: 35px;">
+                        <button type="button" class="btn btn-success btn-sm mr-2" id="quick-fill-all"
+                            title="Quick Fill All Days" aria-label="Quick Fill All Days">
+                            <i class="fa fa-magic" aria-hidden="true"></i>
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="clear-form"
+                            title="Clear All" aria-label="Clear All">
+                            <i class="fa fa-eraser" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                    <small class="form-text text-muted invisible mb-0" aria-hidden="true">&nbsp;</small>
                 </div>
             </div>
 
@@ -362,13 +393,19 @@
 // Data from controller
 const headquarters = @json($headquarters);
 const workStatuses = @json($workStatuses);
-const employees = @json($employees);
+const employees = @json($employeesJson ?? []);
+const workedWithDesignations = @json($workedWithDesignations ?? []);
 const userHeadquarter = {{ $userHeadquarter ?? 'null' }};
 const reportingManagerId = {{ $reportingManagerId ?? 'null' }};
-const isAdmin = {{ user()->hasRole('admin') ? 'true' : 'false' }};
+const isAdmin = {{ user()->hasAdminLikeAccess() ? 'true' : 'false' }};
 const isEmployeeHQLocked = !isAdmin && headquarters.length === 1;
 const existingTours = @json($existingTours);
 const currentMonth = '{{ $currentMonth }}';
+
+function getHQById(hqId) {
+    if (!hqId) return null;
+    return headquarters.find(h => Number(h.id) === Number(hqId)) || null;
+}
 
 // Debug info
 console.log('=== TOUR PLAN INIT ===');
@@ -376,6 +413,7 @@ console.log('isAdmin:', isAdmin);
 console.log('userHeadquarter:', userHeadquarter);
 console.log('reportingManagerId:', reportingManagerId);
 console.log('headquarters count:', headquarters.length);
+console.log('headquarters:', headquarters.map(h => ({ id: h.id, name: h.name, exstations: h.exstations?.length || 0, outstations: h.outstations?.length || 0 })));
 console.log('employees count:', employees.length);
 console.log('======================');
 
@@ -405,54 +443,48 @@ $('#month-selector').on('change', function() {
     
     generateMonthlyCalendar(selectedMonth);
     
-    // After calendar is generated, populate stations if HQ is selected
+    // After calendar is generated: admin = stations scoped to selected HQ; non-admin = all accessible (DCR pattern)
     setTimeout(function() {
         if (isAdmin) {
-            const hqId = $('#headquarter-selector').val();
-            console.log('Auto-check admin HQ after calendar gen:', hqId);
-            if (hqId) {
-                const hq = headquarters.find(h => h.id == parseInt(hqId));
-                console.log('Found HQ for auto-populate:', hq);
-                if (hq) {
-                    populateStationsForAllDays(hq);
-                }
+            const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
+            if (!hqId) return;
+            const hq = getHQById(hqId);
+            console.log('HQ for auto-populate:', hq);
+            if (hq) {
+                populateStationsForAllDaysByHQ(hq);
             }
-        } else if (userHeadquarter) {
-            const empHq = headquarters.find(h => h.id == userHeadquarter);
-            console.log('Auto-check employee HQ after calendar gen:', empHq);
-            if (empHq) {
-                populateStationsForAllDays(empHq);
-            }
+        } else {
+            populateAllAccessibleStationsForAllDays();
         }
     }, 300);
 });
 
-// For admin: Listen to HQ selection to populate stations
+// HQ selection: admin repopulates station lists; non-admin keeps full accessible list (same as DCR)
 $('#headquarter-selector').on('change', function() {
     const hqId = $(this).val();
     console.log('HQ selector changed, ID:', hqId);
-    if (hqId) {
-        const hq = headquarters.find(h => h.id == parseInt(hqId));
-        console.log('Found HQ object:', hq);
-        if (hq) {
-            console.log('Populating stations for:', hq.name);
-            populateStationsForAllDays(hq);
-            
-            Swal.fire({
-                icon: 'success',
-                title: 'HeadQuarter Selected',
-                html: `<small>Stations loaded for <strong>${hq.name}</strong>.<br>You can now select stations for each day.</small>`,
-                timer: 2500,
-                toast: true,
-                position: 'top-end',
-                showConfirmButton: false
-            });
+    if (isAdmin) {
+        if (hqId) {
+            const hq = getHQById(hqId);
+            console.log('Found HQ object:', hq);
+            if (hq) {
+                console.log('Populating stations for:', hq.name);
+                populateStationsForAllDaysByHQ(hq);
+                Swal.fire({
+                    icon: 'success',
+                    title: 'HeadQuarter Selected',
+                    html: `<small>Stations loaded for <strong>${hq.name}</strong>.<br>You can now select stations for each day.</small>`,
+                    timer: 2500,
+                    toast: true,
+                    position: 'top-end',
+                    showConfirmButton: false
+                });
+            } else {
+                console.error('HQ not found in headquarters array');
+            }
         } else {
-            console.error('HQ not found in headquarters array');
+            clearAllStations();
         }
-    } else {
-        // Clear all station dropdowns
-        clearAllStations();
     }
 });
 
@@ -476,84 +508,129 @@ function getEmployeesByHeadquarter(headquarterId) {
     return employees.filter(emp => emp.headquarter_id == headquarterId);
 }
 
-// Function to populate employees dropdown based on station selection
+// Function to populate "Work With" dropdown with designations (hierarchy names)
 function populateEmployeesForDay(day, headquarterId, stationName) {
     const $employeeSelect = $(`select[name="work_with_${day}[]"]`);
     
+    // Destroy existing select2 or selectpicker if they exist
     if ($employeeSelect.data('select2')) {
         $employeeSelect.select2('destroy');
+    }
+    if ($employeeSelect.data('selectpicker')) {
+        $employeeSelect.selectpicker('destroy');
     }
     
     $employeeSelect.empty();
     
-    if (!headquarterId) {
-        $employeeSelect.select2({
-            width: '100%',
-            placeholder: 'Select HQ first...',
-        });
-        return;
-    }
-    
-    // Get all employees from the selected headquarter
-    const filteredEmployees = getEmployeesByHeadquarter(headquarterId);
-    
-    // Populate dropdown with filtered employees
-    filteredEmployees.forEach(emp => {
-        const designation = emp.designation ? ` (${emp.designation})` : '';
-        $employeeSelect.append(`<option value="${emp.id}">${emp.name}${designation}</option>`);
+    // Populate dropdown with designations (same as expense form)
+    workedWithDesignations.forEach(designation => {
+        $employeeSelect.append(`<option value="${designation}">${designation}</option>`);
     });
     
-    $employeeSelect.select2({
-        width: '100%',
-        placeholder: 'Select colleague(s)',
-        allowClear: true,
+    // Initialize selectpicker with actionsBox (Select All / Deselect All buttons)
+    $employeeSelect.selectpicker({
+        actionsBox: true,
+        selectAllText: 'Select All',
+        deselectAllText: 'Deselect All',
+        multipleSeparator: ', ',
+        selectedTextFormat: 'count > 3',
+        countSelectedText: function(selected, total) {
+            return selected + ' of ' + total + ' selected';
+        },
+        liveSearch: true
     });
 }
 
-// Function to populate stations for all day rows (includes HQ, Ex-Stations, Out-Stations)
-function populateStationsForAllDays(hq) {
+// Non-admin: every accessible HQ + ex/out stations in each day row (mirrors DCR populateAllAccessibleStations)
+function populateAllAccessibleStationsForAllDays() {
+    if (!headquarters.length) return;
+
+    const hqIdForEmployees = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
+    const resolvedHqId = hqIdForEmployees || userHeadquarter;
+
     $('select[name^="station_"]').each(function() {
         const $stationSelect = $(this);
-        const day = $stationSelect.data('day');
-        
-        // Destroy existing Select2 instance
         if ($stationSelect.data('select2')) {
             $stationSelect.select2('destroy');
         }
-        
-        // Clear and add new options
         $stationSelect.empty().append('<option value="">Select station...</option>');
-        
-        // Add Headquarters as first option
-        $stationSelect.append(`<option value="${hq.name}">${hq.name} (Headquarter)</option>`);
-        
-        // Add exstations
-        if (hq.exstations && hq.exstations.length > 0) {
-            hq.exstations.forEach(station => {
-                $stationSelect.append(`<option value="${station.name}">${station.name} (Ex-Station)</option>`);
-            });
-        }
-        
-        // Add outstations
-        if (hq.outstations && hq.outstations.length > 0) {
-            hq.outstations.forEach(station => {
-                $stationSelect.append(`<option value="${station.name}">${station.name} (Out-Station)</option>`);
-            });
-        }
-        
-        // Re-initialize Select2 with new options
+
+        headquarters.forEach(hq => {
+            $stationSelect.append(`<option value="${hq.name}">${hq.name} (Headquarter)</option>`);
+            if (hq.exstations && hq.exstations.length > 0) {
+                hq.exstations.forEach(station => {
+                    $stationSelect.append(`<option value="${station.name}">${station.name} (Ex-Station)</option>`);
+                });
+            }
+            if (hq.outstations && hq.outstations.length > 0) {
+                hq.outstations.forEach(station => {
+                    $stationSelect.append(`<option value="${station.name}">${station.name} (Out-Station)</option>`);
+                });
+            }
+        });
+
         $stationSelect.select2({
             width: '100%',
             placeholder: 'Select station...',
             allowClear: true,
         });
-        
-        // Initial population of employees for this day
+
+        const currentDay = $stationSelect.data('day');
+        if (currentDay && resolvedHqId) {
+            populateEmployeesForDay(currentDay, parseInt(resolvedHqId, 10), null);
+        }
+    });
+
+    const monthVal = $('#month-selector').val();
+    if (monthVal) {
+        const [y, m] = monthVal.split('-');
+        const daysInMonth = new Date(y, m, 0).getDate();
+        applyExistingTourValues(monthVal, y, m, daysInMonth);
+    }
+}
+
+// Admin: single HQ + ex/out stations in each day row (mirrors DCR populateStationsByHQ)
+function populateStationsForAllDaysByHQ(hq) {
+    $('select[name^="station_"]').each(function() {
+        const $stationSelect = $(this);
+        const day = $stationSelect.data('day');
+
+        if ($stationSelect.data('select2')) {
+            $stationSelect.select2('destroy');
+        }
+
+        $stationSelect.empty().append('<option value="">Select station...</option>');
+        $stationSelect.append(`<option value="${hq.name}">${hq.name} (Headquarter)</option>`);
+
+        if (hq.exstations && hq.exstations.length > 0) {
+            hq.exstations.forEach(station => {
+                $stationSelect.append(`<option value="${station.name}">${station.name} (Ex-Station)</option>`);
+            });
+        }
+
+        if (hq.outstations && hq.outstations.length > 0) {
+            hq.outstations.forEach(station => {
+                $stationSelect.append(`<option value="${station.name}">${station.name} (Out-Station)</option>`);
+            });
+        }
+
+        $stationSelect.select2({
+            width: '100%',
+            placeholder: 'Select station...',
+            allowClear: true,
+        });
+
         const currentDay = $stationSelect.data('day');
         if (currentDay) {
             populateEmployeesForDay(currentDay, hq.id, null);
         }
     });
+    const monthVal = $('#month-selector').val();
+    if (monthVal) {
+        const [y, m] = monthVal.split('-');
+        const daysInMonth = new Date(y, m, 0).getDate();
+        applyExistingTourValues(monthVal, y, m, daysInMonth);
+    }
 }
 
 // Global event handler for station changes (using Select2 select event)
@@ -562,7 +639,7 @@ $(document).on('select2:select', 'select[name^="station_"]', function(e) {
     const dayNum = $(this).data('day');
     
     // Get the HQ ID - either from admin selector or employee's assigned HQ
-    const hqId = isAdmin ? $('#headquarter-selector').val() : userHeadquarter;
+    const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
     
     console.log(`Day ${dayNum} - Station selected: ${selectedStation}, HQ: ${hqId}`);
     
@@ -577,13 +654,49 @@ $(document).on('change', 'select[name^="station_"]', function() {
     const dayNum = $(this).data('day');
     
     // Get the HQ ID - either from admin selector or employee's assigned HQ
-    const hqId = isAdmin ? $('#headquarter-selector').val() : userHeadquarter;
+    const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
     
     if (hqId && selectedStation) {
         console.log(`Day ${dayNum} - Station changed (fallback): ${selectedStation}`);
         populateEmployeesForDay(dayNum, parseInt(hqId), selectedStation);
     }
 });
+
+// Apply saved values to locked/submitted tour rows. Call after calendar build and again after station/work_with options are loaded.
+function applyExistingTourValues(monthValue, year, month, daysInMonth) {
+    if (!monthValue || !daysInMonth) return;
+    for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, month - 1, day);
+        const dateStr = formatDate(date);
+        const existingTour = existingToursMap[dateStr];
+        
+        if (existingTour) {
+            if (existingTour.work_status) {
+                $(`select[name="work_status_${day}"]`).val(existingTour.work_status);
+            }
+            if (existingTour.station) {
+                const stationVal = existingTour.station.trim();
+                $(`select[name="station_${day}"]`).val(stationVal).trigger('change');
+            }
+            if (existingTour.work_with) {
+                const workWithValues = existingTour.work_with.split(',').map(s => s.trim());
+                const $workWithSelect = $(`select[name="work_with_${day}[]"]`);
+                $workWithSelect.val(workWithValues);
+                if ($workWithSelect.data('selectpicker')) {
+                    $workWithSelect.selectpicker('refresh');
+                }
+            }
+            if (existingTour.remark) {
+                $(`input[name="remark_${day}"]`).val(existingTour.remark);
+            }
+        } else {
+            const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
+            if (hqId) {
+                populateEmployeesForDay(day, parseInt(hqId), null);
+            }
+        }
+    }
+}
 
 function generateMonthlyCalendar(monthValue) {
     if (!monthValue) return;
@@ -645,8 +758,8 @@ function generateMonthlyCalendar(monthValue) {
                 </td>
                 
                 <td>
-                    <select class="form-control form-control-sm employee-select" name="work_with_${day}[]" data-day="${day}" multiple ${disabledAttr} ${!isDisabled ? 'required' : ''}>
-                        <!-- Will be populated based on selected station -->
+                    <select class="form-control form-control-sm select-picker employee-select" name="work_with_${day}[]" data-day="${day}" multiple data-live-search="true" data-actions-box="true" data-select-all-text="Select All" data-deselect-all-text="Deselect All" data-selected-text-format="count > 3" data-count-selected-text="{0} selected" ${disabledAttr} ${!isDisabled ? 'required' : ''}>
+                        <!-- Will be populated with designations -->
                     </select>
                 </td>
                 
@@ -669,6 +782,9 @@ function generateMonthlyCalendar(monthValue) {
     // Initialize Select2 for all multi-selects
     initializeSelect2();
     
+    // Pre-populate existing tour data (work_status, station, work_with, remark)
+    applyExistingTourValues(monthValue, year, month, daysInMonth);
+    
     // Bind HQ change event
     bindHeadquarterChange();
     
@@ -687,12 +803,25 @@ function initializeSelect2() {
         }
     });
     
+    // Initialize selectpicker for "Work With" dropdowns (designations)
     $('.employee-select').each(function() {
-        if (!$(this).data('select2')) {
-            $(this).select2({
-                width: '100%',
-                placeholder: 'Select colleague(s)',
-                allowClear: true,
+        const $select = $(this);
+        // Destroy select2 if it exists
+        if ($select.data('select2')) {
+            $select.select2('destroy');
+        }
+        // Initialize selectpicker with actionsBox (Select All / Deselect All buttons)
+        if (!$select.data('selectpicker')) {
+            $select.selectpicker({
+                actionsBox: true,
+                selectAllText: 'Select All',
+                deselectAllText: 'Deselect All',
+                multipleSeparator: ', ',
+                selectedTextFormat: 'count > 3',
+                countSelectedText: function(selected, total) {
+                    return selected + ' of ' + total + ' selected';
+                },
+                liveSearch: true
             });
         }
     });
@@ -778,7 +907,7 @@ else if (!isAdmin && !userHeadquarter) {
 
 // Quick Fill All Days
 $('#quick-fill-all').click(function() {
-    const hqId = isAdmin ? $('#headquarter-selector').val() : userHeadquarter;
+    const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
     
     if (!hqId) {
         Swal.fire({
@@ -853,10 +982,12 @@ $(document).on('click', '.copy-prev-day', function() {
         $(`select[name="station_${day}"]`).val(prevStation).trigger('change');
     }
     
-    // Copy work with (Select2)
+    // Copy work with (selectpicker)
     const prevWorkWith = $(`select[name="work_with_${prevDay}[]"]`).val();
     if (prevWorkWith && prevWorkWith.length > 0) {
-        $(`select[name="work_with_${day}[]"]`).val(prevWorkWith).trigger('change');
+        const $targetSelect = $(`select[name="work_with_${day}[]"]`);
+        $targetSelect.val(prevWorkWith);
+        $targetSelect.selectpicker('refresh');
     }
     
     // Copy remark
@@ -888,16 +1019,30 @@ $('#clear-form').click(function() {
 
 // Auto-generate calendar on page load
 $(document).ready(function() {
-    // Initialize select-picker for admin HQ dropdown
+    // Admin: when "Create for" employee changes, reload page so existing tours for that employee load
+    if (isAdmin && $('#for-employee-selector').length) {
+        $('#for-employee-selector').on('change', function() {
+            const val = $(this).val();
+            const url = val ? "{{ route('tours.create') }}?for_employee_id=" + encodeURIComponent(val) : "{{ route('tours.create') }}";
+            window.location.href = url;
+        });
+    }
+
+    // Initialize select-picker for admin HQ dropdown (skip when HQ is read-only hidden input)
     if (isAdmin) {
-        $('#headquarter-selector').selectpicker('refresh');
-        
-        // Show info for admin to select HQ
-        if (!$('#headquarter-selector').val()) {
+        const $hqSel = $('#headquarter-selector');
+        if ($hqSel.is('select')) {
+            $hqSel.selectpicker('refresh');
+        }
+        if ($('#for-employee-selector').length) {
+            $('#for-employee-selector').selectpicker('refresh');
+        }
+
+        if ($hqSel.is('select') && !$hqSel.val()) {
             Swal.fire({
                 icon: 'info',
                 title: 'Select HeadQuarter',
-                text: 'Please select a headquarter to populate stations and employees',
+                text: 'Please select a headquarter to load station options for each day (scoped to this HQ).',
                 timer: 3000,
                 toast: true,
                 position: 'top-end',
@@ -927,28 +1072,21 @@ $(document).ready(function() {
         });
     }
     
-    // For employees, populate stations after calendar is generated
+    // After calendar is generated: DCR pattern — non-admin = all accessible stations; admin = stations for selected HQ
     setTimeout(function() {
-        // if (!isAdmin && userHeadquarter) {
-        //     console.log('Employee HQ auto-populate, userHeadquarter:', userHeadquarter);
-        //     const empHq = headquarters.find(h => h.id == userHeadquarter);
-        //     console.log('Found employee HQ object:', empHq);
-        //     if (empHq) {
-        //         console.log('Populating stations for employee HQ:', empHq.name);
-        //         console.log('HQ has', empHq.exstations?.length || 0, 'ex-stations and', empHq.outstations?.length || 0, 'out-stations');
-        //         populateStationsForAllDays(empHq);
-        //     } else {
-        //         console.error('Employee HQ not found in headquarters array');
-        //     }
-        // }
-           if (!isAdmin) {
-                if (userHeadquarter && headquarters.length === 1) {
-                    populateStationsForAllDays(headquarters[0]);
-                }
-                if (headquarters.length > 1) {
-                    populateStationsForAllDaysForMultipleHQs();
+        if (isAdmin) {
+            const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
+            if (hqId) {
+                const hq = getHQById(hqId);
+                if (hq) {
+                    console.log('Calendar generation: populateStationsForAllDaysByHQ for', hq.name);
+                    populateStationsForAllDaysByHQ(hq);
                 }
             }
+        } else if (headquarters.length) {
+            console.log('Calendar generation: populateAllAccessibleStationsForAllDays');
+            populateAllAccessibleStationsForAllDays();
+        }
     }, 500);
 });
 
@@ -957,7 +1095,7 @@ $('#save-tour-plan').click(function(e) {
     e.preventDefault();
     
     // Validate HQ is selected/assigned
-    const hqId = isAdmin ? $('#headquarter-selector').val() : userHeadquarter;
+    const hqId = $('#headquarter-selector').length ? $('#headquarter-selector').val() : userHeadquarter;
     if (!hqId) {
         Swal.fire({
             icon: 'error',
@@ -967,8 +1105,8 @@ $('#save-tour-plan').click(function(e) {
         return;
     }
     
-    // Validate "Submit To" manager is selected
-    const submittedTo = $('#submitted-to-selector').val();
+    // Validate "Submit To" manager is selected (works for both hidden input when 1 manager and select when multiple)
+    const submittedTo = $('#tour-plan-form').find('[name="submitted_to"]').val();
     if (!submittedTo) {
         Swal.fire({
             icon: 'error',
@@ -1038,17 +1176,83 @@ $('#save-tour-plan').click(function(e) {
         return;
     }
     
-    // All validation passed - proceed with submission
+    // All validation passed - build detailed summary for confirmation
+    let submitToLabel = 'Your Reporting Manager';
+    if ($('#submitted-to-selector').length) {
+        submitToLabel = ($('#submitted-to-selector option:selected').text() || '').trim() || submitToLabel;
+    } else {
+        const mgrDiv = $('input[name="submitted_to"]').siblings('.form-control.bg-success').first();
+        if (mgrDiv.length) {
+            submitToLabel = mgrDiv.find('strong').text().trim() || submitToLabel;
+        }
+    }
+    
+    // Headquarter (select, hidden input with id, or legacy hidden without id)
+    let hqLabel = '—';
+    const $hqField = $('#headquarter-selector');
+    if ($hqField.is('select')) {
+        hqLabel = ($hqField.find('option:selected').text() || '').trim() || '—';
+    } else if ($hqField.is('input[type="hidden"]')) {
+        const hq = getHQById($hqField.val());
+        if (hq) {
+            hqLabel = hq.name + (hq.area && hq.area.name ? ' (' + hq.area.name + ')' : '');
+        }
+    } else {
+        const hqDiv = $('input[name="headquarter"]').siblings('.form-control.bg-light').first();
+        if (hqDiv.length) {
+            hqLabel = hqDiv.find('span').not('.badge').first().text().trim() || hqDiv.text().trim() || '—';
+        }
+    }
+    
+    // Employee (when admin creates for another)
+    let employeeLabel = '';
+    if ($('#for-employee-selector').length) {
+        const empOpt = $('#for-employee-selector option:selected');
+        employeeLabel = empOpt.val() ? empOpt.text() : '';
+    }
+    
+    // Work type summary
+    const workTypeCounts = {};
+    for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, monthNum - 1, day);
+        const dateStr = formatDate(date);
+        if (existingToursMap[dateStr]) continue;
+        const ws = $(`select[name="work_status_${day}"]`).val();
+        if (ws) {
+            workTypeCounts[ws] = (workTypeCounts[ws] || 0) + 1;
+        }
+    }
+    const workTypeSummary = Object.entries(workTypeCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, cnt]) => `${name}: ${cnt}`)
+        .join(' · ') || '—';
+    
+    // Month display name
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const monthDisplay = `${monthNames[parseInt(monthNum) - 1]} ${year}`;
+    
+    const detailHtml = `<div class="text-left">
+        <table class="table table-sm table-borderless mb-2">
+            <tr><td class="text-muted" style="width:140px;">Month</td><td><strong>${monthDisplay}</strong> (${month})</td></tr>
+            <tr><td class="text-muted">Total days</td><td>${daysInMonth} days</td></tr>
+            <tr><td class="text-muted">Days to submit</td><td><strong>${filledDays}</strong> new entries</td></tr>
+            <tr><td class="text-muted">Already submitted</td><td>${lockedDays} days (locked)</td></tr>
+            <tr><td class="text-muted">Headquarter</td><td>${hqLabel || '—'}</td></tr>
+            ${employeeLabel ? `<tr><td class="text-muted">Creating for</td><td>${employeeLabel}</td></tr>` : ''}
+            <tr><td class="text-muted">Submit to</td><td><strong>${submitToLabel}</strong></td></tr>
+            <tr><td class="text-muted">Work type breakdown</td><td><small>${workTypeSummary}</small></td></tr>
+        </table>
+        <div class="alert alert-success py-2 mb-0"><i class="fa fa-check-circle"></i> All days are filled!</div>
+    </div>`;
+    
     Swal.fire({
         title: 'Submit Complete Tour Plan?',
-        html: `<strong>Month:</strong> ${month}<br>
-               <strong>Days to Submit:</strong> ${filledDays} (${lockedDays} already submitted)<br>
-               <strong>Submit To:</strong> ${$('#submitted-to-selector option:selected').text()}<br><br>
-               <small class="text-success">✓ All days are filled!</small>`,
+        html: detailHtml,
         icon: 'question',
         showCancelButton: true,
         confirmButtonText: 'Yes, Submit!',
-        cancelButtonText: 'Cancel'
+        cancelButtonText: 'Cancel',
+        width: '480px'
     }).then((result) => {
         if (result.isConfirmed) {
             // Use AJAX submission for proper redirect handling
@@ -1081,53 +1285,6 @@ $('#save-tour-plan').click(function(e) {
         }
     });
 });
-function populateStationsForAllDaysForMultipleHQs() {
-
-    $('select[name^="station_"]').each(function () {
-
-        const $stationSelect = $(this);
-
-        if ($stationSelect.data('select2')) {
-            $stationSelect.select2('destroy');
-        }
-
-        $stationSelect.empty().append('<option value="">Select station...</option>');
-
-        headquarters.forEach(hq => {
-
-            // HQ
-            $stationSelect.append(
-                `<option value="HQ_${hq.id}">
-                    ${hq.name} (Headquarter)
-                 </option>`
-            );
-
-            // Ex-Stations
-            (hq.exstations || []).forEach(ex => {
-                $stationSelect.append(
-                    `<option value="EX_${ex.id}">
-                        ${ex.name} (Ex-Station)
-                     </option>`
-                );
-            });
-
-            // Out-Stations
-            (hq.outstations || []).forEach(out => {
-                $stationSelect.append(
-                    `<option value="OUT_${out.id}">
-                        ${out.name} (Out-Station)
-                     </option>`
-                );
-            });
-        });
-
-        $stationSelect.select2({
-            width: '100%',
-            placeholder: 'Select station...',
-            allowClear: true
-        });
-    });
-}
 
 </script>
 

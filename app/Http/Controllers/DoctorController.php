@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Helper\Files;
 use App\Helper\Reply;
 use App\Models\Doctor;
+use App\Models\Chemist;
+use App\Models\Stockist;
 use App\Models\Product;
 use App\Models\PharmaHeadquarter;
 use App\Models\PharmaHeadquarterAssign;
@@ -12,6 +14,7 @@ use App\Imports\DoctorImport;
 use App\Jobs\ImportDoctorJob;
 use App\Exports\DoctorSampleExport;
 use App\Traits\ImportExcel;
+use App\Traits\AccessibleHeadquarters;
 use App\Http\Requests\Admin\Employee\ImportRequest;
 use Maatwebsite\Excel\Facades\Excel;
 use Maatwebsite\Excel\HeadingRowImport;
@@ -19,11 +22,13 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Http\Request;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
+use App\Services\DoctorDuplicateMergeService;
 
 class DoctorController extends AccountBaseController
 {
-    use ImportExcel;
+    use ImportExcel, AccessibleHeadquarters;
 
     public function __construct()
     {
@@ -45,32 +50,31 @@ class DoctorController extends AccountBaseController
             ->where('company_id', company()->id);
 
         $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
-
+        $accessibleAreaIds = $this->accessibleAreaIds();
         $accessibleStationIds = $this->accessibleStations();
 
-        // Only apply headquarter filtering if user is NOT admin
+        // Only apply geography filtering if user is NOT admin
         // Admins should see all doctors regardless of headquarter restrictions
-        if (!user()->hasRole('admin') && $accessibleHeadquarterIds !== null) {
-            if (empty($accessibleHeadquarterIds)) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $query->where(function ($q) use ($accessibleHeadquarterIds, $accessibleStationIds) {
-                    $q->whereIn('headquarter_id', $accessibleHeadquarterIds);
-
-                    if (!empty($accessibleStationIds['exstation'])) {
-                        $q->orWhereIn('exstation_id', $accessibleStationIds['exstation']);
-                    }
-
-                    if (!empty($accessibleStationIds['outstation'])) {
-                        $q->orWhereIn('outstation_id', $accessibleStationIds['outstation']);
-                    }
-                });
-            }
+        if (! user()->hasAdminLikeAccess() && $accessibleHeadquarterIds !== null) {
+            $this->applyCustomerGeoScope(
+                $query,
+                $accessibleHeadquarterIds,
+                $accessibleAreaIds ?? [],
+                $accessibleStationIds
+            );
         }
 
-        // Filter by headquarter
-        if ($request->has('headquarter_id') && $request->headquarter_id != 'all') {
-            $hqId = $request->headquarter_id;
+        // Filter by headquarter (with guardrail: silently drop any HQ id the user cannot access)
+        $requestedHqId = $request->input('headquarter_id');
+        if ($requestedHqId && $requestedHqId != 'all'
+            && !user()->hasAdminLikeAccess()
+            && is_array($accessibleHeadquarterIds)
+            && !in_array((int) $requestedHqId, $accessibleHeadquarterIds, true)) {
+            $requestedHqId = null;
+        }
+
+        if ($requestedHqId && $requestedHqId != 'all') {
+            $hqId = $requestedHqId;
             
             // Get ex-stations and out-stations linked to this HQ
             $hq = \App\Models\PharmaHeadquarter::with(['exstations', 'outstations'])->find($hqId);
@@ -115,36 +119,29 @@ class DoctorController extends AccountBaseController
 
         $headquarters = $this->accessibleHeadquartersCollection();
 
-        // Add ordering and pagination for better performance
-        $this->doctors = $query->orderBy('fullname')->paginate(50);
+        // Load all matching doctors for the index (scrollable table handles long lists in the viewport)
+        $this->doctors = $query->orderBy('fullname')->get();
         $this->headquarters = $headquarters;
+
+        $companyId = company()->id;
+        $this->qualificationOptions = Doctor::where('company_id', $companyId)
+            ->whereNotNull('qualification')
+            ->where('qualification', '!=', '')
+            ->distinct()
+            ->orderBy('qualification')
+            ->pluck('qualification')
+            ->values();
+        $this->specialityOptions = Doctor::where('company_id', $companyId)
+            ->whereNotNull('speciality')
+            ->where('speciality', '!=', '')
+            ->distinct()
+            ->orderBy('speciality')
+            ->pluck('speciality')
+            ->values();
         $this->headquarterStations = $this->formatHeadquarterStations($headquarters);
         $this->defaultHeadquarterId = $this->determineDefaultHeadquarterId($headquarters, request()->get('headquarter_id'));
         
         return view('doctors.index', $this->data);
-    }
-
-    private function accessibleStations(): array
-    {
-        $headquarterIds = $this->accessibleHeadquarterIds();
-
-        if ($headquarterIds === null) {
-            return [
-                'exstation' => PharmaHeadquarterAssign::where('station', 'exstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-                'outstation' => PharmaHeadquarterAssign::where('station', 'outstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-            ];
-        }
-
-        if (empty($headquarterIds)) {
-            return ['exstation' => [], 'outstation' => []];
-        }
-
-        $assignments = PharmaHeadquarterAssign::whereIn('headquarter_id', $headquarterIds)->get();
-
-        return [
-            'exstation' => $assignments->where('station', 'exstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-            'outstation' => $assignments->where('station', 'outstation')->pluck('station_id')->map(fn($id) => (int) $id)->toArray(),
-        ];
     }
 
     public function create()
@@ -208,6 +205,11 @@ class DoctorController extends AccountBaseController
             'station_type' => 'nullable|in:headquarter,exstation,outstation',
             'exstation_id' => 'nullable|required_if:station_type,exstation|exists:pharma_exstations,id',
             'outstation_id' => 'nullable|required_if:station_type,outstation|exists:pharma_outstations,id',
+            'msl_number' => ['nullable', 'string', 'max:255', function ($attribute, $value, $fail) {
+                if ($value && $this->mslNumberExists($value)) {
+                    $fail('The MSL number already exists in the database.');
+                }
+            }],
         ]);
 
         $this->assertHeadquarterAccessible((int) $request->headquarter_id);
@@ -227,7 +229,10 @@ class DoctorController extends AccountBaseController
         $doctor->gender = $request->gender;
         $doctor->doctor_type = $request->doctor_type;
         $doctor->address = $request->address;
-        
+        $doctor->msl_number = $request->msl_number;
+        $doctor->latitude = $request->filled('latitude') ? (float) $request->latitude : null;
+        $doctor->longitude = $request->filled('longitude') ? (float) $request->longitude : null;
+
         // Auto-populate area_id from headquarter (backend mapping)
         $doctor->headquarter_id = $request->headquarter_id;
         $doctor->area_id = $headquarter ? $headquarter->area_id : null;
@@ -286,6 +291,7 @@ class DoctorController extends AccountBaseController
         $this->editPermission = user()->permission('edit_doctors');
         abort_403(!in_array($this->editPermission, ['all', 'added', 'owned', 'both']));
 
+        $this->assertHeadquarterAccessible((int) $this->doctor->headquarter_id);
         $this->prepareAreaData((int) $this->doctor->headquarter_id);
         
         // Get existing doctor types for suggestions
@@ -347,6 +353,11 @@ class DoctorController extends AccountBaseController
             'station_type' => 'nullable|in:headquarter,exstation,outstation',
             'exstation_id' => 'nullable|required_if:station_type,exstation|exists:pharma_exstations,id',
             'outstation_id' => 'nullable|required_if:station_type,outstation|exists:pharma_outstations,id',
+            'msl_number' => ['nullable', 'string', 'max:255', function ($attribute, $value, $fail) use ($id) {
+                if ($value && $this->mslNumberExists($value, $id, 'doctors')) {
+                    $fail('The MSL number already exists in the database.');
+                }
+            }],
         ]);
 
         $this->assertHeadquarterAccessible((int) $request->headquarter_id);
@@ -362,6 +373,9 @@ class DoctorController extends AccountBaseController
         $doctor->gender = $request->gender;
         $doctor->doctor_type = $request->doctor_type;
         $doctor->address = $request->address;
+        $doctor->msl_number = $request->msl_number;
+        $doctor->latitude = $request->filled('latitude') ? (float) $request->latitude : null;
+        $doctor->longitude = $request->filled('longitude') ? (float) $request->longitude : null;
 
         // Update headquarter and area mapping
         $headquarter = PharmaHeadquarter::find($request->headquarter_id);
@@ -407,21 +421,11 @@ class DoctorController extends AccountBaseController
         $this->deletePermission = user()->permission('delete_doctors');
         abort_403(!in_array($this->deletePermission, ['all', 'added', 'owned', 'both']));
 
+        $this->assertHeadquarterAccessible((int) $doctor->headquarter_id);
         Files::deleteFile($doctor->doctor_pic, 'doctors');
         $doctor->delete();
 
         return Reply::success(__('messages.deleteSuccess'));
-    }
-
-    private function accessibleHeadquarterIds(): ?array
-    {
-        if (user()->hasRole('admin')) {
-            return null;
-        }
-
-        $headquarterId = optional(user()->employeeDetail)->headquarter_id;
-
-        return $headquarterId ? [(int) $headquarterId] : [];
     }
 
     private function assertHeadquarterAccessible(int $headquarterId): void
@@ -435,6 +439,52 @@ class DoctorController extends AccountBaseController
         abort_403(empty($accessibleIds) || !in_array($headquarterId, $accessibleIds, true), __('messages.permissionDenied'));
     }
 
+    /**
+     * Check if MSL number exists in doctors, chemists, or stockists tables
+     * 
+     * @param string $mslNumber
+     * @param int|null $excludeId ID to exclude from check (for updates)
+     * @param string|null $excludeTable Table to exclude from check (for updates)
+     * @return bool
+     */
+    private function mslNumberExists(string $mslNumber, ?int $excludeId = null, ?string $excludeTable = null): bool
+    {
+        // Check doctors table
+        if ($excludeTable !== 'doctors') {
+            $doctorQuery = Doctor::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'doctors') {
+                $doctorQuery->where('id', '!=', $excludeId);
+            }
+            if ($doctorQuery->exists()) {
+                return true;
+            }
+        }
+
+        // Check chemists table
+        if ($excludeTable !== 'chemists') {
+            $chemistQuery = Chemist::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'chemists') {
+                $chemistQuery->where('id', '!=', $excludeId);
+            }
+            if ($chemistQuery->exists()) {
+                return true;
+            }
+        }
+
+        // Check stockists table
+        if ($excludeTable !== 'stockists') {
+            $stockistQuery = Stockist::where('msl_number', $mslNumber)->where('company_id', company()->id);
+            if ($excludeId && $excludeTable === 'stockists') {
+                $stockistQuery->where('id', '!=', $excludeId);
+            }
+            if ($stockistQuery->exists()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function prepareAreaData(?int $currentHeadquarterId = null): void
     {
         $headquarters = $this->accessibleHeadquartersCollection();
@@ -444,7 +494,7 @@ class DoctorController extends AccountBaseController
         }
 
         if ($headquarters->isEmpty()) {
-            abort_403(!user()->hasRole('admin'), __('messages.permissionDenied'));
+            abort_403(!user()->hasAdminLikeAccess(), __('messages.permissionDenied'));
         }
 
         $this->headquarters = $headquarters;
@@ -461,11 +511,16 @@ class DoctorController extends AccountBaseController
             return $query->get();
         }
 
-        if (empty($accessibleIds)) {
-            return collect();
+        if (! empty($accessibleIds)) {
+            return $query->whereIn('id', $accessibleIds)->get();
         }
 
-        return $query->whereIn('id', $accessibleIds)->get();
+        $areaIds = $this->accessibleAreaIds();
+        if ($areaIds !== null && ! empty($areaIds)) {
+            return $query->where('company_id', company()->id)->whereIn('area_id', $areaIds)->get();
+        }
+
+        return collect();
     }
 
     private function formatHeadquarterStations(Collection $headquarters): array
@@ -497,7 +552,7 @@ class DoctorController extends AccountBaseController
 
     private function ensureStationAccessible(int $headquarterId, string $stationType, $stationId): void
     {
-        if (!$stationId || user()->hasRole('admin')) {
+        if (!$stationId || user()->hasAdminLikeAccess()) {
             return;
         }
 
@@ -620,34 +675,53 @@ class DoctorController extends AccountBaseController
                         $bestMatch = null;
                         $bestMatchScore = 0;
                         
+                        $normalize = function ($s) {
+                            return strtolower(trim(preg_replace('/[^a-z0-9]/', '', (string)$s)));
+                        };
+
                         foreach ($importColumns as $column) {
-                            $columnId = strtolower(trim(preg_replace('/[^a-z0-9]/', '', (string)($column['id'] ?? ''))));
+                            $columnId = $normalize($column['id'] ?? '');
                             $columnNameValue = is_array($column['name'] ?? null) ? (string)(($column['name'][0] ?? '') ?: '') : (string)($column['name'] ?? '');
-                            $columnName = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $columnNameValue)));
-                            
+                            $columnName = $normalize($columnNameValue);
+
                             $columnIdWithoutUnderscore = str_replace('_', '', $columnId);
                             $columnIdParts = explode('_', $columnId);
-                            
+
                             $score = 0;
-                            
+
+                            // Exact match on aliases (client file headers: Doctor Name, Dr Qual., HQ/EX/OS, etc.)
+                            if (!empty($column['aliases']) && is_array($column['aliases'])) {
+                                foreach ($column['aliases'] as $alias) {
+                                    $normAlias = $normalize($alias);
+                                    if ($normalizedHeading === $normAlias) {
+                                        $score = 95;
+                                        break;
+                                    }
+                                    if (strpos($normalizedHeading, $normAlias) !== false || strpos($normAlias, $normalizedHeading) !== false) {
+                                        if ($score < 85) {
+                                            $score = 85;
+                                        }
+                                    }
+                                }
+                            }
                             // Exact match gets highest priority
-                            if ($normalizedHeading === $columnId || $normalizedHeading === $columnIdWithoutUnderscore) {
+                            if ($score < 100 && ($normalizedHeading === $columnId || $normalizedHeading === $columnIdWithoutUnderscore)) {
                                 $score = 100;
                             }
                             // Column name exact match
-                            elseif ($normalizedHeading === $columnName) {
+                            elseif ($score < 90 && $normalizedHeading === $columnName) {
                                 $score = 90;
                             }
-                            // Heading starts with column ID (e.g., "stationtype" starts "stationtypeheadquarter...")
-                            elseif (strpos($normalizedHeading, $columnId) === 0 || strpos($normalizedHeading, $columnIdWithoutUnderscore) === 0) {
+                            // Heading starts with column ID
+                            elseif ($score < 80 && (strpos($normalizedHeading, $columnId) === 0 || strpos($normalizedHeading, $columnIdWithoutUnderscore) === 0)) {
                                 $score = 80;
                             }
-                            // Column ID contains heading (exact substring match)
-                            elseif (strpos($columnId, $normalizedHeading) === 0 || strpos($columnIdWithoutUnderscore, $normalizedHeading) === 0) {
+                            // Column ID contains heading
+                            elseif ($score < 70 && (strpos($columnId, $normalizedHeading) === 0 || strpos($columnIdWithoutUnderscore, $normalizedHeading) === 0)) {
                                 $score = 70;
                             }
-                            // All parts of column ID are in heading (for compound IDs like "station_type")
-                            elseif (count($columnIdParts) > 1) {
+                            // All parts of column ID are in heading (e.g. station_type)
+                            elseif ($score < 60 && count($columnIdParts) > 1) {
                                 $allPartsFound = true;
                                 foreach ($columnIdParts as $part) {
                                     if (strpos($normalizedHeading, $part) === false) {
@@ -660,15 +734,14 @@ class DoctorController extends AccountBaseController
                                 }
                             }
                             // Partial match (heading contains column ID)
-                            elseif (strpos($normalizedHeading, $columnId) !== false || strpos($normalizedHeading, $columnIdWithoutUnderscore) !== false) {
+                            elseif ($score < 50 && (strpos($normalizedHeading, $columnId) !== false || strpos($normalizedHeading, $columnIdWithoutUnderscore) !== false)) {
                                 $score = 50;
                             }
                             // Column name partial match
-                            elseif (strpos($normalizedHeading, $columnName) !== false || strpos($columnName, $normalizedHeading) !== false) {
+                            elseif ($score < 40 && (strpos($normalizedHeading, $columnName) !== false || strpos($columnName, $normalizedHeading) !== false)) {
                                 $score = 40;
                             }
-                            
-                            // Keep track of best match
+
                             if ($score > $bestMatchScore) {
                                 $bestMatchScore = $score;
                                 $bestMatch = $column['id'];
@@ -686,18 +759,17 @@ class DoctorController extends AccountBaseController
                 }
             }
             
-            // If no columns mapped, use positional mapping (first 2 mandatory columns)
+            // If no columns mapped, map by column order (must match DoctorImport::fields() and sample file)
             if (empty($columns)) {
                 $importColumns = DoctorImport::fields();
                 foreach ($importColumns as $index => $column) {
-                    if ($index < 2) { // Only map first 2 mandatory columns
-                        $columns[$index] = $column['id'];
-                    }
+                    $columns[$index] = $column['id'];
                 }
             }
 
             // Process import directly
-            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, DoctorImport::class, ImportDoctorJob::class);
+            $allowedHqIds = $this->accessibleHeadquarterIds();
+            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, DoctorImport::class, ImportDoctorJob::class, $allowedHqIds);
 
             if (!$batch) {
                 Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
@@ -763,5 +835,92 @@ class DoctorController extends AccountBaseController
             \Log::error('Stack trace: ' . $e->getTraceAsString());
             return Reply::error('Error generating sample file: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Preview duplicate doctor groups (same mobile last 10 digits, or same name + headquarter if mobile missing).
+     */
+    public function mergeDuplicates()
+    {
+        $this->editPermission = user()->permission('edit_doctors');
+        abort_403(! in_array($this->editPermission, ['all', 'added']));
+
+        $service = new DoctorDuplicateMergeService;
+        $groups = $service->findDuplicateGroups($this->doctorsQueryForMerge());
+
+        $this->data['duplicateGroups'] = $groups->map(function ($group) use ($service) {
+            $sorted = $group->sortBy(function ($d) use ($service) {
+                return [-$service->completenessScore($d), $d->id];
+            })->values();
+            $winner = $sorted->first();
+            $scores = $sorted->mapWithKeys(fn ($d) => [$d->id => $service->completenessScore($d)]);
+
+            return [
+                'winner' => $winner,
+                'winner_score' => $scores[$winner->id] ?? 0,
+                'doctors' => $sorted,
+                'scores' => $scores,
+            ];
+        });
+
+        $this->pageTitle = 'Merge duplicate doctors';
+
+        return view('doctors.merge-duplicates', $this->data);
+    }
+
+    /**
+     * Merge all duplicate groups in scope: keep best-filled record, merge products/SFC/DCR links, soft-delete others.
+     */
+    public function mergeDuplicatesRun(Request $request)
+    {
+        $this->editPermission = user()->permission('edit_doctors');
+        abort_403(! in_array($this->editPermission, ['all', 'added']));
+
+        $request->validate([
+            'confirm_merge' => 'required|accepted',
+        ]);
+
+        $service = new DoctorDuplicateMergeService;
+        $groups = $service->findDuplicateGroups($this->doctorsQueryForMerge());
+
+        if ($groups->isEmpty()) {
+            return redirect()
+                ->route('doctors.merge-duplicates')
+                ->with('success', __('No duplicate groups found for your access scope.'));
+        }
+
+        $stats = $service->mergeAllGroups($groups);
+
+        return redirect()
+            ->route('doctors.index')
+            ->with('success', __('Merged :groups duplicate group(s). Removed :removed duplicate doctor record(s).', [
+                'groups' => $stats['groups_merged'],
+                'removed' => $stats['doctors_removed'],
+            ]));
+    }
+
+    /**
+     * Doctors visible to current user (same geographic scope as list).
+     */
+    protected function doctorsQueryForMerge(): Builder
+    {
+        $query = Doctor::with(['headquarter', 'area', 'exstation', 'outstation'])
+            ->where('company_id', company()->id);
+
+        if (! user()->hasAdminLikeAccess()) {
+            $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+            $accessibleAreaIds = $this->accessibleAreaIds();
+            $accessibleStationIds = $this->accessibleStations();
+            if ($accessibleHeadquarterIds !== null) {
+                $this->applyCustomerGeoScope(
+                    $query,
+                    $accessibleHeadquarterIds,
+                    $accessibleAreaIds ?? [],
+                    $accessibleStationIds
+                );
+            }
+        }
+
+        return $query;
     }
 }

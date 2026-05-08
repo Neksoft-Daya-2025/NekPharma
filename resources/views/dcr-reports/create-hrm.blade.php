@@ -64,7 +64,7 @@
         <p class="mb-0 mt-2">Record your daily field activities and customer visits</p>
     </div>
         
-    <form action="{{ route('dcr-reports.store') }}" method="POST" id="dcr-form">
+    <form action="{{ route('dcr-management.store') }}" method="POST" id="dcr-form">
             @csrf
             
             <!-- Report Information Section -->
@@ -84,7 +84,7 @@
                 <div class="col-md-3">
                     <div class="form-group">
                         <label>HeadQuarter <span class="text-danger">*</span></label>
-                        @if(user()->hasRole('admin'))
+                        @if(user()->hasAdminLikeAccess())
                             <select class="form-control select-picker" name="headquarter_id" id="headquarter_id" data-live-search="true" required>
                                 <option value="">-- Select HeadQuarter --</option>
                                 @foreach($headquarters as $hq)
@@ -527,7 +527,7 @@
         <!-- Submit Buttons -->
         <div class="text-center">
             <button type="submit" class="btn btn-primary btn-lg"><i class="fa fa-save"></i> Save DCR Report</button>
-            <a href="{{ route('dcr-reports.index') }}" class="btn btn-secondary btn-lg ml-2"><i class="fa fa-times"></i> Cancel</a>
+            <a href="{{ route('dcr-management.index') }}" class="btn btn-secondary btn-lg ml-2"><i class="fa fa-times"></i> Cancel</a>
         </div>
     </form>
 </div>
@@ -535,7 +535,7 @@
 
 @push('scripts')
 <script>
-const isAdmin = {{ user()->hasRole('admin') ? 'true' : 'false' }};
+const isAdmin = {{ user()->hasAdminLikeAccess() ? 'true' : 'false' }};
 
 $(document).ready(function() {
     

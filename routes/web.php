@@ -16,7 +16,10 @@ use App\Http\Controllers\TicketController;
 use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\HolidayController;
 use App\Http\Controllers\InvoiceController;
+use App\Http\Controllers\LedgerController;
+use App\Http\Controllers\InvoiceReportController;
 use App\Http\Controllers\CFAStockistController;
+use App\Http\Controllers\SupplierInvoiceController;
 use App\Http\Controllers\MessageController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ProductController;
@@ -54,6 +57,7 @@ use App\Http\Controllers\TaskReportController;
 use App\Http\Controllers\TicketFileController;
 use App\Http\Controllers\BankAccountController;
 use App\Http\Controllers\DesignationController;
+use App\Http\Controllers\HierarchyMinimapController;
 use App\Http\Controllers\EmployeeDocController;
 use App\Http\Controllers\EmployeeDocumentExpiryController;
 use App\Http\Controllers\EmploymentTypeController;
@@ -65,6 +69,8 @@ use App\Http\Controllers\ProductFileController;
 use App\Http\Controllers\ProjectFileController;
 use App\Http\Controllers\ProjectNoteController;
 use App\Http\Controllers\SalesReportController;
+use App\Http\Controllers\ZeroSalesReportController;
+use App\Http\Controllers\TpDeviationReportController;
 use App\Http\Controllers\SubTaskFileController;
 use App\Http\Controllers\TaskCommentController;
 use App\Http\Controllers\TicketReplyController;
@@ -105,9 +111,13 @@ use App\Http\Controllers\ContractTemplateController;
 use App\Http\Controllers\DoctorController;
 use App\Http\Controllers\ChemistController;
 use App\Http\Controllers\StockistController;
+use App\Http\Controllers\ImportHistoryController;
 use App\Http\Controllers\PharmaAreaController;
 use App\Http\Controllers\TourController;
 use App\Http\Controllers\DcrReportController;
+use App\Http\Controllers\DcrReportReportController;
+use App\Http\Controllers\StockStatementController;
+use App\Http\Controllers\SalesPlanController;
 use App\Http\Controllers\EmergencyContactController;
 use App\Http\Controllers\EstimateTemplateController;
 use App\Http\Controllers\ProjectMilestoneController;
@@ -140,6 +150,7 @@ use App\Http\Controllers\ProjectTemplateMilestoneController;
 use App\Http\Controllers\PromotionController;
 use App\Http\Controllers\TimelogWeeklyApprovalController;
 use App\Http\Controllers\WeeklyTimesheetController;
+use App\Http\Controllers\DebugStationsController;
 
 
 Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
@@ -150,9 +161,16 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::get('checklist', [DashboardController::class, 'checklist'])->name('checklist');
     Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::get('dashboard-advanced', [DashboardController::class, 'advancedDashboard'])->name('dashboard.advanced');
+    Route::get('smhr-demo', function () {
+        return view('smhr.demo');
+    })->name('smhr.demo');
+    Route::get('latest-updates', [\App\Http\Controllers\LatestUpdatesController::class, 'index'])->name('latest-updates');
+    if (config('app.debug') || app()->environment('local')) {
+        Route::get('debug-stations', [DebugStationsController::class, 'index'])->name('debug-stations');
+    }
     Route::post('dashboard/widget/{dashboardType}', [DashboardController::class, 'widget'])->name('dashboard.widget');
     Route::post('dashboard/week-timelog', [DashboardController::class, 'weekTimelog'])->name('dashboard.week_timelog');
-    Route::get('dashboard/lead-data/{id}', [DashboardController  ::class, 'getLeadStage'])->name('dashboard.deal-stage-data');
+    Route::get('dashboard/lead-data/{id}', [DashboardController::class, 'getLeadStage'])->name('dashboard.deal-stage-data');
 
     Route::get('attendances/clock-in-modal', [DashboardController::class, 'clockInModal'])->name('attendances.clock_in_modal');
     Route::post('attendances/store-clock-in', [DashboardController::class, 'storeClockIn'])->name('attendances.store_clock_in');
@@ -216,7 +234,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('employees/create-link', [EmployeeController::class, 'createLink'])->name('employees.create_link');
     Route::post('/get-exit-date-message', [EmployeeController::class, 'getExitDateMessage'])->name('getExitDateMessage');
     Route::resource('employees', EmployeeController::class);
-    
+
     // Full & Final Settlement routes
     Route::post('fnf-settlements/apply-quick-action', [EmployeeFnfSettlementController::class, 'applyQuickAction'])->name('fnf-settlements.apply_quick_action');
     Route::post('fnf-settlements/{id}/update-clearance', [EmployeeFnfSettlementController::class, 'updateClearance'])->name('fnf-settlements.update-clearance');
@@ -224,7 +242,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('fnf-settlements/{id}/approve', [EmployeeFnfSettlementController::class, 'approve'])->name('fnf-settlements.approve');
     Route::get('fnf-settlements/{id}/download-statement', [EmployeeFnfSettlementController::class, 'downloadStatement'])->name('fnf-settlements.download-statement');
     Route::resource('fnf-settlements', EmployeeFnfSettlementController::class);
-    
+
     Route::resource('passport', PassportController::class);
     Route::resource('employee-visa', EmployeeVisaController::class);
 
@@ -244,6 +262,8 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('designations/search-filter', [DesignationController::class, 'searchFilter'])->name('designation.srchFilter');
     Route::post('designations/apply-quick-action', [DesignationController::class, 'applyQuickAction'])->name('designations.apply_quick_action');
     Route::resource('designations', DesignationController::class);
+
+    Route::get('hierarchy-minimap', [HierarchyMinimapController::class, 'index'])->name('hierarchy.minimap');
 
     Route::post('departments/apply-quick-action', [DepartmentController::class, 'applyQuickAction'])->name('departments.apply_quick_action');
     Route::get('departments/department-hierarchy', [DepartmentController::class, 'hierarchyData'])->name('department.hierarchy');
@@ -417,7 +437,8 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
             Route::get('awards/quick-create', [AwardController::class, 'quickCreate'])->name('awards.quick-create');
             Route::post('awards/quick-store', [AwardController::class, 'quickStore'])->name('awards.quick-store');
             Route::resource('awards', AwardController::class);
-        });
+        }
+    );
     Route::post('appreciations/apply-quick-action', [AppreciationController::class, 'applyQuickAction'])->name('appreciations.apply_quick_action');
     Route::resource('appreciations', AppreciationController::class);
 
@@ -648,25 +669,80 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::get('invoices/get-exchange-rate/{id}', [InvoiceController::class, 'getExchangeRate'])->name('invoices.get_exchange_rate');
 
     Route::get('invoices/committed-modal', [InvoiceController::class, 'committedModal'])->name('invoices.committed_modal');
-    
+
     // CFA/Distributor Invoices
     Route::get('cfa-distributor-invoices', [InvoiceController::class, 'indexCFADistributorInvoices'])->name('cfa-distributor-invoices.index');
     Route::get('cfa-distributor-invoices/create', [InvoiceController::class, 'createCFADistributorInvoice'])->name('cfa-distributor-invoices.create');
     Route::post('cfa-distributor-invoices/store', [InvoiceController::class, 'storeCFADistributorInvoice'])->name('cfa-distributor-invoices.store');
-    
+    Route::get('cfa-distributor-invoices/payment-modal', [InvoiceController::class, 'showPaymentModal'])->name('cfa-distributor-invoices.payment-modal');
+    Route::post('cfa-distributor-invoices/update-payment-status', [InvoiceController::class, 'updatePaymentStatus'])->name('cfa-distributor-invoices.update-payment-status');
+    Route::post('cfa-distributor-invoices/delete-payment', [InvoiceController::class, 'deletePayment'])->name('cfa-distributor-invoices.delete-payment');
+
     // CFA Stockists Routes
     Route::get('cfa-stockists', [CFAStockistController::class, 'index'])->name('cfa-stockists.index');
     Route::get('cfa-stockists/create', [CFAStockistController::class, 'create'])->name('cfa-stockists.create');
     Route::post('cfa-stockists/store', [CFAStockistController::class, 'store'])->name('cfa-stockists.store');
+    // AJAX routes must be defined BEFORE parameterized routes to avoid route conflicts
+    Route::get('cfa-stockists/get-stockists-for-cfa', [CFAStockistController::class, 'getStockistsForCFA'])->name('cfa-stockists.get-stockists-for-cfa');
+    // Parameterized routes must come AFTER specific routes
     Route::get('cfa-stockists/{id}', [CFAStockistController::class, 'show'])->name('cfa-stockists.show');
     Route::get('cfa-stockists/{id}/edit', [CFAStockistController::class, 'edit'])->name('cfa-stockists.edit');
     Route::put('cfa-stockists/{id}', [CFAStockistController::class, 'update'])->name('cfa-stockists.update');
     Route::delete('cfa-stockists/{id}', [CFAStockistController::class, 'destroy'])->name('cfa-stockists.destroy');
-    Route::get('cfa-stockists/get-stockists-for-cfa', [CFAStockistController::class, 'getStockistsForCFA'])->name('cfa-stockists.get-stockists-for-cfa');
     Route::get('cfa-distributor-invoices/{id}/edit', [InvoiceController::class, 'editCFADistributorInvoice'])->name('cfa-distributor-invoices.edit');
     Route::put('cfa-distributor-invoices/{id}', [InvoiceController::class, 'updateCFADistributorInvoice'])->name('cfa-distributor-invoices.update');
+    Route::patch('cfa-distributor-invoices/{id}/update-delivery-status', [InvoiceController::class, 'updateDeliveryStatus'])->name('cfa-distributor-invoices.update-delivery-status');
     Route::get('cfa-distributor-invoices/{id}', [InvoiceController::class, 'showCFADistributorInvoice'])->name('cfa-distributor-invoices.show');
     Route::get('cfa-distributor-invoices/get-cfa-distributors', [InvoiceController::class, 'getCFADistributors'])->name('cfa-distributor-invoices.get_cfa_distributors');
+
+    // CFA/Stockist Invoices
+    Route::get('cfa-stockist-invoices', [InvoiceController::class, 'indexCFAStockistInvoices'])->name('cfa-stockist-invoices.index');
+    Route::get('cfa-stockist-invoices/create', [InvoiceController::class, 'createCFAStockistInvoice'])->name('cfa-stockist-invoices.create');
+    Route::post('cfa-stockist-invoices/store', [InvoiceController::class, 'storeCFAStockistInvoice'])->name('cfa-stockist-invoices.store');
+    Route::get('cfa-stockist-invoices/payment-modal', [InvoiceController::class, 'showPaymentModal'])->name('cfa-stockist-invoices.payment-modal');
+    Route::post('cfa-stockist-invoices/update-payment-status', [InvoiceController::class, 'updatePaymentStatus'])->name('cfa-stockist-invoices.update-payment-status');
+    Route::post('cfa-stockist-invoices/delete-payment', [InvoiceController::class, 'deletePayment'])->name('cfa-stockist-invoices.delete-payment');
+    // AJAX routes must be defined BEFORE parameterized routes to avoid route conflicts
+    Route::get('cfa-stockist-invoices/get-cfa-stockists', [InvoiceController::class, 'getCFAStockists'])->name('cfa-stockist-invoices.get_cfa_stockists');
+    Route::get('cfa-stockist-invoices/get-products-from-stock', [InvoiceController::class, 'getProductsFromStock'])->name('cfa-stockist-invoices.get-products-from-stock');
+    Route::get('cfa-stockist-invoices/get-stock-batches', [InvoiceController::class, 'getStockBatches'])->name('cfa-stockist-invoices.get-stock-batches');
+    // Parameterized routes must come AFTER specific routes
+    Route::get('cfa-stockist-invoices/{id}/edit', [InvoiceController::class, 'editCFAStockistInvoice'])->name('cfa-stockist-invoices.edit');
+    Route::put('cfa-stockist-invoices/{id}', [InvoiceController::class, 'updateCFAStockistInvoice'])->name('cfa-stockist-invoices.update');
+    Route::get('cfa-stockist-invoices/{id}', [InvoiceController::class, 'showCFAStockistInvoice'])->name('cfa-stockist-invoices.show');
+
+    // CFA Stockist Inventory
+    Route::get('cfa-stockist-inventory/batches', [InvoiceController::class, 'batchesCFAStockistInventory'])->name('cfa-stockist-inventory.batches');
+    Route::get('cfa-stockist-inventory/batches/{id}/edit', [InvoiceController::class, 'editBatchCFAStockistInventory'])->name('cfa-stockist-inventory.batches.edit');
+    Route::put('cfa-stockist-inventory/batches/{id}', [InvoiceController::class, 'updateBatchCFAStockistInventory'])->name('cfa-stockist-inventory.batches.update');
+    Route::delete('cfa-stockist-inventory/batches/{id}', [InvoiceController::class, 'destroyBatchCFAStockistInventory'])->name('cfa-stockist-inventory.batches.destroy');
+    Route::get('cfa-stockist-inventory', [InvoiceController::class, 'indexCFAStockistInventory'])->name('cfa-stockist-inventory.index');
+
+    // CFA/Distributor Inventory
+    Route::get('cfa-distributor-inventory/batches', [InvoiceController::class, 'batchesCFADistributorInventory'])->name('cfa-distributor-inventory.batches');
+    Route::get('cfa-distributor-inventory/batches/{id}/edit', [InvoiceController::class, 'editBatchCFADistributorInventory'])->name('cfa-distributor-inventory.batches.edit');
+    Route::put('cfa-distributor-inventory/batches/{id}', [InvoiceController::class, 'updateBatchCFADistributorInventory'])->name('cfa-distributor-inventory.batches.update');
+    Route::delete('cfa-distributor-inventory/batches/{id}', [InvoiceController::class, 'destroyBatchCFADistributorInventory'])->name('cfa-distributor-inventory.batches.destroy');
+    Route::get('cfa-distributor-inventory', [InvoiceController::class, 'indexCFADistributorInventory'])->name('cfa-distributor-inventory.index');
+
+    // Ledgers (3.3.7)
+    Route::get('cfa-ledger', [LedgerController::class, 'indexCFALedger'])->name('cfa-ledger.index');
+    Route::get('cfa-ledger/data', [LedgerController::class, 'dataCFALedger'])->name('cfa-ledger.data');
+    Route::get('cfa-stockist-ledger', [LedgerController::class, 'indexCFAStockistLedger'])->name('cfa-stockist-ledger.index');
+    Route::get('cfa-stockist-ledger/data', [LedgerController::class, 'dataCFAStockistLedger'])->name('cfa-stockist-ledger.data');
+
+    // Invoice Reports
+    Route::get('reports/invoices/cfa-wise', [InvoiceReportController::class, 'cfaWise'])->name('reports.invoices.cfa-wise');
+    Route::get('reports/invoices/stockist-wise', [InvoiceReportController::class, 'stockistWise'])->name('reports.invoices.stockist-wise');
+    Route::get('reports/invoices/hq-area-region-wise', [InvoiceReportController::class, 'hqAreaRegionWise'])->name('reports.invoices.hq-area-region-wise');
+    Route::get('reports/invoices/product-wise', [InvoiceReportController::class, 'productWise'])->name('reports.invoices.product-wise');
+    Route::get('reports/invoices/purchase-and-sales', [InvoiceReportController::class, 'purchaseAndSales'])->name('reports.invoices.purchase-and-sales');
+
+    // Supplier Invoices (invoices of purchase entries – distinct from CFA/Stockist)
+    Route::resource('supplier-invoices', SupplierInvoiceController::class);
+    Route::post('supplier-invoices/{supplier_invoice}/payments', [SupplierInvoiceController::class, 'storePayment'])->name('supplier-invoices.payments.store');
+    Route::put('supplier-invoices/{supplier_invoice}/payments/{payment}', [SupplierInvoiceController::class, 'updatePayment'])->name('supplier-invoices.payments.update');
+    Route::delete('supplier-invoices/{supplier_invoice}/payments/{payment}', [SupplierInvoiceController::class, 'destroyPayment'])->name('supplier-invoices.payments.destroy');
 
     Route::group(['prefix' => 'invoices'], function () {
         // Invoice recurring
@@ -726,6 +802,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
 
     Route::get('creditnotes/convert-invoice/{id}', [CreditNoteController::class, 'convertInvoice'])->name('creditnotes.convert-invoice');
 
+    Route::get('creditnotes/saleable-vs-non-saleable-report', [CreditNoteController::class, 'saleableVsNonSaleableReport'])->name('creditnotes.saleable-vs-non-saleable-report');
     Route::resource('creditnotes', CreditNoteController::class);
 
     // Bank account
@@ -753,6 +830,19 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
         Route::get('import', [ExpenseController::class, 'import'])->name('expenses.import');
         Route::post('import', [ExpenseController::class, 'importStore'])->name('expenses.import.store');
         Route::post('import/process', [ExpenseController::class, 'importProcess'])->name('expenses.import.process');
+        Route::get('import-pharma', [ExpenseController::class, 'importPharma'])->name('expenses.import.pharma');
+        Route::post('import-pharma', [ExpenseController::class, 'importPharmaStore'])->name('expenses.import.pharma.store');
+        Route::post('import-pharma/process', [ExpenseController::class, 'importPharmaProcess'])->name('expenses.import.pharma.process');
+        Route::get('import-pharma/sample', [ExpenseController::class, 'downloadPharmaSample'])->name('expenses.import.pharma.sample');
+        Route::post('store-pharma', [ExpenseController::class, 'storePharma'])->name('expenses.store-pharma');
+        Route::get('headquarter-locations/{headquarterId}', [ExpenseController::class, 'getHeadquarterLocations'])->name('expenses.headquarter-locations');
+        Route::get('expenses-status', [ExpenseController::class, 'status'])->name('expenses.status');
+        Route::get('expenses-status/approved-export', [ExpenseController::class, 'exportApprovedExpenseStatement'])->name('expenses.status.approved-export');
+        Route::post('expenses/{id}/approve', [ExpenseController::class, 'approve'])->name('expenses.approve');
+        Route::post('expenses-approve-all', [ExpenseController::class, 'approveAll'])->name('expenses.approve-all');
+        Route::post('expenses/{id}/reject', [ExpenseController::class, 'reject'])->name('expenses.reject');
+        Route::post('expenses-reject-all', [ExpenseController::class, 'rejectAll'])->name('expenses.reject-all');
+        Route::get('expenses/check-existing', [ExpenseController::class, 'checkExisting'])->name('expenses.check-existing');
     });
     Route::resource('expenses', ExpenseController::class);
     Route::resource('expenseCategory', ExpenseCategoryController::class);
@@ -784,7 +874,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
         Route::get('pending-approval', [WeeklyTimesheetController::class, 'pendingApproval'])->name('weekly-timesheets.pending_approval');
         Route::resource('weekly-timesheets', WeeklyTimesheetController::class);
     });
-    
+
     Route::get('show-reject-modal', [WeeklyTimesheetController::class, 'showRejectModal'])->name('weekly-timesheets.show_reject_modal');
     Route::post('timelogs/timelogAction', [TimelogController::class, 'timelogAction'])->name('timelogs.timelog_action');
     Route::get('timelogs/show-reject-modal', [TimelogController::class, 'rejectTimelog'])->name('timelogs.show_reject_modal');
@@ -831,6 +921,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::resource('attendances', AttendanceController::class);
     Route::get('attendance/{id}/{day}/{month}/{year}', [AttendanceController::class, 'addAttendance'])->name('attendances.add-user-attendance');
     Route::post('attendances/check-half-day', [AttendanceController::class, 'checkHalfDay'])->name('attendances.check_half_day');
+    Route::post('attendances/finalise-month', [AttendanceController::class, 'finaliseMonth'])->name('attendances.finalise_month');
     Route::get('check-qr-login/{hash}', [AttendanceController::class, 'qrClockInOut'])->name('settings.qr-login');
     Route::post('change-qr-code-status', [AttendanceController::class, 'qrCodeStatus'])->name('settings.change-qr-code-status');
 
@@ -877,14 +968,14 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::resource('task-report', TaskReportController::class);
 
     Route::post('time-log-report-chart', [TimelogReportController::class, 'timelogChartData'])->name('time-log-report.chart');
-    Route::get('time-log-consolidated-report', [TimelogReportController::class,'consolidateIndex'])->name('time-log-consolidated.report');
-    Route::get('time-log-project-wise-report', [TimelogReportController::class,'projectWiseTimelog'])->name('project-wise-timelog.report');
-    Route::get('project-wise-timelog/report/export', [TimelogReportController::class,'exportProjectWiseTimeLog'])->name('project-wise-timelog.export');
+    Route::get('time-log-consolidated-report', [TimelogReportController::class, 'consolidateIndex'])->name('time-log-consolidated.report');
+    Route::get('time-log-project-wise-report', [TimelogReportController::class, 'projectWiseTimelog'])->name('project-wise-timelog.report');
+    Route::get('project-wise-timelog/report/export', [TimelogReportController::class, 'exportProjectWiseTimeLog'])->name('project-wise-timelog.export');
     Route::resource('time-log-report', TimelogReportController::class);
     Route::post('time-log-report-time', [TimelogReportController::class, 'totalTime'])->name('time-log-report.time');
 
     Route::resource('time-log-weekly-report', TimelogWeeklyApprovalController::class);
-    Route::get('weekly-pending-time-log-report', [TimelogWeeklyApprovalController::class,'pendingTimelogReportIndex'])->name('weekly-pending-time-log-report.report');
+    Route::get('weekly-pending-time-log-report', [TimelogWeeklyApprovalController::class, 'pendingTimelogReportIndex'])->name('weekly-pending-time-log-report.report');
 
     Route::post('finance-report-chart', [FinanceReportController::class, 'financeChartData'])->name('finance-report.chart');
     Route::resource('finance-report', FinanceReportController::class);
@@ -892,11 +983,19 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::resource('income-expense-report', IncomeVsExpenseReportController::class);
 
     Route::get('leave-report/leave-quota', [LeaveReportController::class, 'leaveQuota'])->name('leave-report.leave_quota');
+    Route::get('leave-report/employee-leave-report', [LeaveReportController::class, 'employeeLeaveReport'])->name('leave-report.employee-leave-report');
+    Route::get('leave-report/employee-leave-report/export', [LeaveReportController::class, 'exportEmployeeLeaveReport'])->name('leave-report.employee-leave-report.export');
     Route::get('leave-report/leave-quota/export-all-leave-quota/{id}/{year}/{month}', [LeavesQuotaController::class, 'exportAllLeaveQuota'])->name('leave_quota.export_all_leave_quota');
     Route::get('leave-report/leave-quota/{id}/{year}/{month}', [LeaveReportController::class, 'employeeLeaveQuota'])->name('leave-report.employee-leave-quota');
     Route::resource('leave-report', LeaveReportController::class);
 
+    Route::get('attendance-report/export-summary', [AttendanceReportController::class, 'exportSummary'])->name('attendance-report.export-summary');
     Route::resource('attendance-report', AttendanceReportController::class);
+
+    Route::get('dcr-report', [DcrReportReportController::class, 'index'])->name('dcr-report.index');
+    Route::get('dcr-report/export/excel', [DcrReportReportController::class, 'exportExcel'])->name('dcr-report.export-excel');
+    Route::get('dcr-report/export/pdf', [DcrReportReportController::class, 'exportPdf'])->name('dcr-report.export-pdf');
+    Route::get('dcr-report/export/csv', [DcrReportReportController::class, 'exportCsv'])->name('dcr-report.export-csv');
 
     Route::post('expense-report-chart', [ExpenseReportController::class, 'expenseChartData'])->name('expense-report.chart');
     Route::get('expense-report/expense-category-report', [ExpenseReportController::class, 'expenseCategoryReport'])->name('expense-report.expense_category_report');
@@ -912,7 +1011,19 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
 
 
     Route::resource('lead-report', LeadReportController::class);
-    Route::resource('sales-report', SalesReportController::class);
+
+    Route::get('sales-report', [SalesReportController::class, 'index'])->name('sales-report.index');
+    Route::get('sales-report/export/excel', [SalesReportController::class, 'exportExcel'])->name('sales-report.export-excel');
+    Route::get('sales-report/export/pdf', [SalesReportController::class, 'exportPdf'])->name('sales-report.export-pdf');
+    Route::get('sales-report/export/csv', [SalesReportController::class, 'exportCsv'])->name('sales-report.export-csv');
+
+    Route::get('zero-sales-report', [ZeroSalesReportController::class, 'index'])->name('zero-sales-report.index');
+    Route::get('zero-sales-report/export/excel', [ZeroSalesReportController::class, 'exportExcel'])->name('zero-sales-report.export-excel');
+    Route::get('zero-sales-report/export/pdf', [ZeroSalesReportController::class, 'exportPdf'])->name('zero-sales-report.export-pdf');
+    Route::get('zero-sales-report/export/csv', [ZeroSalesReportController::class, 'exportCsv'])->name('zero-sales-report.export-csv');
+
+    Route::get('tp-deviation-report', [TpDeviationReportController::class, 'index'])->name('tp-deviation-report.index');
+    Route::get('tp-deviation-report/export/excel', [TpDeviationReportController::class, 'exportExcel'])->name('tp-deviation-report.export-excel');
 
     Route::resource('sticky-notes', StickyNoteController::class);
 
@@ -945,24 +1056,30 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
         Route::get('import', [DoctorController::class, 'importDoctor'])->name('doctors.import');
         Route::get('import/sample', [DoctorController::class, 'downloadSample'])->name('doctors.import.sample');
         Route::post('import', [DoctorController::class, 'importStore'])->name('doctors.import.store');
+        Route::get('merge-duplicates', [DoctorController::class, 'mergeDuplicates'])->name('doctors.merge-duplicates');
+        Route::post('merge-duplicates', [DoctorController::class, 'mergeDuplicatesRun'])->name('doctors.merge-duplicates.run');
     });
     Route::resource('doctors', DoctorController::class);
-    
+
     Route::group(['prefix' => 'stockists'], function () {
         Route::get('import', [StockistController::class, 'importStockist'])->name('stockists.import');
         Route::get('import/sample', [StockistController::class, 'downloadSample'])->name('stockists.import.sample');
         Route::post('import', [StockistController::class, 'importStore'])->name('stockists.import.store');
+        Route::get('merge-duplicates', [StockistController::class, 'mergeDuplicates'])->name('stockists.merge-duplicates');
+        Route::post('merge-duplicates', [StockistController::class, 'mergeDuplicatesRun'])->name('stockists.merge-duplicates.run');
         Route::post('ajax-details/{id}', [StockistController::class, 'ajaxDetails'])->name('stockists.ajax_details');
     });
     Route::resource('stockists', StockistController::class);
-    
+
     Route::group(['prefix' => 'chemists'], function () {
         Route::get('import', [ChemistController::class, 'importChemist'])->name('chemists.import');
         Route::get('import/sample', [ChemistController::class, 'downloadSample'])->name('chemists.import.sample');
         Route::post('import', [ChemistController::class, 'importStore'])->name('chemists.import.store');
+        Route::get('merge-duplicates', [ChemistController::class, 'mergeDuplicates'])->name('chemists.merge-duplicates');
+        Route::post('merge-duplicates', [ChemistController::class, 'mergeDuplicatesRun'])->name('chemists.merge-duplicates.run');
     });
     Route::resource('chemists', ChemistController::class);
-    
+
     // Pharma Area Management Routes (Like HRM structure)
     Route::prefix('pharma-areas')->name('pharma-areas.')->group(function () {
         // Headquarters
@@ -970,74 +1087,99 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
         Route::post('/headquarters', [PharmaAreaController::class, 'storeHeadquarter'])->name('headquarters.store');
         Route::put('/headquarters/{id}', [PharmaAreaController::class, 'updateHeadquarter'])->name('headquarters.update');
         Route::delete('/headquarters/{id}', [PharmaAreaController::class, 'destroyHeadquarter'])->name('headquarters.destroy');
-        
+
         // Ex-Stations
         Route::get('/exstations', [PharmaAreaController::class, 'exstations'])->name('exstations');
         Route::post('/exstations', [PharmaAreaController::class, 'storeExstation'])->name('exstations.store');
         Route::put('/exstations/{id}', [PharmaAreaController::class, 'updateExstation'])->name('exstations.update');
         Route::delete('/exstations/{id}', [PharmaAreaController::class, 'destroyExstation'])->name('exstations.destroy');
-        
+
         // Out-Stations
         Route::get('/outstations', [PharmaAreaController::class, 'outstations'])->name('outstations');
         Route::post('/outstations', [PharmaAreaController::class, 'storeOutstation'])->name('outstations.store');
         Route::put('/outstations/{id}', [PharmaAreaController::class, 'updateOutstation'])->name('outstations.update');
         Route::delete('/outstations/{id}', [PharmaAreaController::class, 'destroyOutstation'])->name('outstations.destroy');
-        
+
         // Assign Headquarters
         Route::get('/assign-headquarters', [PharmaAreaController::class, 'assignHeadquarters'])->name('assign-headquarters');
         Route::post('/assign-headquarters', [PharmaAreaController::class, 'storeAssignHeadquarters'])->name('assign-headquarters.store');
         Route::delete('/assign-headquarters/{id}', [PharmaAreaController::class, 'deleteAssignHeadquarters'])->name('assign-headquarters.destroy');
         Route::post('/delete-all-hq-assignments', [PharmaAreaController::class, 'deleteAllHQAssignments'])->name('delete-all-hq-assignments');
         Route::get('/headquarters/{id}/stations', [PharmaAreaController::class, 'getHeadquarterStations'])->name('headquarters.stations');
-        
+
         // Areas
         Route::get('/areas', [PharmaAreaController::class, 'areas'])->name('areas');
         Route::post('/areas', [PharmaAreaController::class, 'storeArea'])->name('areas.store');
         Route::put('/areas/{id}', [PharmaAreaController::class, 'updateArea'])->name('areas.update');
         Route::delete('/areas/{id}', [PharmaAreaController::class, 'destroyArea'])->name('areas.destroy');
-        
+
         // Assign Areas
         Route::get('/assign-areas', [PharmaAreaController::class, 'assignAreas'])->name('assign-areas');
         Route::post('/assign-areas', [PharmaAreaController::class, 'storeAssignAreas'])->name('assign-areas.store');
-        
+
         // Regions
         Route::get('/regions', [PharmaAreaController::class, 'regions'])->name('regions');
         Route::post('/regions', [PharmaAreaController::class, 'storeRegion'])->name('regions.store');
         Route::put('/regions/{id}', [PharmaAreaController::class, 'updateRegion'])->name('regions.update');
         Route::delete('/regions/{id}', [PharmaAreaController::class, 'destroyRegion'])->name('regions.destroy');
-        
+
         // Assign Regions
         Route::get('/assign-regions', [PharmaAreaController::class, 'assignRegions'])->name('assign-regions');
         Route::post('/assign-regions', [PharmaAreaController::class, 'storeAssignRegions'])->name('assign-regions.store');
-        
+
         // Zones
         Route::get('/zones', [PharmaAreaController::class, 'zones'])->name('zones');
         Route::post('/zones', [PharmaAreaController::class, 'storeZone'])->name('zones.store');
         Route::put('/zones/{id}', [PharmaAreaController::class, 'updateZone'])->name('zones.update');
         Route::delete('/zones/{id}', [PharmaAreaController::class, 'destroyZone'])->name('zones.destroy');
-        
+
         // Assign Zones
         Route::get('/assign-zones', [PharmaAreaController::class, 'assignZones'])->name('assign-zones');
         Route::post('/assign-zones', [PharmaAreaController::class, 'storeAssignZones'])->name('assign-zones.store');
-        
+
         // Old index route (redirect to headquarters)
-        Route::get('/', function() { return redirect()->route('pharma-areas.headquarters'); })->name('index');
-        
+        Route::get('/', function () {
+            return redirect()->route('pharma-areas.headquarters');
+        })->name('index');
+
         // Overview route - show overview page
         Route::get('/overview', [PharmaAreaController::class, 'overview'])->name('overview');
+
+        // Admin-only interactive hierarchy map
+        Route::get('/master-area-map', [PharmaAreaController::class, 'masterAreaMap'])->name('master-area-map');
     });
-    
+
     Route::resource('tours', TourController::class);
     Route::get('tours-status', [TourController::class, 'status'])->name('tours.status');
     Route::post('tours/{id}/approve', [TourController::class, 'approve'])->name('tours.approve');
+    Route::post('tours/{id}/reject', [TourController::class, 'reject'])->name('tours.reject');
     Route::post('tours-approve-all', [TourController::class, 'approveAll'])->name('tours.approve-all');
+    Route::post('tours-reject-bulk', [TourController::class, 'rejectBulk'])->name('tours.reject-bulk');
     Route::post('tours-bulk-delete', [TourController::class, 'bulkDelete'])->name('tours.bulk-delete');
-    
-    Route::resource('dcr-reports', DcrReportController::class);
+    Route::post('tours-unlock-month', [TourController::class, 'unlockMonth'])->name('tours.unlock-month');
+
+    Route::get('dcr-management/call-average', [DcrReportController::class, 'callAverage'])->name('dcr-management.call-average');
+    Route::get('dcr-management/area-performance', [DcrReportController::class, 'areaPerformance'])->name('dcr-management.area-performance');
+    Route::resource('dcr-management', DcrReportController::class);
     Route::post('dcr-get-tour-by-date', [DcrReportController::class, 'getTourByDate'])->name('dcr.get-tour-by-date');
+    Route::get('dcr-get-context-for-employee', [DcrReportController::class, 'getDcrContextForEmployee'])->name('dcr.get-context-for-employee');
+    Route::get('dcr-get-station-customers', [DcrReportController::class, 'getStationCustomers'])->name('dcr.get-station-customers');
+    Route::post('dcr-store-visit', [DcrReportController::class, 'storeVisit'])->name('dcr.store-visit');
+    Route::post('dcr-delete-visit', [DcrReportController::class, 'destroyVisit'])->name('dcr.destroy-visit');
+    Route::post('dcr-save-draft', [DcrReportController::class, 'saveDraft'])->name('dcr.save-draft');
     Route::post('dcr-create-doctor-inline', [DcrReportController::class, 'createDoctorInline'])->name('dcr.create-doctor-inline');
     Route::post('dcr-create-chemist-inline', [DcrReportController::class, 'createChemistInline'])->name('dcr.create-chemist-inline');
     Route::post('dcr-create-stockist-inline', [DcrReportController::class, 'createStockistInline'])->name('dcr.create-stockist-inline');
+    Route::post('dcr-management/{id}/approve', [DcrReportController::class, 'approve'])->name('dcr-management.approve');
+    Route::post('dcr-management/{id}/reject', [DcrReportController::class, 'reject'])->name('dcr-management.reject');
+    Route::post('dcr-management-approve-all', [DcrReportController::class, 'approveAll'])->name('dcr-management.approve-all');
+
+    Route::get('stock-statements/get-opening-primary', [StockStatementController::class, 'getOpeningPrimary'])->name('stock-statements.get-opening-primary');
+    Route::get('stock-statements/consolidation', [StockStatementController::class, 'consolidation'])->name('stock-statements.consolidation');
+    Route::get('stock-statements/target-vs-achievement', [StockStatementController::class, 'targetVsAchievement'])->name('stock-statements.target-vs-achievement');
+    Route::resource('stock-statements', StockStatementController::class);
+
+    Route::resource('sales-plan', SalesPlanController::class)->except(['show']);
 
     Route::get('all-notifications', [NotificationController::class, 'all'])->name('all-notifications');
     Route::post('mark-read', [NotificationController::class, 'markRead'])->name('mark_single_notification_read');
@@ -1068,10 +1210,13 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('gantt_link.task_update', [GanttLinkController::class, 'taskUpdateController'])->name('gantt_link.task_update');
     Route::resource('gantt_link', GanttLinkController::class);
 
+    Route::get('import-history/download/{id}', [ImportHistoryController::class, 'download'])->name('import-history.download');
+    Route::resource('import-history', ImportHistoryController::class)->only(['index']);
+
 });
 
 // Test broadcasting
-Route::get('/test-broadcast', function() {
+Route::get('/test-broadcast', function () {
     try {
         event(new \Modules\Chat\Events\MessageSent(\Modules\Chat\Entities\ChatMessage::first()));
         return response()->json(['success' => true, 'message' => 'Event broadcasted successfully']);
@@ -1081,7 +1226,7 @@ Route::get('/test-broadcast', function() {
 })->name('test-broadcast');
 
 // Debug broadcasting configuration 
-Route::get('/debug-broadcast', function() {
+Route::get('/debug-broadcast', function () {
     return response()->json([
         'broadcast_driver' => config('broadcasting.default'),
         'pusher_key' => config('broadcasting.connections.pusher.key'),

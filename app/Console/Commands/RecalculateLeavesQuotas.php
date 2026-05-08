@@ -234,10 +234,16 @@ class RecalculateLeavesQuotas extends Command
 
     }
 
-    public function calculateNoOfLeavesAlloted($settings, $joiningDate, $user, $value)
+    /**
+     * Months counted toward pro-rata in the current leave cycle, and (year-start companies only) fiscal month-1.
+     * Matches the first step inside calculateNoOfLeavesAlloted — e.g. from **month of joining** when
+     * `leaves_start_from` is `joining_date` (anniversary), or from company year start when `year_start`.
+     *
+     * @return array{0: int, 1: \Carbon\Carbon|null}
+     */
+    public static function proRataMonthCountAndYearStart(Company $settings, Carbon $joiningDate, User $user, LeaveType $value): array
     {
-        $leaves = $value->no_of_leaves;
-        $leaveToSubtract = 0;
+        $startingDate = null;
 
         if ($settings && $settings->leaves_start_from == 'joining_date') {
             $currentYearJoiningDate = Carbon::parse($user->employeeDetail->joining_date->format((now($settings->timezone)->year) . '-m-d'));;
@@ -251,23 +257,9 @@ class RecalculateLeavesQuotas extends Command
 
             $differenceMonth = $differenceMonth + 1; // Include current month also
 
-
             $countOfMonthsAllowed = $differenceMonth > 12 ? $differenceMonth - 12 : $differenceMonth;
 
-            if ($user->employeeDetail->joining_date->year == now()->year && $value->leavetype == 'yearly') {            // Calculate remaining days after full months
-                $remainingDays = now()->diffInDays($currentYearJoiningDate->copy()->subMonths($differenceMonth));
-                $remainingDays += 2; // adding 2 for becaus same day and next day is not counting as diff
-
-
-                if ($remainingDays >= 16) {
-                    $countOfMonthsAllowed++;
-                    $remainingDays = 0;
-                }
-            }
-
         } else {
-            // yearly setting year_start
-
             $yearFrom = $settings && $settings->year_starts_from ? $settings->year_starts_from : 1;
             $startingDate = Carbon::create(now()->year, $yearFrom)->startOfMonth();
 
@@ -277,20 +269,29 @@ class RecalculateLeavesQuotas extends Command
 
             $countOfMonthsAllowed = $differenceMonth > 12 ? $differenceMonth - 12 : $differenceMonth;
 
-            $remainingDays = 0;
             $currentYearJoiningDate = Carbon::parse($user->employeeDetail->joining_date->format((now($settings->timezone)->year) . '-m-d'));;
 
             if ($user->employeeDetail->joining_date->year == now()->year && $value->leavetype == 'yearly') {
                 $remainingDays = now()->diffInDays($currentYearJoiningDate->copy()->subMonths($differenceMonth));
                 $remainingDays += 2; // adding 2 for becaus same day and next day is not counting as diff
-    
+
                 if ($remainingDays >= 16) {
                     $countOfMonthsAllowed++;
-                    $remainingDays = 0;
                 }
             }
 
         }
+
+        return [$countOfMonthsAllowed, $startingDate];
+    }
+
+    public function calculateNoOfLeavesAlloted($settings, $joiningDate, $user, $value)
+    {
+        $leaves = $value->no_of_leaves;
+        $leaveToSubtract = 0;
+
+        /** @var Company $settings */
+        [$countOfMonthsAllowed, $startingDate] = self::proRataMonthCountAndYearStart($settings, $joiningDate, $user, $value);
 
         if ($settings
         && $settings->leaves_start_from == 'year_start'
@@ -335,8 +336,19 @@ class RecalculateLeavesQuotas extends Command
         }
 
         if ($value->leavetype == 'yearly') {
-            $leaves = $value->no_of_leaves - $leaveToSubtract;
-        
+            // Monthly pro-rata accrual: every month the employee earns
+            // (no_of_leaves / 12). Within each anniversary cycle the balance
+            // grows from ~1/12 in month 1 up to the full yearly quota by
+            // month 12. On anniversary, $countOfMonthsAllowed rolls back to 1
+            // and any unused balance is handled by AnnualCarryForwardLeaves
+            // (lapse for CL, carry-forward for SL/EL).
+            if ($settings && $settings->leaves_start_from == 'joining_date') {
+                $monthlyLeaves = $value->no_of_leaves / 12;
+                $leaves = ($monthlyLeaves * $countOfMonthsAllowed) - $leaveToSubtract;
+            } else {
+                $leaves = $value->no_of_leaves - $leaveToSubtract;
+            }
+
         } else if ($value->leavetype == 'monthly') {
             $leaves = ($value->no_of_leaves * $countOfMonthsAllowed) - $leaveToSubtract;
 
@@ -386,16 +398,20 @@ class RecalculateLeavesQuotas extends Command
             $leaveTo = $leaveStartYear->copy()->addYear()->toDateString();
         }
 
+        // Count both approved AND pending leaves as "taken" so that balance is deducted
+        // the moment a leave is applied (matches how LeaveController::store validates
+        // limits — pending leaves already reserve balance). If a leave is rejected,
+        // LeaveObserver::updated re-runs this command and the balance is restored.
         $fullDay = Leave::where('user_id', $user->id)
             ->whereBetween('leave_date', [$leaveFrom, $leaveTo])
-            ->where('status', 'approved')
+            ->whereIn('status', ['approved', 'pending'])
             ->where('leave_type_id', $value->id)
             ->where('duration', '<>', 'half day')
             ->count();
 
         $halfDay = Leave::where('user_id', $user->id)
             ->whereBetween('leave_date', [$leaveFrom, $leaveTo])
-            ->where('status', 'approved')
+            ->whereIn('status', ['approved', 'pending'])
             ->where('leave_type_id', $value->id)
             ->where('duration', 'half day')
             ->count();
@@ -413,16 +429,17 @@ class RecalculateLeavesQuotas extends Command
         $leaveFrom = now($settings->timezone)->startOfMonth()->toDateString();
         $leaveTo = now($settings->timezone)->endOfMonth()->toDateString();
 
+        // Include pending leaves so the monthly balance also reflects just-applied leaves.
         $fullDay = Leave::where('user_id', $user->id)
             ->whereBetween('created_at', [$leaveFrom, $leaveTo])
-            ->where('status', 'approved')
+            ->whereIn('status', ['approved', 'pending'])
             ->where('leave_type_id', $value->id)
             ->where('duration', '<>', 'half day')
             ->count();
 
         $halfDay = Leave::where('user_id', $user->id)
             ->whereBetween('created_at', [$leaveFrom, $leaveTo])
-            ->where('status', 'approved')
+            ->whereIn('status', ['approved', 'pending'])
             ->where('leave_type_id', $value->id)
             ->where('duration', 'half day')
             ->count();

@@ -70,7 +70,7 @@ class NewPayment extends BaseNotification
             $clientEmail = $this->payment->invoice->client->email ?? '--';
             $subject = __('email.payment.clientsubject') . ' (' . $this->payment->invoice->invoice_number . ') - ' . config('app.name') . '.';
 
-            if ($notifiable->hasRole('admin')) {
+            if ($notifiable->hasAdminLikeAccess()) {
                 $subject = __('email.payment.subject') . ' (' . $this->payment->invoice->invoice_number  . ') - ' . config('app.name') . '.';
                 $content = __('email.payment.text') .
                     '<br>' . __('email.payment.amount') . '   :   ' . $this->payment->currency->currency_symbol . $this->payment->amount .

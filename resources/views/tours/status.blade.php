@@ -46,7 +46,7 @@
         <div class="status-header w-100 text-center">
             <h3 class="mb-0">
                 <i class="fa fa-list-alt"></i> Tour Plan Status
-                @if(user()->hasRole('admin') && $selectedEmployeeId && $selectedEmployeeId != 'all')
+                @if(user()->hasAdminLikeAccess() && $selectedEmployeeId && $selectedEmployeeId != 'all')
                     @php
                         $selectedEmployee = $employees->firstWhere('id', $selectedEmployeeId);
                     @endphp
@@ -56,7 +56,7 @@
                 @endif
             </h3>
             <p class="mb-0 mt-2">
-                @if(user()->hasRole('admin') || user()->permission('view_tours') == 'all')
+                @if(user()->hasAdminLikeAccess() || user()->permission('view_tours') == 'all')
                     View and track tour plan approval status for {{ \Carbon\Carbon::parse($selectedMonth)->format('F Y') }}
                 @else
                     Check approval status of your submitted tour plans for {{ \Carbon\Carbon::parse($selectedMonth)->format('F Y') }}
@@ -69,7 +69,7 @@
         <!-- Filter Section -->
         <form method="GET" action="{{ route('tours.status') }}" id="filter-form">
             <div class="row mb-3">
-                <div class="col-md-{{ user()->hasRole('admin') || user()->permission('view_tours') == 'all' ? '3' : '4' }}">
+                <div class="col-md-{{ user()->hasAdminLikeAccess() || user()->permission('view_tours') == 'all' ? '3' : '4' }}">
                     <label for="month-filter" class="my-3 f-14 text-dark-grey mb-12 text-capitalize">
                         <i class="fa fa-calendar"></i> Select Month
                     </label>
@@ -77,25 +77,22 @@
                     <small class="form-text text-muted">View tours for selected month</small>
                 </div>
                 
-                @if(user()->hasRole('admin') || user()->permission('view_tours') == 'all')
+                @if(user()->hasAdminLikeAccess() || user()->permission('view_tours') == 'all')
                     <div class="col-md-3">
                         <label for="employee-filter" class="my-3 f-14 text-dark-grey mb-12 text-capitalize">
                             <i class="fa fa-user"></i> Select Employee
                         </label>
-                        <select class="form-control height-35 f-14 select-picker" name="employee_id" id="employee-filter" data-live-search="true">
+                        <select class="form-control height-35 f-14 select-picker" name="employee_id" id="employee-filter" data-live-search="true" data-html="true">
                             <option value="all" {{ $selectedEmployeeId == 'all' ? 'selected' : '' }}>-- All Employees --</option>
                             @foreach($employees as $emp)
-                                <option value="{{ $emp->id }}" {{ $selectedEmployeeId == $emp->id ? 'selected' : '' }}>
-                                    {{ $emp->name }}
-                                    @if($emp->employeeDetail && $emp->employeeDetail->designation) ({{ $emp->employeeDetail->designation->name }}) @endif
-                                </option>
+                                <x-user-option :user="$emp" :employeeSelect="true" :selected="$selectedEmployeeId == $emp->id" />
                             @endforeach
                         </select>
                         <small class="form-text text-muted">Filter by specific employee</small>
                     </div>
                 @endif
                 
-                <div class="col-md-{{ user()->hasRole('admin') || user()->permission('view_tours') == 'all' ? '3' : '4' }}">
+                <div class="col-md-{{ user()->hasAdminLikeAccess() || user()->permission('view_tours') == 'all' ? '3' : '4' }}">
                     <label for="status-filter" class="my-3 f-14 text-dark-grey mb-12 text-capitalize">
                         <i class="fa fa-info-circle"></i> Filter by Status
                     </label>
@@ -158,7 +155,7 @@
         @else
         <div class="alert alert-info">
             <i class="fa fa-info-circle"></i> <strong>No tours found</strong> for {{ \Carbon\Carbon::parse($selectedMonth)->format('F Y') }}
-            @if(user()->hasRole('admin') && $selectedEmployeeId != 'all')
+            @if(user()->hasAdminLikeAccess() && $selectedEmployeeId != 'all')
                 for the selected employee
             @endif
         </div>
@@ -173,14 +170,15 @@
                             <tr>
                                 <th style="width: 80px;">Date</th>
                                 <th style="width: 100px;">Day</th>
+                                <th style="width: 200px;">Employee</th>
                                 <th style="width: 150px;">Headquarter</th>
                                 <th style="width: 130px;">Work Type</th>
                                 <th style="width: 180px;">Station(s)</th>
                                 <th style="width: 150px;">Work With</th>
                                 <th style="width: 200px;">Remark</th>
-                                <th style="width: 150px;" class="text-center">Submitted To</th>
                                 <th style="width: 120px;" class="text-center">Status</th>
                                 <th style="width: 130px;" class="text-center">Approved By</th>
+                                <th style="width: 140px;" class="text-center">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="status-body">
@@ -191,36 +189,58 @@
                                         $statusClass = 'status-approved';
                                     } elseif ($tour->status == 'pending' || !$tour->status) {
                                         $statusClass = 'status-pending';
+                                    } elseif ($tour->status == 'rejected') {
+                                        $statusClass = 'status-rejected';
                                     }
                                 @endphp
                                 <tr class="{{ $statusClass }}" data-status="{{ $tour->status ?? 'pending' }}">
                                     <td>{{ $tour->date->translatedFormat(companyOrGlobalSetting()->date_format) }}</td>
                                     <td><strong>{{ $tour->day }}</strong></td>
-                                    <td>{{ $tour->headquarter->name ?? '-' }}</td>
+                                    <td>
+                                        @if($tour->user)
+                                            @php
+                                                $empDetail = $tour->user->employeeDetail ?? $tour->user->employeeDetails;
+                                            @endphp
+                                            <div>
+                                                <strong class="text-dark">{{ $tour->user->name }}</strong>
+                                            </div>
+                                            @if($empDetail && $empDetail->designation)
+                                                <small class="text-muted d-block">{{ $empDetail->designation->name }}</small>
+                                            @endif
+                                            @if($empDetail && $empDetail->headquarter)
+                                                <small class="text-muted d-block"><i class="fa fa-map-marker-alt"></i> {{ $empDetail->headquarter->name }}</small>
+                                            @endif
+                                        @elseif($tour->user_id)
+                                            <span class="text-warning" title="{{ __('User record missing') }}">User #{{ $tour->user_id }}</span>
+                                        @else
+                                            <span class="text-muted">—</span>
+                                        @endif
+                                    </td>
+                                    <td>{{ optional($tour->headquarter)->name ?? '-' }}</td>
                                     <td><span class="badge badge-info">{{ $tour->work_status ?: '-' }}</span></td>
                                     <td><small>{{ $tour->station ?: '-' }}</small></td>
                                     <td>
-                                        @if($tour->workingWith)
-                                            <strong>{{ $tour->workingWith->name }}</strong>
-                                        @else
-                                            <span class="text-muted">-</span>
-                                        @endif
-                                    </td>
-                                    <td><small>{{ Str::limit($tour->remark, 40) ?: '-' }}</small></td>
-                                    <td class="text-center">
-                                        @if($tour->submittedTo)
-                                            <div>
-                                                <strong class="text-primary">{{ $tour->submittedTo->name }}</strong>
-                                            </div>
-                                            @if($tour->submittedTo->employeeDetail && $tour->submittedTo->employeeDetail->designation)
-                                                <small class="text-muted d-block" style="font-size: 10px;">
-                                                    {{ $tour->submittedTo->employeeDetail->designation->name }}
-                                                </small>
+                                        @if($tour->work_with)
+                                            @php
+                                                // work_with is now stored as comma-separated designation names
+                                                $workWithList = is_array($tour->work_with) 
+                                                    ? $tour->work_with 
+                                                    : explode(',', $tour->work_with);
+                                                $workWithList = array_map('trim', $workWithList);
+                                                $workWithList = array_filter($workWithList);
+                                            @endphp
+                                            @if(!empty($workWithList))
+                                                @foreach($workWithList as $designation)
+                                                    <span class="badge badge-secondary mr-1 mb-1">{{ trim($designation) }}</span>
+                                                @endforeach
+                                            @else
+                                                <span class="text-muted">-</span>
                                             @endif
                                         @else
                                             <span class="text-muted">-</span>
                                         @endif
                                     </td>
+                                    <td><small>{{ Str::limit($tour->remark, 40) ?: '-' }}</small></td>
                                     <td class="text-center">
                                         @if($tour->status == 'approved')
                                             <span class="badge badge-success">
@@ -253,10 +273,31 @@
                                             <span class="text-muted">-</span>
                                         @endif
                                     </td>
+                                    <td class="text-center">
+                                        @php
+                                            $canApproveThis = user()->permission('approve_tours') == 'all' || $tour->submitted_to == user()->id;
+                                        @endphp
+                                        @if(($tour->status == 'pending' || !$tour->status) && $canApproveThis)
+                                            <form action="{{ route('tours.approve', $tour->id) }}" method="POST" class="d-inline">
+                                                @csrf
+                                                <button type="submit" class="btn btn-success btn-xs" title="Approve">
+                                                    <i class="fa fa-check"></i> Approve
+                                                </button>
+                                            </form>
+                                            <form action="{{ route('tours.reject', $tour->id) }}" method="POST" class="d-inline ml-1">
+                                                @csrf
+                                                <button type="submit" class="btn btn-warning btn-xs" title="Reject" onclick="return confirm('Reject this tour?');">
+                                                    <i class="fa fa-times"></i> Reject
+                                                </button>
+                                            </form>
+                                        @else
+                                            <span class="text-muted">-</span>
+                                        @endif
+                                    </td>
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="10" class="text-center py-5">
+                                    <td colspan="11" class="text-center py-5">
                                         <div class="text-muted">
                                             <i class="fa fa-calendar-times fa-3x mb-3 d-block"></i>
                                             <h5>No tour plans submitted yet</h5>
@@ -306,7 +347,7 @@ $(document).ready(function() {
             if ($('#no-results-row').length === 0) {
                 $('#status-body').append(`
                     <tr id="no-results-row">
-                        <td colspan="10" class="text-center py-3">
+                        <td colspan="11" class="text-center py-3">
                             <i class="fa fa-filter"></i> No tours match the selected status filter
                         </td>
                     </tr>

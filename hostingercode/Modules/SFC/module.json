@@ -1,0 +1,15 @@
+{
+    "name": "SFC",
+    "alias": "sfc",
+    "description": "Standard Fare Chart for Territories",
+    "keywords": [],
+    "active": 1,
+    "order": 2,
+    "priority": 0,
+    "providers": [
+        "Modules\\SFC\\Providers\\SFCServiceProvider",
+        "Modules\\SFC\\Providers\\EventServiceProvider"
+    ],
+    "aliases": {},
+    "files": []
+}

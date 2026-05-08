@@ -21,7 +21,7 @@ class UpdateAppController extends AccountBaseController
         $this->pageIcon = 'ti-reload';
         $this->activeSettingMenu = 'update_settings';
         $this->middleware(function ($request, $next) {
-            abort_403(!user()->hasRole('admin'));
+            abort_403(!user()->hasAdminLikeAccess());
 
             return $next($request);
         });
