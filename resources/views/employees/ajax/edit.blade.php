@@ -691,12 +691,13 @@ if (!function_exists('safeDecodeValue')) {
                     console.log(response);
                     var message = response.message;
                     var showMessage = response.showMessage;
+                    var exitEl = document.getElementById('exitDateError');
 
-                    if (showMessage) {
-                        exitDateError.style.display = 'block'; // Show the error message
+                    if (showMessage && exitEl) {
+                        exitEl.style.display = 'block';
                         updateMessageText(message, lastDate);
-                    } else {
-                        exitDateError.style.display = 'none'; // Hide the error message
+                    } else if (exitEl) {
+                        exitEl.style.display = 'none';
                     }
                 },
                 error: function(xhr) {
@@ -712,13 +713,17 @@ if (!function_exists('safeDecodeValue')) {
     }
 
 
-    // Add event listeners for radio buttons and date picker to call checkExitDate on change
-    document.getElementById('status-active').addEventListener('change', checkExitDate);
-    document.getElementById('status-inactive').addEventListener('change', checkExitDate);
-    document.getElementById('last_date').addEventListener('change', checkExitDate);
-
-    // Initialize the message state on page load
-    window.onload = checkExitDate;
+    // Status / last date exist only when editing another user (see Blade @if above)
+    ['status-active', 'status-inactive'].forEach(function (fieldId) {
+        var el = document.getElementById(fieldId);
+        if (el) {
+            el.addEventListener('change', checkExitDate);
+        }
+    });
+    var lastDateField = document.getElementById('last_date');
+    if (lastDateField) {
+        lastDateField.addEventListener('change', checkExitDate);
+    }
 
 </script>
 

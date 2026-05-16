@@ -1337,7 +1337,13 @@ class EmployeeController extends AccountBaseController
         if ($isABM || $isRBM || $isZM || $isMISExecutive) {
             $employee->headquarter_id = null; // Access derived from areas/regions/zones or full access for MIS Executive
         } else {
-            $employee->headquarter_id = $request->headquarter_id; // Pharma headquarter for MR etc.
+            $hqPermission = user()->permission('view_headquarters');
+            $canEditHeadquarterSelection = user()->hasAdminLikeAccess()
+                || in_array($hqPermission, ['all', 'added', 'owned', 'both'], true);
+
+            if ($canEditHeadquarterSelection) {
+                $employee->headquarter_id = $request->headquarter_id;
+            }
         }
         
         if ($isABM) {

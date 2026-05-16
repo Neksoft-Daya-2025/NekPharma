@@ -67,7 +67,7 @@ class UpdateRequest extends CoreRequest
             $rules['telegram_user_id'] = 'nullable|unique:users,telegram_user_id,' . $detailID->user_id.',id,company_id,' . company()->id;
         }
 
-        // Pharma HeadQuarter validation - required if pharma_areas module is active, except for ABM/RBM/ZM/MIS Executive (they get access from areas/regions/zones or full access)
+        // Pharma HeadQuarter: only require when the edit form shows the field (matches employees.ajax.edit)
         if (in_array('pharma_areas', user_modules())) {
             $designation = $this->input('designation') ? Designation::find($this->input('designation')) : null;
             $skipsHeadquarter = $designation && (
@@ -76,7 +76,15 @@ class UpdateRequest extends CoreRequest
                 || PharmaDesignationHelper::isZM($designation)
                 || PharmaDesignationHelper::isMISExecutive($designation)
             );
-            $rules['headquarter_id'] = $skipsHeadquarter ? 'nullable|exists:pharma_headquarters,id' : 'required|exists:pharma_headquarters,id';
+            $hqPermission = user()->permission('view_headquarters');
+            $canEditHeadquarterSelection = user()->hasAdminLikeAccess()
+                || in_array($hqPermission, ['all', 'added', 'owned', 'both'], true);
+
+            if ($canEditHeadquarterSelection && ! $skipsHeadquarter) {
+                $rules['headquarter_id'] = 'required|exists:pharma_headquarters,id';
+            } else {
+                $rules['headquarter_id'] = 'nullable|exists:pharma_headquarters,id';
+            }
         }
 
         $rules = $this->customFieldRules($rules);
