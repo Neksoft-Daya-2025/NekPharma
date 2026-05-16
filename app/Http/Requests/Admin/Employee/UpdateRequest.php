@@ -67,24 +67,13 @@ class UpdateRequest extends CoreRequest
             $rules['telegram_user_id'] = 'nullable|unique:users,telegram_user_id,' . $detailID->user_id.',id,company_id,' . company()->id;
         }
 
-        // Pharma HeadQuarter: only require when the edit form shows the field (matches employees.ajax.edit)
+        // Pharma HeadQuarter: required only for MR (field staff); optional for management/admin/ABM/RBM/ZM/MIS
         if (in_array('pharma_areas', user_modules())) {
             $designation = $this->input('designation') ? Designation::find($this->input('designation')) : null;
-            $skipsHeadquarter = $designation && (
-                PharmaDesignationHelper::isABM($designation)
-                || PharmaDesignationHelper::isRBM($designation)
-                || PharmaDesignationHelper::isZM($designation)
-                || PharmaDesignationHelper::isMISExecutive($designation)
-            );
-            $hqPermission = user()->permission('view_headquarters');
-            $canEditHeadquarterSelection = user()->hasAdminLikeAccess()
-                || in_array($hqPermission, ['all', 'added', 'owned', 'both'], true);
-
-            if ($canEditHeadquarterSelection && ! $skipsHeadquarter) {
-                $rules['headquarter_id'] = 'required|exists:pharma_headquarters,id';
-            } else {
-                $rules['headquarter_id'] = 'nullable|exists:pharma_headquarters,id';
-            }
+            $requiresHeadquarter = $designation && PharmaDesignationHelper::isMedicalRepresentative($designation);
+            $rules['headquarter_id'] = $requiresHeadquarter
+                ? 'required|exists:pharma_headquarters,id'
+                : 'nullable|exists:pharma_headquarters,id';
         }
 
         $rules = $this->customFieldRules($rules);
