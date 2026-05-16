@@ -713,7 +713,7 @@ if (!function_exists('safeDecodeValue')) {
     }
 
 
-    // Status / last date exist only when editing another user (see Blade @if above)
+    // Status / last date exist only when editing another user (see Blade @@if above)
     ['status-active', 'status-inactive'].forEach(function (fieldId) {
         var el = document.getElementById(fieldId);
         if (el) {
