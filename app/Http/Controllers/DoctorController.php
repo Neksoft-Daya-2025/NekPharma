@@ -614,8 +614,11 @@ class DoctorController extends AccountBaseController
                 Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
                 return Reply::error('No data found in the file');
             }
-            
-            if ($request->has('heading')) {
+
+            $hasHeading = $request->has('heading');
+            $headingRow = ($hasHeading && isset($excelData[0]) && is_array($excelData[0])) ? $excelData[0] : [];
+
+            if ($hasHeading) {
                 array_shift($excelData);
             }
 
@@ -633,25 +636,17 @@ class DoctorController extends AccountBaseController
                 return Reply::error(__('messages.abortAction'));
             }
 
-            // Auto-map columns based on headers
-            $columns = array();
-            $hasHeading = $request->has('heading');
-            
-            if ($hasHeading) {
-                try {
-                    $headingData = (new HeadingRowImport)->toArray($filePath);
-                    if (isset($headingData[0][0]) && is_array($headingData[0][0])) {
-                        $heading = $headingData[0][0];
-                    } else {
-                        $heading = [];
-                    }
-                } catch (\Exception $e) {
-                    $heading = [];
-                }
-                
-                if (!empty($heading)) {
+            // Column map: positional order matches DoctorImport::fields() / sample file (A=Dr. Name, B=HQ, …)
+            $importColumns = DoctorImport::fields();
+            $columns = [];
+            foreach ($importColumns as $index => $column) {
+                $columns[$index] = $column['id'];
+            }
+
+            $heading = $headingRow;
+
+            if ($hasHeading && !empty($heading)) {
                     \Log::info('Excel headings found: ' . json_encode($heading));
-                    $importColumns = DoctorImport::fields();
                     
                     // Normalize headings for matching
                     $normalizedHeadings = array_map(function($h) {
@@ -748,15 +743,6 @@ class DoctorController extends AccountBaseController
                     }
                     
                     \Log::info('Column mapping result: ' . json_encode($columns));
-                }
-            }
-            
-            // If no columns mapped, map by column order (must match DoctorImport::fields() and sample file)
-            if (empty($columns)) {
-                $importColumns = DoctorImport::fields();
-                foreach ($importColumns as $index => $column) {
-                    $columns[$index] = $column['id'];
-                }
             }
 
             // Process import directly

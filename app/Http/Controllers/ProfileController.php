@@ -49,8 +49,8 @@ class ProfileController extends AccountBaseController
         $user->google_calendar_status = $request->google_calendar_status;
         $user->twitter_id = $request->twitter_id;
 
-        if (!is_null($request->password)) {
-            $user->password = Hash::make($request->password);
+        if ($request->filled('password')) {
+            $user->password = Hash::make(trim($request->password));
         }
 
         if ($request->image_delete == 'yes') {

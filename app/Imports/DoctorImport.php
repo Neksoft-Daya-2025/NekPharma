@@ -33,7 +33,7 @@ class DoctorImport implements ToArray
                 'id' => 'doctor_type',
                 'name' => __('Dr. Type'),
                 'required' => 'No',
-                'aliases' => ['Dr. Type', 'Dr Type', 'Dr Category', 'Doctor Type', 'Doctor Category'],
+                'aliases' => ['Dr. Type', 'Dr Type', 'Dr. Type (SFC)', 'Dr Type (SFC)', 'Dr Category', 'Doctor Type', 'Doctor Category'],
             ),
             array(
                 'id' => 'qualification',

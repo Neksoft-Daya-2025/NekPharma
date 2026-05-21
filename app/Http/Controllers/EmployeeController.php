@@ -494,8 +494,8 @@ class EmployeeController extends AccountBaseController
         $user->name = $request->name;
         $user->email = $request->email;
 
-        if ($request->password != '') {
-            $user->password = bcrypt($request->password);
+        if ($request->filled('password')) {
+            $user->password = bcrypt(trim($request->password));
         }
 
         $user->mobile = $request->mobile;

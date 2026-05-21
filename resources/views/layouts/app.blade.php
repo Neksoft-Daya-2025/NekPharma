@@ -787,6 +787,8 @@
     @include('chat::index')
 @endif
 
+@include('sections.deploy-notice-toast')
+
 </body>
 
 </html>

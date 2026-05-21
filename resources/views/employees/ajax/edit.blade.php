@@ -850,7 +850,34 @@ if (!function_exists('safeDecodeValue')) {
                 success: function(response) {
                     if (response.status == 'success') {
                         window.location.href = response.redirectUrl;
+                    } else if (response.message) {
+                        Swal.fire({
+                            icon: 'error',
+                            text: response.message,
+                            toast: true,
+                            position: 'top-end',
+                            timer: 5000,
+                            showConfirmButton: false
+                        });
                     }
+                },
+                error: function(xhr) {
+                    var data = xhr.responseJSON || {};
+                    var msg = data.message || 'Could not save employee.';
+                    if (data.errors) {
+                        var firstKey = Object.keys(data.errors)[0];
+                        if (firstKey && data.errors[firstKey][0]) {
+                            msg = data.errors[firstKey][0];
+                        }
+                    }
+                    Swal.fire({
+                        icon: 'error',
+                        text: msg,
+                        toast: true,
+                        position: 'top-end',
+                        timer: 6000,
+                        showConfirmButton: false
+                    });
                 }
             });
         });
