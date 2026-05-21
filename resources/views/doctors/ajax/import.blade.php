@@ -13,7 +13,7 @@
                         <a href="{{ route('doctors.import.sample') }}" class="btn btn-sm btn-primary ml-2" id="download-sample-file" target="_blank">
                             <i class="fa fa-download"></i> @lang('Download Sample File')
                         </a>
-                        <p class="mb-0 mt-2 small text-muted">Keep &quot;Contains headings&quot; enabled if your file has a header row. Headers like <strong>Speciality</strong> or <strong>Speciality (Head)</strong> map automatically. The doctor list shows 50 per page—use pagination to see all records.</p>
+                        <p class="mb-0 mt-2 small text-muted">Keep &quot;Contains headings&quot; enabled if your file has a header row. <strong>Do not delete empty columns</strong> between Speciality and Products (Mobile, Email, Gender, DOB, DOM can be blank but columns must stay). HQ names must match your system exactly (e.g. BALRAMPUR). Station Type: use <strong>HQ</strong> or <strong>headquarter</strong> for HQ doctors.</p>
                     </div>
                 </div>
                 <div class="row py-20">
@@ -66,7 +66,6 @@
                 blockUI: true,
                 buttonSelector: "#import-doctor-form",
                 file: true,
-                data: $('#import-doctor-data-form').serialize(),
                 success: function(response) {
                     if (response.status == 'success') {
                         if (response.view) {
@@ -82,6 +81,12 @@
                 },
                 error: function(response) {
                     console.error('Import error:', response);
+                    var msg = (response.responseJSON && response.responseJSON.message)
+                        ? response.responseJSON.message
+                        : 'Import failed. Check file format and HQ names.';
+                    if (typeof showToast === 'function') {
+                        showToast('error', msg);
+                    }
                 }
             });
         });

@@ -607,17 +607,9 @@ class DoctorController extends AccountBaseController
                 return Reply::error('File not found after upload');
             }
 
-            $importInstance = new DoctorImport;
-            Excel::import($importInstance, $filePath);
-            $excelData = $importInstance->getProcessedData();
-            
-            // Ensure we have data - if empty, try reading directly
-            if (empty($excelData) || !is_array($excelData)) {
-                $importInstance2 = new DoctorImport;
-                Excel::import($importInstance2, $filePath);
-                $excelData = $importInstance2->getProcessedData();
-            }
-            
+            // Preserve empty columns (e.g. blank Mobile–DOM with products in N–P); ToArray collapses indices
+            $excelData = $this->readExcelPreserveColumnIndices($filePath);
+
             if (!is_array($excelData) || empty($excelData)) {
                 Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
                 return Reply::error('No data found in the file');

@@ -318,4 +318,33 @@ trait ImportExcel
         return $batch;
     }
 
+    /**
+     * Read all sheet rows with fixed column indices (empty cells stay in place).
+     * Maatwebsite ToArray collapses sparse rows and misaligns headers when middle columns are blank.
+     */
+    protected function readExcelPreserveColumnIndices(string $filePath): array
+    {
+        $spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($filePath);
+        $worksheet = $spreadsheet->getActiveSheet();
+        $highestRow = (int) $worksheet->getHighestRow();
+
+        if ($highestRow < 1) {
+            return [];
+        }
+
+        $highestColumn = $worksheet->getHighestColumn();
+        $range = 'A1:' . $highestColumn . $highestRow;
+        $raw = $worksheet->rangeToArray($range, null, true, true, false);
+
+        return array_map(function (array $row) {
+            return array_map(function ($cell) {
+                if ($cell === null || $cell === '') {
+                    return '';
+                }
+
+                return is_scalar($cell) ? trim((string) $cell) : trim((string) $cell);
+            }, $row);
+        }, $raw);
+    }
+
 }
