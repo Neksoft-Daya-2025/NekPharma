@@ -40,25 +40,34 @@
             </div>
             <div class="col-md-6">
                 <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Product <span class="text-danger">*</span></label>
-                    <select name="product_id" id="product_id" class="form-control select-picker" data-live-search="true" required>
-                        <option value="">Select Product</option>
+                    <label class="f-14 text-dark-grey mb-12">Products <span class="text-danger">*</span></label>
+                    <select id="product_ids" class="form-control select-picker" data-live-search="true" multiple
+                            data-actions-box="true" data-selected-text-format="count > 2" title="Select Products">
                         @foreach($products as $p)
                             <option value="{{ $p->id }}">{{ $p->name }}</option>
                         @endforeach
                     </select>
+                    <small class="text-muted">Select one or more products to enter product-wise monthly targets.</small>
                 </div>
             </div>
-            <div class="col-md-6">
-                <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Target Amount <span class="text-danger">*</span></label>
-                    <input type="number" step="0.01" min="0" name="target_amount" id="target_amount" class="form-control" required value="0">
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Target Qty <span class="text-danger">*</span></label>
-                    <input type="number" step="0.01" min="0" name="target_qty" id="target_qty" class="form-control" required value="0">
+            <div class="col-md-12">
+                <label class="f-14 text-dark-grey mb-12">Product Targets <span class="text-danger">*</span></label>
+                <div class="table-responsive">
+                    <table class="table table-bordered mb-2" id="product-targets-table">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <th class="text-right" style="width: 180px;">Target Qty</th>
+                                <th class="text-right" style="width: 180px;">Target Amount</th>
+                                <th style="width: 60px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class="empty-product-target-row">
+                                <td colspan="4" class="text-center text-muted">Select products to generate target rows.</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
             <div class="col-md-12">
@@ -79,8 +88,69 @@
 @push('scripts')
 <script>
 $(function() {
+    var $productSelect = $('#product_ids');
+    var $targetTableBody = $('#product-targets-table tbody');
+
+    function productName(productId) {
+        return $productSelect.find('option[value="' + productId + '"]').text();
+    }
+
+    function syncProductTargetRows() {
+        var selectedProductIds = $productSelect.val() || [];
+        var existingValues = {};
+
+        $targetTableBody.find('tr.product-target-row').each(function() {
+            var productId = String($(this).data('product-id'));
+            existingValues[productId] = {
+                qty: $(this).find('.target-qty-input').val(),
+                amount: $(this).find('.target-amount-input').val()
+            };
+        });
+
+        $targetTableBody.empty();
+
+        if (selectedProductIds.length === 0) {
+            $targetTableBody.append('<tr class="empty-product-target-row"><td colspan="4" class="text-center text-muted">Select products to generate target rows.</td></tr>');
+            return;
+        }
+
+        selectedProductIds.forEach(function(productId, index) {
+            var values = existingValues[productId] || { qty: '0', amount: '0' };
+            var row = [
+                '<tr class="product-target-row" data-product-id="' + productId + '">',
+                '<td>',
+                $('<div>').text(productName(productId)).html(),
+                '<input type="hidden" name="targets[' + index + '][product_id]" value="' + productId + '">',
+                '</td>',
+                '<td><input type="number" step="0.01" min="0" name="targets[' + index + '][target_qty]" class="form-control form-control-sm text-right target-qty-input" required value="' + values.qty + '"></td>',
+                '<td><input type="number" step="0.01" min="0" name="targets[' + index + '][target_amount]" class="form-control form-control-sm text-right target-amount-input" required value="' + values.amount + '"></td>',
+                '<td><button type="button" class="btn btn-sm btn-danger remove-product-target" data-product-id="' + productId + '"><i class="fa fa-trash"></i></button></td>',
+                '</tr>'
+            ].join('');
+            $targetTableBody.append(row);
+        });
+    }
+
+    $productSelect.on('changed.bs.select change', syncProductTargetRows);
+
+    $targetTableBody.on('click', '.remove-product-target', function() {
+        var productId = String($(this).data('product-id'));
+        var selectedProductIds = ($productSelect.val() || []).filter(function(id) {
+            return String(id) !== productId;
+        });
+        $productSelect.selectpicker('val', selectedProductIds);
+        syncProductTargetRows();
+    });
+
     $('#save-sales-plan-form').on('click', function() {
         var $form = $('#saveSalesPlanForm');
+        syncProductTargetRows();
+
+        if ($targetTableBody.find('tr.product-target-row').length === 0) {
+            alert('Please select at least one product and enter target values.');
+            return;
+        }
+
         if ($form[0].checkValidity && !$form[0].checkValidity()) {
             $form[0].reportValidity();
             return;

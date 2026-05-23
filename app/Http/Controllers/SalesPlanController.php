@@ -12,6 +12,7 @@ use App\Models\SalesPlanTarget;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use App\Traits\AccessibleHeadquarters;
 use App\Support\EnterpriseAudit;
 
@@ -248,43 +249,58 @@ class SalesPlanController extends AccountBaseController
             'period_month' => 'required|integer|between:1,12',
             'period_year' => 'required|integer|min:2020|max:2100',
             'headquarter_id' => 'required|exists:pharma_headquarters,id',
-            'product_id' => 'required|exists:products,id',
-            'target_amount' => 'required|numeric|min:0',
-            'target_qty' => 'required|numeric|min:0',
+            'targets' => 'required|array|min:1',
+            'targets.*.product_id' => 'required|exists:products,id',
+            'targets.*.target_amount' => 'required|numeric|min:0',
+            'targets.*.target_qty' => 'required|numeric|min:0',
             'notes' => 'nullable|string|max:1000',
         ]);
 
         $headquarterId = (int) $request->headquarter_id;
-        $productId = (int) $request->product_id;
-        if ($this->duplicateTargetExists((int) $request->period_month, (int) $request->period_year, $headquarterId, $productId)) {
-            return Reply::error('Target already exists for this month, headquarter, and product.');
+        $periodMonth = (int) $request->period_month;
+        $periodYear = (int) $request->period_year;
+        $productIds = [];
+
+        foreach ($request->targets as $targetRow) {
+            $productId = (int) $targetRow['product_id'];
+            if (in_array($productId, $productIds, true)) {
+                return Reply::error('Duplicate products are selected in the target list.');
+            }
+            if ($this->duplicateTargetExists($periodMonth, $periodYear, $headquarterId, $productId)) {
+                return Reply::error('Target already exists for one or more selected products in this month and headquarter.');
+            }
+            $productIds[] = $productId;
         }
 
-        $target = SalesPlanTarget::create([
-            'company_id' => company()->id,
-            'period_month' => (int) $request->period_month,
-            'period_year' => (int) $request->period_year,
-            'plan_level' => 'headquarter',
-            'headquarter_id' => $headquarterId,
-            'area_id' => null,
-            'region_id' => null,
-            'target_amount' => $request->target_amount,
-            'target_qty' => $request->target_qty,
-            'product_id' => $productId,
-            'notes' => $request->notes,
-        ]);
+        DB::transaction(function () use ($request, $headquarterId, $periodMonth, $periodYear) {
+            foreach ($request->targets as $targetRow) {
+                $target = SalesPlanTarget::create([
+                    'company_id' => company()->id,
+                    'period_month' => $periodMonth,
+                    'period_year' => $periodYear,
+                    'plan_level' => 'headquarter',
+                    'headquarter_id' => $headquarterId,
+                    'area_id' => null,
+                    'region_id' => null,
+                    'target_amount' => $targetRow['target_amount'],
+                    'target_qty' => $targetRow['target_qty'],
+                    'product_id' => (int) $targetRow['product_id'],
+                    'notes' => $request->notes,
+                ]);
 
-        EnterpriseAudit::record('sales_plan_target.created', $target, [], $target->only([
-            'period_month',
-            'period_year',
-            'plan_level',
-            'headquarter_id',
-            'area_id',
-            'region_id',
-            'target_amount',
-            'target_qty',
-            'product_id',
-        ]));
+                EnterpriseAudit::record('sales_plan_target.created', $target, [], $target->only([
+                    'period_month',
+                    'period_year',
+                    'plan_level',
+                    'headquarter_id',
+                    'area_id',
+                    'region_id',
+                    'target_amount',
+                    'target_qty',
+                    'product_id',
+                ]));
+            }
+        });
 
         if (request()->ajax()) {
             return Reply::redirect(route('sales-plan.index'), __('messages.recordSaved'));
