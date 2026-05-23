@@ -16,7 +16,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
 
 @section('content')
     <div class="d-flex justify-content-end mb-3">
-        <x-forms.link-secondary :link="route('stockists.export', request()->query())" class="mr-3" icon="file-export">
+        <x-forms.link-secondary :link="route('stockists.export', request()->query())" class="mr-3" id="stockists-export-link" icon="file-export">
             @lang('app.exportExcel') Stockists
         </x-forms.link-secondary>
     </div>
@@ -162,7 +162,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             @if($stockists->isNotEmpty())
                 <div class="d-flex justify-content-between align-items-center mt-3 px-3 pb-3">
                     <div class="text-muted">
-                        {{ $stockists->count() }} stockist(s) total
+                        <span id="stockists-visible-count">{{ $stockists->count() }}</span> stockist(s) total
                     </div>
                 </div>
             @endif
@@ -178,9 +178,11 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
         const area = ($('#stockists-filter-area').val() || '').toLowerCase().trim();
         const gender = ($('#stockists-filter-gender').val() || '').toLowerCase().trim();
 
+        let visibleCount = 0;
+
         $('#stockists-table tbody tr').each(function() {
             const $row = $(this);
-            if ($row.find('td[colspan]').length) {
+            if ($row.find('td[colspan]').length || $row.attr('data-deleted') === '1') {
                 return;
             }
             const text = $row.text().toLowerCase();
@@ -191,8 +193,33 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             const matchArea = !area || rowArea === area;
             const rowGender = String($row.attr('data-gender') || '');
             const matchGender = !gender || rowGender === gender;
-            $row.toggle(matchSearch && matchHq && matchArea && matchGender);
+            const isVisible = matchSearch && matchHq && matchArea && matchGender;
+            $row.toggle(isVisible);
+
+            if (isVisible) {
+                visibleCount++;
+            }
         });
+
+        $('#stockists-visible-count').text(visibleCount);
+        updateStockistsExportLink();
+    }
+
+    function updateStockistsExportLink() {
+        const $exportLink = $('#stockists-export-link');
+        const hq = $('#stockists-filter-headquarter').val() || 'all';
+
+        if (!$exportLink.length) {
+            return;
+        }
+
+        const url = new URL(@json(route('stockists.export')), window.location.origin);
+
+        if (hq !== 'all') {
+            url.searchParams.set('headquarter_id', hq);
+        }
+
+        $exportLink.attr('href', url.toString());
     }
 
     $('#stockists-inline-search').on('keyup input', function() {
@@ -230,7 +257,9 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
                     url: "{{ route('stockists.destroy', ':id') }}".replace(':id', id),
                     data: {'_token': '{{ csrf_token() }}', '_method': 'DELETE'},
                     success: function(response) {
-                        $('#row-' + id).fadeOut();
+                        $('#row-' + id).attr('data-deleted', '1').fadeOut(function() {
+                            applyStockistsTableFilters();
+                        });
                     }
                 });
             }

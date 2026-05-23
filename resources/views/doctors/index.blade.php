@@ -17,7 +17,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
 
 @section('content')
     <div class="d-flex justify-content-end mb-3">
-        <x-forms.link-secondary :link="route('doctors.export', request()->query())" class="mr-3" icon="file-export">
+        <x-forms.link-secondary :link="route('doctors.export', request()->query())" class="mr-3" id="doctors-export-link" icon="file-export">
             @lang('app.exportExcel') Doctors
         </x-forms.link-secondary>
     </div>
@@ -275,7 +275,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
                         },
                         success: function(response) {
                             if (response.status === "success") {
-                                $('#row-' + id).fadeOut(function() {
+                                $('#row-' + id).attr('data-deleted', '1').fadeOut(function() {
                                     applyDoctorsTableFilters();
                                 });
                             }
@@ -296,7 +296,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
 
             $('#doctors-table tbody tr').each(function() {
                 const $row = $(this);
-                if ($row.find('td[colspan]').length) {
+                if ($row.find('td[colspan]').length || $row.attr('data-deleted') === '1') {
                     return;
                 }
                 const text = $row.text().toLowerCase();
@@ -316,6 +316,24 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             });
 
             $('#doctors-visible-count').text(visibleCount);
+            updateDoctorsExportLink();
+        }
+
+        function updateDoctorsExportLink() {
+            const $exportLink = $('#doctors-export-link');
+            const hq = $('#doctors-filter-headquarter').val() || 'all';
+
+            if (!$exportLink.length) {
+                return;
+            }
+
+            const url = new URL(@json(route('doctors.export')), window.location.origin);
+
+            if (hq !== 'all') {
+                url.searchParams.set('headquarter_id', hq);
+            }
+
+            $exportLink.attr('href', url.toString());
         }
 
         $('#doctors-inline-search').on('keyup input', function() {

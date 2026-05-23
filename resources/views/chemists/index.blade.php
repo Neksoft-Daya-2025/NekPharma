@@ -16,7 +16,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
 
 @section('content')
     <div class="d-flex justify-content-end mb-3">
-        <x-forms.link-secondary :link="route('chemists.export', request()->query())" class="mr-3" icon="file-export">
+        <x-forms.link-secondary :link="route('chemists.export', request()->query())" class="mr-3" id="chemists-export-link" icon="file-export">
             @lang('app.exportExcel') Chemists
         </x-forms.link-secondary>
     </div>
@@ -151,7 +151,7 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             @if($chemists->isNotEmpty())
                 <div class="d-flex justify-content-between align-items-center mt-3 px-3 pb-3">
                     <div class="text-muted">
-                        {{ $chemists->count() }} chemist(s) total
+                        <span id="chemists-visible-count">{{ $chemists->count() }}</span> chemist(s) total
                     </div>
                 </div>
             @endif
@@ -167,9 +167,11 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             const area = ($('#chemists-filter-area').val() || '').toLowerCase().trim();
             const gender = ($('#chemists-filter-gender').val() || '').toLowerCase().trim();
 
+            let visibleCount = 0;
+
             $('#chemists-table tbody tr').each(function() {
                 const $row = $(this);
-                if ($row.find('td[colspan]').length) {
+                if ($row.find('td[colspan]').length || $row.attr('data-deleted') === '1') {
                     return;
                 }
                 const text = $row.text().toLowerCase();
@@ -180,8 +182,33 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
                 const matchArea = !area || rowArea === area;
                 const rowGender = String($row.attr('data-gender') || '');
                 const matchGender = !gender || rowGender === gender;
-                $row.toggle(matchSearch && matchHq && matchArea && matchGender);
+                const isVisible = matchSearch && matchHq && matchArea && matchGender;
+                $row.toggle(isVisible);
+
+                if (isVisible) {
+                    visibleCount++;
+                }
             });
+
+            $('#chemists-visible-count').text(visibleCount);
+            updateChemistsExportLink();
+        }
+
+        function updateChemistsExportLink() {
+            const $exportLink = $('#chemists-export-link');
+            const hq = $('#chemists-filter-headquarter').val() || 'all';
+
+            if (!$exportLink.length) {
+                return;
+            }
+
+            const url = new URL(@json(route('chemists.export')), window.location.origin);
+
+            if (hq !== 'all') {
+                url.searchParams.set('headquarter_id', hq);
+            }
+
+            $exportLink.attr('href', url.toString());
         }
 
         $('#chemists-inline-search').on('keyup input', function() {
@@ -229,7 +256,9 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
                         data: {'_token': '{{ csrf_token() }}', '_method': 'DELETE'},
                         success: function(response) {
                             if (response.status == "success") {
-                                $('#row-' + id).fadeOut();
+                                $('#row-' + id).attr('data-deleted', '1').fadeOut(function() {
+                                    applyChemistsTableFilters();
+                                });
                             }
                         }
                     });

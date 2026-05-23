@@ -231,6 +231,20 @@ class StockistController extends AccountBaseController
         $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
         $accessibleAreaIds = $this->accessibleAreaIds();
         $accessibleStationIds = $this->accessibleStations();
+        $requestedHqId = $request->input('headquarter_id');
+
+        if (! user()->hasAdminLikeAccess()
+            && $accessibleHeadquarterIds === null
+            && (! $requestedHqId || $requestedHqId === 'all')
+            && $this->shouldRestrictNullHeadquarterScopeToDirectHq()) {
+            $employeeHeadquarterIds = $this->employeeAssignedHeadquarterIds(user());
+
+            if (! empty($employeeHeadquarterIds)) {
+                $accessibleHeadquarterIds = $employeeHeadquarterIds;
+                $accessibleAreaIds = [];
+                $accessibleStationIds = $this->stationIdsForHeadquarters($employeeHeadquarterIds);
+            }
+        }
 
         if ($accessibleHeadquarterIds !== null && ! user()->hasAdminLikeAccess()) {
             $this->applyCustomerGeoScope(
@@ -241,7 +255,6 @@ class StockistController extends AccountBaseController
             );
         }
 
-        $requestedHqId = $request->input('headquarter_id');
         if ($requestedHqId && $requestedHqId !== 'all') {
             $this->assertHeadquarterAccessible((int) $requestedHqId);
             $hq = PharmaHeadquarter::with(['exstations', 'outstations'])->find($requestedHqId);
@@ -487,10 +500,84 @@ class StockistController extends AccountBaseController
         $accessibleIds = $this->accessibleHeadquarterIds();
 
         if ($accessibleIds === null) {
-            return;
+            if (user()->hasAdminLikeAccess() || ! $this->shouldRestrictNullHeadquarterScopeToDirectHq()) {
+                return;
+            }
+
+            $employeeHeadquarterIds = $this->employeeAssignedHeadquarterIds(user());
+
+            if (empty($employeeHeadquarterIds)) {
+                return;
+            }
+
+            $accessibleIds = $employeeHeadquarterIds;
         }
 
         abort_403(empty($accessibleIds) || !in_array($headquarterId, $accessibleIds, true), __('messages.permissionDenied'));
+    }
+
+    private function employeeAssignedHeadquarterIds($user): array
+    {
+        $employee = $user->employeeDetail ?? $user->employeeDetails;
+
+        if (! $employee) {
+            return [];
+        }
+
+        return collect([
+            $employee->headquarter_id ?? null,
+            $employee->pharma_headquarter_id ?? null,
+        ])->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->toArray();
+    }
+
+    private function stationIdsForHeadquarters(array $headquarterIds): array
+    {
+        if (empty($headquarterIds)) {
+            return ['exstation' => [], 'outstation' => []];
+        }
+
+        $assignments = PharmaHeadquarterAssign::whereIn('headquarter_id', $headquarterIds)
+            ->where('company_id', company()->id)
+            ->get();
+
+        return [
+            'exstation' => $assignments->where('station', 'exstation')->pluck('station_id')->map(fn ($id) => (int) $id)->unique()->values()->toArray(),
+            'outstation' => $assignments->where('station', 'outstation')->pluck('station_id')->map(fn ($id) => (int) $id)->unique()->values()->toArray(),
+        ];
+    }
+
+    private function allowedHeadquarterIdsForImport(): ?array
+    {
+        $allowedHqIds = $this->accessibleHeadquarterIds();
+
+        if (! user()->hasAdminLikeAccess() && $allowedHqIds === null && $this->shouldRestrictNullHeadquarterScopeToDirectHq()) {
+            $employeeHeadquarterIds = $this->employeeAssignedHeadquarterIds(user());
+
+            if (! empty($employeeHeadquarterIds)) {
+                return $employeeHeadquarterIds;
+            }
+        }
+
+        return $allowedHqIds;
+    }
+
+    private function shouldRestrictNullHeadquarterScopeToDirectHq(): bool
+    {
+        if (user()->hasRole('hr') || user()->hasRole('pmt') || user()->hasRole('sales-manager')) {
+            return false;
+        }
+
+        $employee = user()->employeeDetail ?? user()->employeeDetails;
+
+        if ($employee && $employee->designation && \App\Helpers\PharmaDesignationHelper::isMISExecutive($employee->designation)) {
+            return false;
+        }
+
+        return ! empty($this->employeeAssignedHeadquarterIds(user()));
     }
 
     /**
@@ -763,7 +850,7 @@ class StockistController extends AccountBaseController
                 }
             }
 
-            $allowedHqIds = $this->accessibleHeadquarterIds();
+            $allowedHqIds = $this->allowedHeadquarterIdsForImport();
             $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, StockistImport::class, ImportStockistJob::class, $allowedHqIds);
 
             if (!$batch) {
