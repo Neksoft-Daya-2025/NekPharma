@@ -77,6 +77,10 @@
                     <button type="submit" class="btn btn-primary btn-sm">
                         <i class="fa fa-filter"></i> Apply Filter
                     </button>
+
+                    <a href="{{ route('dcr-management.export', request()->query()) }}" class="btn btn-secondary btn-sm">
+                        <i class="fa fa-file-export"></i> Export
+                    </a>
                     
                     @if($selectedHQ || !empty($selectedArea) || !empty($selectedRegion) || $fromDate || $toDate)
                         <a href="{{ route('dcr-management.index') }}" class="btn btn-secondary btn-sm">
@@ -348,4 +352,3 @@ $('#hq-select').on('shown.bs.select', function () {
 </script>
 
 @endpush
-

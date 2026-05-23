@@ -12,11 +12,13 @@ use App\Models\PharmaExstation;
 use App\Models\PharmaOutstation;
 use App\Models\User;
 use App\Models\PharmaArea;
+use App\Exports\TourPlanExport;
 use App\Notifications\TourPlanApproved;
 use App\Notifications\TourPlanSubmitted;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
 use App\Traits\AccessibleHeadquarters;
+use Maatwebsite\Excel\Facades\Excel;
 
 class TourController extends AccountBaseController
 {
@@ -299,6 +301,93 @@ class TourController extends AccountBaseController
             ->get();
 
         return view('tours.index', $this->data);
+    }
+
+    public function export(Request $request)
+    {
+        $this->viewPermission = user()->permission('view_tours');
+        abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
+
+        $tours = $this->toursForExport($request);
+
+        return Excel::download(new TourPlanExport($tours), 'tour-plan-' . now()->format('Y-m-d') . '.xlsx');
+    }
+
+    private function toursForExport(Request $request)
+    {
+        $selectedEmployeeId = $request->get('employee_id');
+        $month = $request->get('month');
+
+        $query = Tour::with([
+            'user.employeeDetail.headquarter',
+            'user.employeeDetails.headquarter',
+            'user.employeeDetail.designation',
+            'user.employeeDetails.designation',
+            'headquarter',
+            'approvedBy',
+            'submittedTo'
+        ]);
+
+        $accessibleHqIdsForFilter = $this->accessibleHeadquarterIds();
+
+        if ($this->viewPermission == 'all') {
+            $query->where('company_id', company()->id);
+            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+            if (!empty($viewableIds)) {
+                $query->whereIn('user_id', $viewableIds);
+            }
+            if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
+                $query->where('user_id', $selectedEmployeeId);
+            }
+            if (!user()->hasAdminLikeAccess() && $accessibleHqIdsForFilter !== null) {
+                if (!empty($accessibleHqIdsForFilter)) {
+                    $query->whereIn('headquarter_id', $accessibleHqIdsForFilter);
+                } else {
+                    $query->whereRaw('1 = 0');
+                }
+            }
+        } else {
+            $reportingEmployeeIds = \App\Models\EmployeeDetails::where('reporting_to', user()->id)
+                ->where('company_id', company()->id)
+                ->pluck('user_id')
+                ->toArray();
+            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+            $reportingEmployeeIdsInScope = array_values(array_intersect($reportingEmployeeIds, $viewableIds));
+
+            $query->where('company_id', company()->id)
+                ->where(function ($q) use ($reportingEmployeeIdsInScope, $accessibleHqIdsForFilter) {
+                    $q->where('submitted_to', user()->id);
+
+                    if (!empty($reportingEmployeeIdsInScope)) {
+                        $q->orWhere(function ($team) use ($reportingEmployeeIdsInScope, $accessibleHqIdsForFilter) {
+                            $team->whereIn('user_id', $reportingEmployeeIdsInScope);
+                            if ($accessibleHqIdsForFilter !== null) {
+                                if (!empty($accessibleHqIdsForFilter)) {
+                                    $team->whereIn('headquarter_id', $accessibleHqIdsForFilter);
+                                } else {
+                                    $team->whereRaw('1 = 0');
+                                }
+                            }
+                        });
+                    }
+                });
+
+            if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
+                $query->where('user_id', $selectedEmployeeId);
+            }
+        }
+
+        if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
+            [$year, $monthNumber] = explode('-', $month);
+            $query->whereYear('date', (int) $year)
+                ->whereMonth('date', (int) $monthNumber);
+        }
+
+        if ($request->get('headquarter_id')) {
+            $query->where('headquarter_id', $request->get('headquarter_id'));
+        }
+
+        return $query->orderBy('date')->get();
     }
 
     public function create(Request $request)

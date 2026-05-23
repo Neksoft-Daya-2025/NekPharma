@@ -1155,6 +1155,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
         Route::get('/master-area-map', [PharmaAreaController::class, 'masterAreaMap'])->name('master-area-map');
     });
 
+    Route::get('tours/export', [TourController::class, 'export'])->name('tours.export');
     Route::resource('tours', TourController::class);
     Route::get('tours-status', [TourController::class, 'status'])->name('tours.status');
     Route::post('tours/{id}/approve', [TourController::class, 'approve'])->name('tours.approve');
@@ -1164,6 +1165,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('tours-bulk-delete', [TourController::class, 'bulkDelete'])->name('tours.bulk-delete');
     Route::post('tours-unlock-month', [TourController::class, 'unlockMonth'])->name('tours.unlock-month');
 
+    Route::get('dcr-management/export', [DcrReportController::class, 'export'])->name('dcr-management.export');
     Route::get('dcr-management/call-average', [DcrReportController::class, 'callAverage'])->name('dcr-management.call-average');
     Route::get('dcr-management/area-performance', [DcrReportController::class, 'areaPerformance'])->name('dcr-management.area-performance');
     Route::resource('dcr-management', DcrReportController::class);

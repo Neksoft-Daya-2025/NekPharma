@@ -24,6 +24,7 @@ use App\Models\DcrTourSyncLog;
 use App\Models\Tour;
 use App\Models\TourMonthLock;
 use App\Models\PharmaHeadquarterAssign;
+use App\Exports\DcrManagementExport;
 use App\Notifications\DcrSubmitted;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
@@ -32,6 +33,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Traits\AccessibleHeadquarters;
 use App\Support\EnterpriseAudit;
+use Maatwebsite\Excel\Facades\Excel;
 
 class DcrReportController extends AccountBaseController
 {
@@ -395,6 +397,128 @@ class DcrReportController extends AccountBaseController
         }
 
         return view('dcr-reports.index', $this->data);
+    }
+
+    public function export(Request $request)
+    {
+        $this->viewPermission = user()->permission('view_dcr_reports');
+        abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
+
+        $reports = $this->dcrReportsForExport($request);
+
+        return Excel::download(new DcrManagementExport($reports), 'dcr-reports-' . now()->format('Y-m-d') . '.xlsx');
+    }
+
+    private function dcrReportsForExport(Request $request)
+    {
+        $selectedEmployeeId = $request->get('employee_id');
+
+        $query = DcrReport::with([
+            'user.employeeDetail.designation',
+            'user.employeeDetails.designation',
+            'user.employeeDetail.headquarter.area',
+            'user.employeeDetail.headquarter.area.region',
+            'user.employeeDetail.headquarter',
+            'user.employeeDetails.headquarter',
+            'submittedTo.employeeDetail.designation',
+            'submittedTo.employeeDetails.designation',
+            'approvedBy',
+            'doctor',
+            'chemist',
+            'stockist',
+            'doctorVisits.doctor',
+            'chemistVisits.chemist',
+            'stockistVisits.stockist'
+        ]);
+
+        $accessibleHqIds = $this->accessibleHeadquarterIds();
+
+        if ($this->viewPermission == 'all') {
+            $query->where('company_id', company()->id);
+            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+            if (!empty($viewableIds)) {
+                $query->whereIn('user_id', $viewableIds);
+            }
+            if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
+                $query->where('user_id', $selectedEmployeeId);
+            }
+            if (!user()->hasAdminLikeAccess() && $accessibleHqIds !== null) {
+                if (!empty($accessibleHqIds)) {
+                    $query->whereHas('user.employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds));
+                } else {
+                    $query->whereRaw('1 = 0');
+                }
+            }
+        } else {
+            $query->where(function ($q) {
+                $q->where('user_id', user()->id)
+                    ->orWhere('submitted_to', user()->id);
+            });
+
+            $reportingEmployeeIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+            $reportingEmployeeIds = array_values(array_intersect($reportingEmployeeIds, $viewableIds));
+
+            if (!empty($reportingEmployeeIds)) {
+                $query->orWhere(fn ($q) => $q->whereIn('user_id', $reportingEmployeeIds));
+            }
+
+            if ($accessibleHqIds !== null && !empty($accessibleHqIds)) {
+                $query->whereHas('user.employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds));
+            } elseif ($accessibleHqIds !== null && empty($accessibleHqIds)) {
+                $query->whereRaw('1 = 0');
+            }
+        }
+
+        if ($request->get('from_date')) {
+            $query->whereDate('report_date', '>=', $request->get('from_date'));
+        }
+
+        if ($request->get('to_date')) {
+            $query->whereDate('report_date', '<=', $request->get('to_date'));
+        }
+
+        $reports = $query->orderBy('report_date', 'desc')->get();
+        $headquarters = $this->headquartersForDcrExport();
+
+        if ($request->get('hq')) {
+            $selectedHQ = $request->get('hq');
+            $reports = $reports->filter(function ($report) use ($selectedHQ, $headquarters) {
+                $hq = $headquarters->firstWhere('id', (int) $selectedHQ);
+                return $hq && $report->headquarter === $hq->name;
+            });
+        }
+
+        if ($request->get('area')) {
+            $selectedArea = (int) $request->get('area');
+            $reports = $reports->filter(fn ($report) => (int) optional(optional(optional($report->user)->employeeDetail)->headquarter)->area_id === $selectedArea);
+        }
+
+        if ($request->get('region')) {
+            $selectedRegion = (int) $request->get('region');
+            $reports = $reports->filter(fn ($report) => (int) optional(optional(optional(optional($report->user)->employeeDetail)->headquarter)->area)->region_id === $selectedRegion);
+        }
+
+        return $reports->values();
+    }
+
+    private function headquartersForDcrExport()
+    {
+        $query = PharmaHeadquarter::with(['exstations', 'outstations', 'area'])
+            ->where('company_id', company()->id);
+
+        if ($this->viewPermission != 'all') {
+            $accessibleHqIds = $this->accessibleHeadquarterIds(user());
+            if ($accessibleHqIds === null) {
+                return $query->orderBy('name')->get();
+            }
+            if (empty($accessibleHqIds)) {
+                return collect();
+            }
+            $query->whereIn('id', $accessibleHqIds);
+        }
+
+        return $query->orderBy('name')->get();
     }
 
     /**

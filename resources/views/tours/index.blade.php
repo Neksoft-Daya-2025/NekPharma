@@ -277,6 +277,9 @@
                             title="Clear All" aria-label="Clear All">
                             <i class="fa fa-eraser" aria-hidden="true"></i>
                         </button>
+                        <a href="{{ route('tours.export', request()->query()) }}" class="btn btn-secondary btn-sm mr-2" id="tour-export-link">
+                            <i class="fa fa-file-export"></i> Export
+                        </a>
                     </div>
                     <small class="form-text text-muted invisible mb-0" aria-hidden="true">&nbsp;</small>
                 </div>
@@ -422,6 +425,33 @@ if (employees.length > 0) {
     console.log('First employee sample:', employees[0]);
 }
 console.log('=============================');
+
+function updateTourExportLink() {
+    const $exportLink = $('#tour-export-link');
+    if (!$exportLink.length) {
+        return;
+    }
+
+    const url = new URL(@json(route('tours.export')), window.location.origin);
+    const employeeId = $('#employee-selector').val() || selectedEmployeeId;
+    const month = $('#month-selector').val();
+    const $hqControl = $('#headquarter-selector');
+    const hqId = $hqControl.is('select') ? $hqControl.val() : null;
+
+    if (employeeId && employeeId !== 'all') {
+        url.searchParams.set('employee_id', employeeId);
+    }
+
+    if (month) {
+        url.searchParams.set('month', month);
+    }
+
+    if (hqId) {
+        url.searchParams.set('headquarter_id', hqId);
+    }
+
+    $exportLink.attr('href', url.toString());
+}
 
 // Store tours data by date
 let toursMap = {};
@@ -789,12 +819,14 @@ $('#employee-selector').on('change', function() {
 
 // On month change - auto reload
 $('#month-selector').on('change', function() {
+    updateTourExportLink();
     loadToursForMonth($(this).val());
 });
 
 // For admin: HQ selector change
 $('#headquarter-selector').on('change', function() {
     const hqId = $(this).val();
+    updateTourExportLink();
     if (hqId) {
         // Reload stations for selected HQ
         const hq = headquarters.find(h => h.id == hqId);
@@ -1109,6 +1141,7 @@ $(document).ready(function() {
     }
 
     // Auto-load tours immediately
+    updateTourExportLink();
     loadToursForMonth(currentMonth);
 });
 </script>
