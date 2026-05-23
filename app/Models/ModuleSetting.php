@@ -72,6 +72,7 @@ class ModuleSetting extends BaseModel
             'pharma_areas',
             'tours',
             'dcr_reports',
+            'stock_statements',
             'cfa',
         ];
 

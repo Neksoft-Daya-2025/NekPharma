@@ -42,9 +42,11 @@
                     </div>
                 </form>
             </div>
-            <div class="mb-2 mb-lg-0 mb-md-0">
-                <x-forms.link-primary :link="route('stock-statements.create')" icon="plus">@lang('app.add') @lang('app.salesStockStatement')</x-forms.link-primary>
-            </div>
+            @if(in_array($addPermission ?? 'none', ['all', 'added'], true))
+                <div class="mb-2 mb-lg-0 mb-md-0">
+                    <x-forms.link-primary :link="route('stock-statements.create')" icon="plus">@lang('app.add') @lang('app.salesStockStatement')</x-forms.link-primary>
+                </div>
+            @endif
         </div>
 
         @if(isset($missingStockistsForPeriod) && $missingStockistsForPeriod->isNotEmpty() && isset($mandatoryPeriodMonth) && isset($mandatoryPeriodYear))
@@ -84,8 +86,16 @@
                                 <td>{{ $st->submitted_at ? $st->submitted_at->format('d M Y H:i') : '-' }}</td>
                                 <td class="text-right">
                                     <a href="{{ route('stock-statements.show', $st->id) }}" class="btn btn-sm btn-secondary">@lang('app.view')</a>
-                                    @if($st->status === 'draft' && $st->user_id == user()->id)
+                                    @php
+                                        $canEditStatement = user()->hasAdminLikeAccess()
+                                            || ($st->status === 'draft' && (($editPermission ?? 'none') === 'all' || ($st->user_id == user()->id && in_array($editPermission ?? 'none', ['added', 'owned', 'both'], true))));
+                                        $canDeleteStatement = user()->hasAdminLikeAccess()
+                                            || ($st->status === 'draft' && (($deletePermission ?? 'none') === 'all' || ($st->user_id == user()->id && in_array($deletePermission ?? 'none', ['added', 'owned', 'both'], true))));
+                                    @endphp
+                                    @if($canEditStatement)
                                         <a href="{{ route('stock-statements.edit', $st->id) }}" class="btn btn-sm btn-primary">@lang('app.edit')</a>
+                                    @endif
+                                    @if($canDeleteStatement)
                                         <button type="button" class="btn btn-sm btn-danger delete-statement" data-id="{{ $st->id }}">@lang('app.delete')</button>
                                     @endif
                                 </td>

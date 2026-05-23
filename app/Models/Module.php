@@ -1892,6 +1892,16 @@ class Module extends BaseModel
             ]
         ],
         [
+            'module_name' => 'stock_statements',
+            'description' => 'Sales stock statements for field force and CFA stockists',
+            'permissions' => [
+                ['allowed_permissions' => Permission::ALL_NONE, 'is_custom' => 0, 'name' => 'add_stock_statements'],
+                ['allowed_permissions' => Permission::ALL_4_ADDED_1_OWNED_2_BOTH_3_NONE_5, 'is_custom' => 0, 'name' => 'view_stock_statements'],
+                ['allowed_permissions' => Permission::ALL_4_ADDED_1_OWNED_2_BOTH_3_NONE_5, 'is_custom' => 0, 'name' => 'edit_stock_statements'],
+                ['allowed_permissions' => Permission::ALL_4_ADDED_1_OWNED_2_BOTH_3_NONE_5, 'is_custom' => 0, 'name' => 'delete_stock_statements'],
+            ]
+        ],
+        [
             'module_name' => 'cfa',
             'description' => 'CFA (Carrying and Forwarding Agent) Management - Stockists, Distributor Stocks, and Invoices',
             'permissions' => [

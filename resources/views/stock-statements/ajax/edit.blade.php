@@ -58,7 +58,7 @@
                     </tbody>
                 </table>
             </div>
-            <p class="text-muted small mb-0">Closing is computed as Opening + Primary + Secondary. Tick "Override" to enter Closing manually.</p>
+            <p class="text-muted small mb-0">Closing is computed as Opening + Primary - Secondary. Tick "Override" to enter Closing manually.</p>
         </div>
 
         <div class="row px-lg-4 px-md-4 px-3 py-3">
@@ -143,7 +143,7 @@ $(function() {
         var open = getNumericVal($tr.find('.opening-qty-input'));
         var primary = getNumericVal($tr.find('.primary-qty-input'));
         var secondary = getNumericVal($tr.find('.secondary-qty-input'));
-        var closing = open + primary + secondary;
+        var closing = open + primary - secondary;
         $tr.find('.closing-qty-display').text(closing.toFixed(2));
     }
 
@@ -191,7 +191,7 @@ $(function() {
         bindRowEvents($(this));
     });
 
-    $('#updateStockStatementForm').on('submit', function(e) {
+    function prepareStatementRows() {
         $tbody.find('tr.statement-line-row').each(function() {
             var $tr = $(this);
             var productId = $tr.find('input[type="hidden"]').val() || $tr.find('select.product-select').val();
@@ -201,8 +201,41 @@ $(function() {
         });
         reindexRows();
         if ($tbody.find('tr.statement-line-row').length === 0) {
-            e.preventDefault();
             alert('Please add at least one statement line with a product selected.');
+            return false;
+        }
+
+        return true;
+    }
+
+    $('#update-statement-form').on('click', function() {
+        var $form = $('#updateStockStatementForm');
+        if (!prepareStatementRows()) {
+            return;
+        }
+        if ($form[0].checkValidity && !$form[0].checkValidity()) {
+            $form[0].reportValidity();
+            return;
+        }
+
+        $.easyAjax({
+            url: $form.attr('action'),
+            container: '#updateStockStatementForm',
+            type: 'POST',
+            disableButton: true,
+            buttonSelector: '#update-statement-form',
+            data: $form.serialize(),
+            success: function(response) {
+                if (response.status === 'success' && response.action === 'redirect' && response.url) {
+                    window.location.href = response.url;
+                }
+            }
+        });
+    });
+
+    $('#updateStockStatementForm').on('submit', function(e) {
+        if (!prepareStatementRows()) {
+            e.preventDefault();
             return false;
         }
     });

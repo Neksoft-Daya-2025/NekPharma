@@ -6,7 +6,7 @@
             <div>
                 <a href="{{ route('stock-statements.index') }}" class="btn btn-secondary btn-sm">@lang('app.back')</a>
             </div>
-            @if($statement->status === 'draft' && $statement->user_id == user()->id)
+            @if($canEditStatement ?? false)
                 <div>
                     <a href="{{ route('stock-statements.edit', $statement->id) }}" class="btn btn-primary btn-sm">@lang('app.edit')</a>
                 </div>

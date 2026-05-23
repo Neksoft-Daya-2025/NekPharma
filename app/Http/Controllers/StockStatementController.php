@@ -29,9 +29,51 @@ class StockStatementController extends AccountBaseController
         parent::__construct();
         $this->pageTitle = __('app.salesStockStatement');
         $this->middleware(function ($request, $next) {
-            abort_403(!in_array('dcr_reports', $this->user->modules));
+            abort_403(!in_array('stock_statements', $this->user->modules) && !in_array('dcr_reports', $this->user->modules));
             return $next($request);
         });
+    }
+
+    private function stockStatementPermission(string $action): string|bool
+    {
+        $permission = user()->permission($action . '_stock_statements');
+
+        return $permission ?: user()->permission($action . '_dcr_reports');
+    }
+
+    private function canAccessStatement(StockStatement $statement, string $action): bool
+    {
+        if (user()->hasAdminLikeAccess()) {
+            return true;
+        }
+
+        $permission = $this->stockStatementPermission($action);
+        if (! in_array($permission, ['all', 'added', 'owned', 'both'], true)) {
+            return false;
+        }
+
+        if ($permission !== 'all' && (int) $statement->user_id !== (int) user()->id) {
+            return false;
+        }
+
+        $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+        if (! in_array((int) $statement->user_id, array_map('intval', $viewableIds), true)) {
+            return false;
+        }
+
+        $stockistIds = $this->assignedCfaStockistsQuery()->pluck('id')->map(fn ($id) => (int) $id)->toArray();
+
+        return in_array((int) $statement->cfa_stockist_id, $stockistIds, true)
+            || (int) $statement->user_id === (int) user()->id;
+    }
+
+    private function canModifyStatement(StockStatement $statement, string $action): bool
+    {
+        if ($statement->status !== 'draft' && ! user()->hasAdminLikeAccess()) {
+            return false;
+        }
+
+        return $this->canAccessStatement($statement, $action);
     }
 
     /**
@@ -66,22 +108,29 @@ class StockStatementController extends AccountBaseController
      */
     public function index(Request $request)
     {
+        $this->viewPermission = $this->stockStatementPermission('view');
+        abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both'], true));
+
         $query = StockStatement::with(['user', 'cfaStockist'])
             ->where('company_id', company()->id);
 
         if (!user()->hasAdminLikeAccess()) {
-            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-            $query->whereIn('user_id', $viewableIds);
-            $hqIds = $this->accessibleHeadquarterIds();
-            $areaIds = $this->accessibleAreaIds();
-            if (is_array($hqIds) && count($hqIds) === 0 && is_array($areaIds) && count($areaIds) === 0) {
+            if ($this->viewPermission !== 'all') {
                 $query->where('user_id', user()->id);
             } else {
-                $stockistIds = $this->assignedCfaStockistsQuery()->pluck('id');
-                $query->where(function ($q) use ($stockistIds) {
-                    $q->where('user_id', user()->id)
-                        ->orWhereIn('cfa_stockist_id', $stockistIds);
-                });
+                $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+                $query->whereIn('user_id', $viewableIds);
+                $hqIds = $this->accessibleHeadquarterIds();
+                $areaIds = $this->accessibleAreaIds();
+                if (is_array($hqIds) && count($hqIds) === 0 && is_array($areaIds) && count($areaIds) === 0) {
+                    $query->where('user_id', user()->id);
+                } else {
+                    $stockistIds = $this->assignedCfaStockistsQuery()->pluck('id');
+                    $query->where(function ($q) use ($stockistIds) {
+                        $q->where('user_id', user()->id)
+                            ->orWhereIn('cfa_stockist_id', $stockistIds);
+                    });
+                }
             }
         }
 
@@ -108,6 +157,9 @@ class StockStatementController extends AccountBaseController
         $this->filterYear = $request->period_year;
         $this->filterStatus = $request->status;
         $this->filterStockistId = $request->cfa_stockist_id;
+        $this->addPermission = $this->stockStatementPermission('add');
+        $this->editPermission = $this->stockStatementPermission('edit');
+        $this->deletePermission = $this->stockStatementPermission('delete');
 
         // SRS 3.2.8: Mandatory for each assigned stockist – show pending (no submitted statement) for period
         $this->missingStockistsForPeriod = collect();
@@ -141,6 +193,9 @@ class StockStatementController extends AccountBaseController
      */
     public function create(Request $request)
     {
+        $this->addPermission = $this->stockStatementPermission('add');
+        abort_403(!in_array($this->addPermission, ['all', 'added'], true));
+
         $this->cfaStockists = $this->assignedCfaStockistsQuery()->get();
         $this->products = Product::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
         $periodMonth = (int) ($request->period_month ?? Carbon::now()->month);
@@ -175,6 +230,9 @@ class StockStatementController extends AccountBaseController
      */
     public function importLines(Request $request)
     {
+        $this->addPermission = $this->stockStatementPermission('add');
+        abort_403(!in_array($this->addPermission, ['all', 'added'], true));
+
         $request->validate([
             'import_file' => 'required|file|mimes:csv,txt|max:5120',
             'cfa_stockist_id' => 'required|exists:cfa_stockists,id',
@@ -446,6 +504,9 @@ class StockStatementController extends AccountBaseController
 
     public function store(Request $request)
     {
+        $this->addPermission = $this->stockStatementPermission('add');
+        abort_403(!in_array($this->addPermission, ['all', 'added'], true));
+
         $request->validate([
             'period_month' => 'required|integer|between:1,12',
             'period_year' => 'required|integer|min:2020|max:2100',
@@ -528,14 +589,10 @@ class StockStatementController extends AccountBaseController
         $statement = StockStatement::with(['user', 'cfaStockist', 'lines.product'])
             ->where('company_id', company()->id)->findOrFail($id);
 
-        if (!user()->hasAdminLikeAccess()) {
-            $stockistIds = $this->assignedCfaStockistsQuery()->pluck('id')->toArray();
-            if ($statement->user_id != user()->id && !in_array($statement->cfa_stockist_id, $stockistIds)) {
-                abort_403(true);
-            }
-        }
+        abort_403(! $this->canAccessStatement($statement, 'view'));
 
         $this->statement = $statement;
+        $this->canEditStatement = $this->canModifyStatement($statement, 'edit');
         if (request()->ajax()) {
             return view('stock-statements.ajax.show', $this->data);
         }
@@ -546,12 +603,10 @@ class StockStatementController extends AccountBaseController
     {
         $statement = StockStatement::with(['lines.product'])
             ->where('company_id', company()->id)->findOrFail($id);
-        if ($statement->status !== 'draft') {
+        if ($statement->status !== 'draft' && ! user()->hasAdminLikeAccess()) {
             return Reply::error(__('app.onlyDraftEditable'));
         }
-        if ($statement->user_id != user()->id) {
-            abort_403(true);
-        }
+        abort_403(! $this->canModifyStatement($statement, 'edit'));
 
         $this->statement = $statement;
         $this->cfaStockists = $this->assignedCfaStockistsQuery()->get();
@@ -566,9 +621,10 @@ class StockStatementController extends AccountBaseController
     public function update(Request $request, $id)
     {
         $statement = StockStatement::where('company_id', company()->id)->findOrFail($id);
-        if ($statement->status !== 'draft' || $statement->user_id != user()->id) {
+        if ($statement->status !== 'draft' && ! user()->hasAdminLikeAccess()) {
             return Reply::error(__('app.onlyDraftEditable'));
         }
+        abort_403(! $this->canModifyStatement($statement, 'edit'));
 
         $request->validate([
             'status' => 'nullable|in:draft,submitted',
@@ -627,12 +683,10 @@ class StockStatementController extends AccountBaseController
     public function destroy($id)
     {
         $statement = StockStatement::where('company_id', company()->id)->findOrFail($id);
-        if ($statement->status !== 'draft') {
+        if ($statement->status !== 'draft' && ! user()->hasAdminLikeAccess()) {
             return Reply::error(__('app.onlyDraftDeletable'));
         }
-        if ($statement->user_id != user()->id) {
-            abort_403(true);
-        }
+        abort_403(! $this->canModifyStatement($statement, 'delete'));
         $statement->lines()->delete();
         $statement->delete();
         if (request()->ajax()) {
