@@ -25,17 +25,8 @@
                         @endfor
                     </select>
                 </div>
-                <div class="col-md-2">
-                    <label>Level</label>
-                    <select name="plan_level" class="form-control form-control-sm">
-                        <option value="">All</option>
-                        <option value="headquarter" {{ (isset($filterPlanLevel) && $filterPlanLevel === 'headquarter') ? 'selected' : '' }}>HQ</option>
-                        <option value="area" {{ (isset($filterPlanLevel) && $filterPlanLevel === 'area') ? 'selected' : '' }}>Area</option>
-                        <option value="region" {{ (isset($filterPlanLevel) && $filterPlanLevel === 'region') ? 'selected' : '' }}>Region</option>
-                    </select>
-                </div>
                 @if(isset($headquarters) && $headquarters->isNotEmpty())
-                <div class="col-md-2">
+                <div class="col-md-3">
                     <label>HQ</label>
                     <select name="headquarter_id" class="form-control form-control-sm">
                         <option value="">All</option>
@@ -45,24 +36,13 @@
                     </select>
                 </div>
                 @endif
-                @if(isset($areas) && $areas->isNotEmpty())
-                <div class="col-md-2">
-                    <label>Area</label>
-                    <select name="area_id" class="form-control form-control-sm">
+                @if(isset($products) && $products->isNotEmpty())
+                <div class="col-md-3">
+                    <label>Product</label>
+                    <select name="product_id" class="form-control form-control-sm">
                         <option value="">All</option>
-                        @foreach($areas as $a)
-                            <option value="{{ $a->id }}" {{ (isset($filterAreaId) && $filterAreaId == $a->id) ? 'selected' : '' }}>{{ $a->name }}</option>
-                        @endforeach
-                    </select>
-                </div>
-                @endif
-                @if(isset($regions) && $regions->isNotEmpty())
-                <div class="col-md-2">
-                    <label>Region</label>
-                    <select name="region_id" class="form-control form-control-sm">
-                        <option value="">All</option>
-                        @foreach($regions as $r)
-                            <option value="{{ $r->id }}" {{ (isset($filterRegionId) && $filterRegionId == $r->id) ? 'selected' : '' }}>{{ $r->name }}</option>
+                        @foreach($products as $p)
+                            <option value="{{ $p->id }}" {{ (isset($filterProductId) && $filterProductId == $p->id) ? 'selected' : '' }}>{{ $p->name }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -78,26 +58,38 @@
                 <table class="table table-bordered table-hover w-100">
                     <thead>
                         <tr>
-                            <th>Level</th>
-                            <th>Scope</th>
-                            <th class="text-right">Target (Amount)</th>
-                            <th class="text-right">Primary Achievement (Invoicing)</th>
+                            <th>HQ</th>
+                            <th>Product</th>
+                            <th class="text-right">Target Qty</th>
+                            <th class="text-right">Target Amount</th>
+                            <th class="text-right">Primary Qty</th>
+                            <th class="text-right">Primary Amount</th>
                             <th class="text-right">Primary %</th>
-                            <th class="text-right">Secondary Achievement (Stock Statement Qty)</th>
+                            <th class="text-right">Secondary Qty</th>
+                            <th class="text-right">Secondary Amount</th>
+                            <th class="text-right">Secondary %</th>
+                            <th class="text-right">Balance Qty</th>
+                            <th class="text-right">Balance Amount</th>
                         </tr>
                     </thead>
                     <tbody>
                         @forelse($reportRows ?? [] as $row)
                             <tr>
-                                <td>{{ ucfirst($row['plan_level']) }}</td>
-                                <td>{{ $row['scope_name'] }}</td>
-                                <td class="text-right">{{ number_format($row['target'], 2) }}</td>
-                                <td class="text-right">{{ number_format($row['primary_achievement'], 2) }}</td>
-                                <td class="text-right">{{ $row['primary_pct'] }}%</td>
-                                <td class="text-right">{{ number_format($row['secondary_achievement'], 2) }}</td>
+                                <td>{{ $row['headquarter_name'] }}</td>
+                                <td>{{ $row['product_name'] }}</td>
+                                <td class="text-right">{{ number_format($row['target_qty'], 2) }}</td>
+                                <td class="text-right">{{ number_format($row['target_amount'], 2) }}</td>
+                                <td class="text-right">{{ number_format($row['primary_qty'], 2) }}</td>
+                                <td class="text-right">{{ number_format($row['primary_amount'], 2) }}</td>
+                                <td class="text-right">{{ $row['primary_qty_pct'] }}% / {{ $row['primary_amount_pct'] }}%</td>
+                                <td class="text-right">{{ number_format($row['secondary_qty'], 2) }}</td>
+                                <td class="text-right">{{ number_format($row['secondary_amount'], 2) }}</td>
+                                <td class="text-right">{{ $row['secondary_qty_pct'] }}% / {{ $row['secondary_amount_pct'] }}%</td>
+                                <td class="text-right">{{ number_format($row['balance_qty'], 2) }}</td>
+                                <td class="text-right">{{ number_format($row['balance_amount'], 2) }}</td>
                             </tr>
                         @empty
-                            <tr><td colspan="6" class="text-center">@lang('messages.noRecordFound')</td></tr>
+                            <tr><td colspan="12" class="text-center">@lang('messages.noRecordFound')</td></tr>
                         @endforelse
                     </tbody>
                 </table>

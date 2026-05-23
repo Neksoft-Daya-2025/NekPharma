@@ -21,12 +21,14 @@ class SalesPlanTarget extends BaseModel
         'area_id',
         'region_id',
         'target_amount',
+        'target_qty',
         'product_id',
         'notes',
     ];
 
     protected $casts = [
         'target_amount' => 'decimal:2',
+        'target_qty' => 'decimal:2',
     ];
 
     public function headquarter(): BelongsTo

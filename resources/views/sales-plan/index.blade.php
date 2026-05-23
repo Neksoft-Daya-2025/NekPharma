@@ -22,14 +22,6 @@
                         </select>
                     </div>
                     <div class="sales-plan-filter-item">
-                        <select name="plan_level" class="form-control form-control-sm" style="width: 110px; min-height: 31px;">
-                            <option value="">All Levels</option>
-                            <option value="headquarter" {{ (isset($filterPlanLevel) && $filterPlanLevel === 'headquarter') ? 'selected' : '' }}>HQ</option>
-                            <option value="area" {{ (isset($filterPlanLevel) && $filterPlanLevel === 'area') ? 'selected' : '' }}>Area</option>
-                            <option value="region" {{ (isset($filterPlanLevel) && $filterPlanLevel === 'region') ? 'selected' : '' }}>Region</option>
-                        </select>
-                    </div>
-                    <div class="sales-plan-filter-item">
                         <select name="headquarter_id" class="form-control form-control-sm select-picker" data-live-search="true" title="All HQ" style="min-width: 160px;">
                             <option value="">All HQ</option>
                             @foreach($headquarters as $h)
@@ -38,18 +30,10 @@
                         </select>
                     </div>
                     <div class="sales-plan-filter-item">
-                        <select name="area_id" class="form-control form-control-sm select-picker" data-live-search="true" title="All Area" style="min-width: 160px;">
-                            <option value="">All Area</option>
-                            @foreach($areas as $a)
-                                <option value="{{ $a->id }}" {{ (isset($filterAreaId) && $filterAreaId == $a->id) ? 'selected' : '' }}>{{ $a->name }}</option>
-                            @endforeach
-                        </select>
-                    </div>
-                    <div class="sales-plan-filter-item">
-                        <select name="region_id" class="form-control form-control-sm select-picker" data-live-search="true" title="All Region" style="min-width: 160px;">
-                            <option value="">All Region</option>
-                            @foreach($regions as $r)
-                                <option value="{{ $r->id }}" {{ (isset($filterRegionId) && $filterRegionId == $r->id) ? 'selected' : '' }}>{{ $r->name }}</option>
+                        <select name="product_id" class="form-control form-control-sm select-picker" data-live-search="true" title="All Products" style="min-width: 180px;">
+                            <option value="">All Products</option>
+                            @foreach($products as $p)
+                                <option value="{{ $p->id }}" {{ (isset($filterProductId) && $filterProductId == $p->id) ? 'selected' : '' }}>{{ $p->name }}</option>
                             @endforeach
                         </select>
                     </div>
@@ -59,9 +43,11 @@
                     </div>
                 </form>
             </div>
-            <div class="mb-2 mb-lg-0 mb-md-0">
-                <x-forms.link-primary :link="route('sales-plan.create')" icon="plus">@lang('app.add') @lang('app.salesPlan')</x-forms.link-primary>
-            </div>
+            @if(user()->hasAdminLikeAccess())
+                <div class="mb-2 mb-lg-0 mb-md-0">
+                    <x-forms.link-primary :link="route('sales-plan.create')" icon="plus">@lang('app.add') Product HQ Target</x-forms.link-primary>
+                </div>
+            @endif
         </div>
 
         <div class="d-flex flex-column w-tables rounded mt-3 bg-white">
@@ -70,10 +56,10 @@
                     <thead>
                         <tr class="border-0">
                             <th>Period</th>
-                            <th>Level</th>
-                            <th>Scope (HQ / Area / Region)</th>
-                            <th>Target Amount</th>
+                            <th>Headquarter</th>
                             <th>Product</th>
+                            <th class="text-right">Target Qty</th>
+                            <th class="text-right">Target Amount</th>
                             <th class="text-right">@lang('app.action')</th>
                         </tr>
                     </thead>
@@ -81,13 +67,17 @@
                         @forelse($targets as $t)
                             <tr>
                                 <td>{{ \Carbon\Carbon::create()->month($t->period_month)->format('F') }} {{ $t->period_year }}</td>
-                                <td>{{ ucfirst($t->plan_level) }}</td>
                                 <td>{{ $t->scope_name }}</td>
-                                <td>{{ number_format($t->target_amount, 2) }}</td>
                                 <td>{{ $t->product->name ?? '-' }}</td>
+                                <td class="text-right">{{ number_format($t->target_qty ?? 0, 2) }}</td>
+                                <td class="text-right">{{ number_format($t->target_amount, 2) }}</td>
                                 <td class="text-right">
-                                    <a href="{{ route('sales-plan.edit', $t->id) }}" class="btn btn-sm btn-primary">@lang('app.edit')</a>
-                                    <button type="button" class="btn btn-sm btn-danger delete-target" data-id="{{ $t->id }}">@lang('app.delete')</button>
+                                    @if(user()->hasAdminLikeAccess())
+                                        <a href="{{ route('sales-plan.edit', $t->id) }}" class="btn btn-sm btn-primary">@lang('app.edit')</a>
+                                        <button type="button" class="btn btn-sm btn-danger delete-target" data-id="{{ $t->id }}">@lang('app.delete')</button>
+                                    @else
+                                        -
+                                    @endif
                                 </td>
                             </tr>
                         @empty

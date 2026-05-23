@@ -10,6 +10,7 @@ use App\Models\PharmaRegion;
 use App\Models\Product;
 use App\Models\SalesPlanTarget;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use App\Traits\AccessibleHeadquarters;
 use App\Support\EnterpriseAudit;
@@ -141,6 +142,28 @@ class SalesPlanController extends AccountBaseController
         return $query->get(['id', 'name']);
     }
 
+    private function abortIfNotAdmin(): void
+    {
+        abort_403(! user()->hasAdminLikeAccess());
+    }
+
+    private function duplicateTargetExists(
+        int $periodMonth,
+        int $periodYear,
+        int $headquarterId,
+        int $productId,
+        ?int $ignoreId = null
+    ): bool {
+        return SalesPlanTarget::where('company_id', company()->id)
+            ->where('period_month', $periodMonth)
+            ->where('period_year', $periodYear)
+            ->where('plan_level', 'headquarter')
+            ->where('headquarter_id', $headquarterId)
+            ->where('product_id', $productId)
+            ->when($ignoreId, fn (Builder $query) => $query->where('id', '!=', $ignoreId))
+            ->exists();
+    }
+
     private function scopedAreas()
     {
         $query = PharmaArea::where('company_id', company()->id)->orderBy('name');
@@ -168,7 +191,8 @@ class SalesPlanController extends AccountBaseController
     public function index(Request $request)
     {
         $query = SalesPlanTarget::with(['headquarter', 'area', 'region', 'product'])
-            ->where('company_id', company()->id);
+            ->where('company_id', company()->id)
+            ->where('plan_level', 'headquarter');
 
         $this->applyAccessibleTargetScope($query);
 
@@ -178,43 +202,35 @@ class SalesPlanController extends AccountBaseController
         if ($request->filled('period_year')) {
             $query->where('period_year', $request->period_year);
         }
-        if ($request->filled('plan_level')) {
-            $query->where('plan_level', $request->plan_level);
-        }
         if ($request->filled('headquarter_id')) {
             $query->where('headquarter_id', $request->headquarter_id);
         }
-        if ($request->filled('area_id')) {
-            $query->where('area_id', $request->area_id);
-        }
-        if ($request->filled('region_id')) {
-            $query->where('region_id', $request->region_id);
+        if ($request->filled('product_id')) {
+            $query->where('product_id', $request->product_id);
         }
 
         $this->targets = $query->orderBy('period_year', 'desc')
             ->orderBy('period_month', 'desc')
-            ->orderBy('plan_level')
+            ->orderBy('headquarter_id')
+            ->orderBy('product_id')
             ->orderBy('id')
             ->paginate(20);
 
         $this->headquarters = $this->scopedHeadquarters();
-        $this->areas = $this->scopedAreas();
-        $this->regions = $this->scopedRegions();
+        $this->products = Product::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
         $this->filterMonth = $request->period_month;
         $this->filterYear = $request->period_year;
-        $this->filterPlanLevel = $request->plan_level;
         $this->filterHeadquarterId = $request->headquarter_id;
-        $this->filterAreaId = $request->area_id;
-        $this->filterRegionId = $request->region_id;
+        $this->filterProductId = $request->product_id;
 
         return view('sales-plan.index', $this->data);
     }
 
     public function create()
     {
-        $this->headquarters = $this->scopedHeadquarters();
-        $this->areas = $this->scopedAreas();
-        $this->regions = $this->scopedRegions();
+        $this->abortIfNotAdmin();
+
+        $this->headquarters = PharmaHeadquarter::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
         $this->products = Product::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
 
         if (request()->ajax()) {
@@ -226,34 +242,35 @@ class SalesPlanController extends AccountBaseController
 
     public function store(Request $request)
     {
+        $this->abortIfNotAdmin();
+
         $request->validate([
             'period_month' => 'required|integer|between:1,12',
             'period_year' => 'required|integer|min:2020|max:2100',
-            'plan_level' => 'required|in:headquarter,area,region',
-            'headquarter_id' => 'nullable|required_if:plan_level,headquarter|exists:pharma_headquarters,id',
-            'area_id' => 'nullable|required_if:plan_level,area|exists:pharma_areas,id',
-            'region_id' => 'nullable|required_if:plan_level,region|exists:pharma_regions,id',
+            'headquarter_id' => 'required|exists:pharma_headquarters,id',
+            'product_id' => 'required|exists:products,id',
             'target_amount' => 'required|numeric|min:0',
-            'product_id' => 'nullable|exists:products,id',
+            'target_qty' => 'required|numeric|min:0',
             'notes' => 'nullable|string|max:1000',
         ]);
 
-        $headquarterId = $request->plan_level === 'headquarter' ? $request->headquarter_id : null;
-        $areaId = $request->plan_level === 'area' ? $request->area_id : null;
-        $regionId = $request->plan_level === 'region' ? $request->region_id : null;
-
-        $this->ensureSalesPlanScopeAccessible($request->plan_level, $headquarterId ? (int) $headquarterId : null, $areaId ? (int) $areaId : null, $regionId ? (int) $regionId : null);
+        $headquarterId = (int) $request->headquarter_id;
+        $productId = (int) $request->product_id;
+        if ($this->duplicateTargetExists((int) $request->period_month, (int) $request->period_year, $headquarterId, $productId)) {
+            return Reply::error('Target already exists for this month, headquarter, and product.');
+        }
 
         $target = SalesPlanTarget::create([
             'company_id' => company()->id,
             'period_month' => (int) $request->period_month,
             'period_year' => (int) $request->period_year,
-            'plan_level' => $request->plan_level,
+            'plan_level' => 'headquarter',
             'headquarter_id' => $headquarterId,
-            'area_id' => $areaId,
-            'region_id' => $regionId,
+            'area_id' => null,
+            'region_id' => null,
             'target_amount' => $request->target_amount,
-            'product_id' => $request->product_id ?: null,
+            'target_qty' => $request->target_qty,
+            'product_id' => $productId,
             'notes' => $request->notes,
         ]);
 
@@ -265,6 +282,7 @@ class SalesPlanController extends AccountBaseController
             'area_id',
             'region_id',
             'target_amount',
+            'target_qty',
             'product_id',
         ]));
 
@@ -276,11 +294,10 @@ class SalesPlanController extends AccountBaseController
 
     public function edit($id)
     {
+        $this->abortIfNotAdmin();
+
         $this->target = SalesPlanTarget::where('company_id', company()->id)->findOrFail($id);
-        $this->ensureSalesPlanScopeAccessible($this->target->plan_level, $this->target->headquarter_id ? (int) $this->target->headquarter_id : null, $this->target->area_id ? (int) $this->target->area_id : null, $this->target->region_id ? (int) $this->target->region_id : null);
-        $this->headquarters = $this->scopedHeadquarters();
-        $this->areas = $this->scopedAreas();
-        $this->regions = $this->scopedRegions();
+        $this->headquarters = PharmaHeadquarter::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
         $this->products = Product::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
 
         if (request()->ajax()) {
@@ -292,18 +309,17 @@ class SalesPlanController extends AccountBaseController
 
     public function update(Request $request, $id)
     {
+        $this->abortIfNotAdmin();
+
         $target = SalesPlanTarget::where('company_id', company()->id)->findOrFail($id);
-        $this->ensureSalesPlanScopeAccessible($target->plan_level, $target->headquarter_id ? (int) $target->headquarter_id : null, $target->area_id ? (int) $target->area_id : null, $target->region_id ? (int) $target->region_id : null);
 
         $request->validate([
             'period_month' => 'required|integer|between:1,12',
             'period_year' => 'required|integer|min:2020|max:2100',
-            'plan_level' => 'required|in:headquarter,area,region',
-            'headquarter_id' => 'nullable|required_if:plan_level,headquarter|exists:pharma_headquarters,id',
-            'area_id' => 'nullable|required_if:plan_level,area|exists:pharma_areas,id',
-            'region_id' => 'nullable|required_if:plan_level,region|exists:pharma_regions,id',
+            'headquarter_id' => 'required|exists:pharma_headquarters,id',
+            'product_id' => 'required|exists:products,id',
             'target_amount' => 'required|numeric|min:0',
-            'product_id' => 'nullable|exists:products,id',
+            'target_qty' => 'required|numeric|min:0',
             'notes' => 'nullable|string|max:1000',
         ]);
 
@@ -315,22 +331,25 @@ class SalesPlanController extends AccountBaseController
             'area_id',
             'region_id',
             'target_amount',
+            'target_qty',
             'product_id',
         ]);
 
-        $newHeadquarterId = $request->plan_level === 'headquarter' ? (int) $request->headquarter_id : null;
-        $newAreaId = $request->plan_level === 'area' ? (int) $request->area_id : null;
-        $newRegionId = $request->plan_level === 'region' ? (int) $request->region_id : null;
-        $this->ensureSalesPlanScopeAccessible($request->plan_level, $newHeadquarterId, $newAreaId, $newRegionId);
+        $newHeadquarterId = (int) $request->headquarter_id;
+        $newProductId = (int) $request->product_id;
+        if ($this->duplicateTargetExists((int) $request->period_month, (int) $request->period_year, $newHeadquarterId, $newProductId, (int) $target->id)) {
+            return Reply::error('Target already exists for this month, headquarter, and product.');
+        }
 
         $target->period_month = (int) $request->period_month;
         $target->period_year = (int) $request->period_year;
-        $target->plan_level = $request->plan_level;
+        $target->plan_level = 'headquarter';
         $target->headquarter_id = $newHeadquarterId;
-        $target->area_id = $newAreaId;
-        $target->region_id = $newRegionId;
+        $target->area_id = null;
+        $target->region_id = null;
         $target->target_amount = $request->target_amount;
-        $target->product_id = $request->product_id ?: null;
+        $target->target_qty = $request->target_qty;
+        $target->product_id = $newProductId;
         $target->notes = $request->notes;
         $target->save();
 
@@ -342,6 +361,7 @@ class SalesPlanController extends AccountBaseController
             'area_id',
             'region_id',
             'target_amount',
+            'target_qty',
             'product_id',
         ]));
 
@@ -353,8 +373,9 @@ class SalesPlanController extends AccountBaseController
 
     public function destroy($id)
     {
+        $this->abortIfNotAdmin();
+
         $target = SalesPlanTarget::where('company_id', company()->id)->findOrFail($id);
-        $this->ensureSalesPlanScopeAccessible($target->plan_level, $target->headquarter_id ? (int) $target->headquarter_id : null, $target->area_id ? (int) $target->area_id : null, $target->region_id ? (int) $target->region_id : null);
         $before = $target->only([
             'period_month',
             'period_year',
@@ -363,6 +384,7 @@ class SalesPlanController extends AccountBaseController
             'area_id',
             'region_id',
             'target_amount',
+            'target_qty',
             'product_id',
         ]);
         $target->delete();

@@ -1,6 +1,6 @@
 <div class="bg-white rounded b-shadow-4 create-inv">
     <div class="px-lg-4 px-md-4 px-3 py-3">
-        <h4 class="mb-0 f-21 font-weight-normal">@lang('app.edit') @lang('app.salesPlan')</h4>
+        <h4 class="mb-0 f-21 font-weight-normal">@lang('app.edit') Product HQ Target</h4>
     </div>
     <hr class="m-0 border-top-grey">
 
@@ -26,20 +26,11 @@
                     </select>
                 </div>
             </div>
+            <input type="hidden" name="plan_level" value="headquarter">
             <div class="col-md-6">
                 <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Plan Level <span class="text-danger">*</span></label>
-                    <select name="plan_level" id="plan_level" class="form-control" required>
-                        <option value="headquarter" {{ $target->plan_level === 'headquarter' ? 'selected' : '' }}>HQ-wise</option>
-                        <option value="area" {{ $target->plan_level === 'area' ? 'selected' : '' }}>Area-wise</option>
-                        <option value="region" {{ $target->plan_level === 'region' ? 'selected' : '' }}>Region-wise</option>
-                    </select>
-                </div>
-            </div>
-            <div class="col-md-6 plan-scope-headquarter {{ $target->plan_level !== 'headquarter' ? 'd-none' : '' }}">
-                <div class="form-group">
                     <label class="f-14 text-dark-grey mb-12">Headquarter <span class="text-danger">*</span></label>
-                    <select name="headquarter_id" id="headquarter_id" class="form-control select-picker" data-live-search="true">
+                    <select name="headquarter_id" id="headquarter_id" class="form-control select-picker" data-live-search="true" required>
                         <option value="">Select HQ</option>
                         @foreach($headquarters as $h)
                             <option value="{{ $h->id }}" {{ $target->headquarter_id == $h->id ? 'selected' : '' }}>{{ $h->name }}</option>
@@ -47,24 +38,13 @@
                     </select>
                 </div>
             </div>
-            <div class="col-md-6 plan-scope-area {{ $target->plan_level !== 'area' ? 'd-none' : '' }}">
+            <div class="col-md-6">
                 <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Area <span class="text-danger">*</span></label>
-                    <select name="area_id" id="area_id" class="form-control select-picker" data-live-search="true">
-                        <option value="">Select Area</option>
-                        @foreach($areas as $a)
-                            <option value="{{ $a->id }}" {{ $target->area_id == $a->id ? 'selected' : '' }}>{{ $a->name }}</option>
-                        @endforeach
-                    </select>
-                </div>
-            </div>
-            <div class="col-md-6 plan-scope-region {{ $target->plan_level !== 'region' ? 'd-none' : '' }}">
-                <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Region <span class="text-danger">*</span></label>
-                    <select name="region_id" id="region_id" class="form-control select-picker" data-live-search="true">
-                        <option value="">Select Region</option>
-                        @foreach($regions as $r)
-                            <option value="{{ $r->id }}" {{ $target->region_id == $r->id ? 'selected' : '' }}>{{ $r->name }}</option>
+                    <label class="f-14 text-dark-grey mb-12">Product <span class="text-danger">*</span></label>
+                    <select name="product_id" id="product_id" class="form-control select-picker" data-live-search="true" required>
+                        <option value="">Select Product</option>
+                        @foreach($products as $p)
+                            <option value="{{ $p->id }}" {{ $target->product_id == $p->id ? 'selected' : '' }}>{{ $p->name }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -77,13 +57,8 @@
             </div>
             <div class="col-md-6">
                 <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Product (optional)</label>
-                    <select name="product_id" id="product_id" class="form-control select-picker" data-live-search="true">
-                        <option value="">All Products</option>
-                        @foreach($products as $p)
-                            <option value="{{ $p->id }}" {{ $target->product_id == $p->id ? 'selected' : '' }}>{{ $p->name }}</option>
-                        @endforeach
-                    </select>
+                    <label class="f-14 text-dark-grey mb-12">Target Qty <span class="text-danger">*</span></label>
+                    <input type="number" step="0.01" min="0" name="target_qty" id="target_qty" class="form-control" required value="{{ $target->target_qty ?? 0 }}">
                 </div>
             </div>
             <div class="col-md-12">
@@ -104,22 +79,26 @@
 @push('scripts')
 <script>
 $(function() {
-    function togglePlanScope() {
-        var level = $('#plan_level').val();
-        $('.plan-scope-headquarter, .plan-scope-area, .plan-scope-region').addClass('d-none');
-        $('#headquarter_id, #area_id, #region_id').removeAttr('required');
-        if (level === 'headquarter') {
-            $('.plan-scope-headquarter').removeClass('d-none');
-            $('#headquarter_id').attr('required', 'required');
-        } else if (level === 'area') {
-            $('.plan-scope-area').removeClass('d-none');
-            $('#area_id').attr('required', 'required');
-        } else if (level === 'region') {
-            $('.plan-scope-region').removeClass('d-none');
-            $('#region_id').attr('required', 'required');
+    $('#update-sales-plan-form').on('click', function() {
+        var $form = $('#updateSalesPlanForm');
+        if ($form[0].checkValidity && !$form[0].checkValidity()) {
+            $form[0].reportValidity();
+            return;
         }
-    }
-    $('#plan_level').on('change', togglePlanScope);
+        $.easyAjax({
+            url: $form.attr('action'),
+            container: '#updateSalesPlanForm',
+            type: 'POST',
+            disableButton: true,
+            buttonSelector: '#update-sales-plan-form',
+            data: $form.serialize(),
+            success: function(response) {
+                if (response.status === 'success' && response.action === 'redirect' && response.url) {
+                    window.location.href = response.url;
+                }
+            }
+        });
+    });
 });
 </script>
 @endpush

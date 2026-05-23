@@ -777,18 +777,14 @@ class StockStatementController extends AccountBaseController
         return view('stock-statements.consolidation', $this->data);
     }
 
-    /**
-     * Target vs Achievement report: targets (Sales Plan) vs Primary (invoicing) and Secondary (stock statement).
-     * Visible only to upper hierarchy.
-     */
     public function targetVsAchievement(Request $request)
     {
+        $hqIds = null;
         if (user()->hasAdminLikeAccess()) {
             // allow
         } else {
             $hqIds = $this->accessibleHeadquarterIds();
-            $areaIds = $this->accessibleAreaIds();
-            if ((!is_array($hqIds) || count($hqIds) === 0) && (!is_array($areaIds) || count($areaIds) === 0)) {
+            if (!is_array($hqIds) || count($hqIds) === 0) {
                 abort_403(true);
             }
         }
@@ -798,133 +794,107 @@ class StockStatementController extends AccountBaseController
         $start = Carbon::createFromDate($periodYear, $periodMonth, 1)->startOfDay();
         $end = $start->copy()->endOfMonth();
 
-        $targetsQuery = SalesPlanTarget::with(['headquarter', 'area', 'region'])
+        $targetsQuery = SalesPlanTarget::with(['headquarter', 'product'])
             ->where('company_id', company()->id)
             ->where('period_month', $periodMonth)
-            ->where('period_year', $periodYear);
+            ->where('period_year', $periodYear)
+            ->where('plan_level', 'headquarter')
+            ->whereNotNull('headquarter_id')
+            ->whereNotNull('product_id');
 
-        if (!user()->hasAdminLikeAccess() && $hqIds !== null && $areaIds !== null) {
-            $regionIds = [];
-            if (!empty($areaIds)) {
-                $regionIds = \App\Models\PharmaArea::where('company_id', company()->id)
-                    ->whereIn('id', $areaIds)
-                    ->whereNotNull('region_id')
-                    ->pluck('region_id')
-                    ->map(fn ($id) => (int) $id)
-                    ->unique()
-                    ->values()
-                    ->toArray();
-            }
-
-            $targetsQuery->where(function ($q) use ($hqIds, $areaIds, $regionIds) {
-                if (!empty($hqIds)) {
-                    $q->orWhere(function ($sub) use ($hqIds) {
-                        $sub->where('plan_level', 'headquarter')->whereIn('headquarter_id', $hqIds);
-                    });
-                }
-                if (!empty($areaIds)) {
-                    $q->orWhere(function ($sub) use ($areaIds) {
-                        $sub->where('plan_level', 'area')->whereIn('area_id', $areaIds);
-                    });
-                }
-                if (!empty($regionIds)) {
-                    $q->orWhere(function ($sub) use ($regionIds) {
-                        $sub->where('plan_level', 'region')->whereIn('region_id', $regionIds);
-                    });
-                }
-            });
+        if (!user()->hasAdminLikeAccess()) {
+            $targetsQuery->whereIn('headquarter_id', $hqIds);
         }
 
-        if ($request->filled('plan_level')) {
-            $targetsQuery->where('plan_level', $request->plan_level);
-        }
         if ($request->filled('headquarter_id')) {
             $targetsQuery->where('headquarter_id', $request->headquarter_id);
         }
-        if ($request->filled('area_id')) {
-            $targetsQuery->where('area_id', $request->area_id);
-        }
-        if ($request->filled('region_id')) {
-            $targetsQuery->where('region_id', $request->region_id);
+        if ($request->filled('product_id')) {
+            $targetsQuery->where('product_id', $request->product_id);
         }
 
-        $targets = $targetsQuery->orderBy('plan_level')->orderBy('id')->get();
+        $targets = $targetsQuery->orderBy('headquarter_id')->orderBy('product_id')->get();
 
         $rows = [];
         foreach ($targets as $target) {
-            $scopeHqId = $target->plan_level === 'headquarter' ? $target->headquarter_id : null;
-            $scopeAreaId = $target->plan_level === 'area' ? $target->area_id : null;
-            $scopeRegionId = $target->plan_level === 'region' ? $target->region_id : null;
+            $targetHeadquarterId = (int) $target->headquarter_id;
+            $targetProductId = (int) $target->product_id;
 
-            $primaryQ = Invoice::query()
-                ->where('company_id', company()->id)
-                ->whereBetween('issue_date', [$start, $end])
-                ->whereHas('cfaStockistStocks', function ($q) use ($scopeHqId, $scopeAreaId, $scopeRegionId) {
-                    $q->whereHas('cfaStockist', function ($cq) use ($scopeHqId, $scopeAreaId, $scopeRegionId) {
-                        if ($scopeHqId) {
-                            $cq->where('headquarter_id', $scopeHqId);
-                        }
-                        if ($scopeAreaId) {
-                            $cq->where('area_id', $scopeAreaId);
-                        }
-                        if ($scopeRegionId) {
-                            $cq->whereHas('area', function ($aq) use ($scopeRegionId) {
-                                $aq->where('region_id', $scopeRegionId);
-                            });
-                        }
-                    });
-                });
-            $primaryAmount = (float) (clone $primaryQ)->sum('total');
+            $primaryQuery = CFAStockistStock::query()
+                ->join('invoices', 'invoices.id', '=', 'cfa_stockist_stocks.invoice_id')
+                ->join('cfa_stockists', 'cfa_stockists.id', '=', 'cfa_stockist_stocks.cfa_stockist_id')
+                ->whereNull('cfa_stockists.deleted_at')
+                ->where('cfa_stockist_stocks.company_id', company()->id)
+                ->where('cfa_stockist_stocks.product_id', $targetProductId)
+                ->where('cfa_stockists.headquarter_id', $targetHeadquarterId)
+                ->whereBetween('invoices.issue_date', [$start, $end]);
 
-            $secondaryQ = StockStatementLine::query()
+            $primaryQty = (float) (clone $primaryQuery)->sum('cfa_stockist_stocks.quantity');
+            $primaryAmount = (float) (clone $primaryQuery)->selectRaw('SUM(cfa_stockist_stocks.quantity * cfa_stockist_stocks.ptr) as total_amount')->value('total_amount');
+
+            $secondaryQuery = StockStatementLine::query()
                 ->join('stock_statements', 'stock_statements.id', '=', 'stock_statement_lines.stock_statement_id')
                 ->join('cfa_stockists', 'cfa_stockists.id', '=', 'stock_statements.cfa_stockist_id')
                 ->whereNull('cfa_stockists.deleted_at')
                 ->where('stock_statements.company_id', company()->id)
                 ->where('stock_statements.period_month', $periodMonth)
                 ->where('stock_statements.period_year', $periodYear)
-                ->where('stock_statements.status', 'submitted');
-            if ($scopeHqId) {
-                $secondaryQ->where('cfa_stockists.headquarter_id', $scopeHqId);
-            }
-            if ($scopeAreaId) {
-                $secondaryQ->where('cfa_stockists.area_id', $scopeAreaId);
-            }
-            if ($scopeRegionId) {
-                $secondaryQ->join('pharma_areas', 'pharma_areas.id', '=', 'cfa_stockists.area_id')
-                    ->where('pharma_areas.region_id', $scopeRegionId);
-            }
-            $secondaryTotal = (float) (clone $secondaryQ)->sum('stock_statement_lines.secondary_qty');
+                ->where('stock_statements.status', 'submitted')
+                ->where('stock_statement_lines.product_id', $targetProductId)
+                ->where('cfa_stockists.headquarter_id', $targetHeadquarterId);
 
-            $targetVal = (float) $target->target_amount;
+            $secondaryQty = (float) (clone $secondaryQuery)->sum('stock_statement_lines.secondary_qty');
+            $secondaryAmount = (float) (clone $secondaryQuery)
+                ->join('products', 'products.id', '=', 'stock_statement_lines.product_id')
+                ->selectRaw('SUM(stock_statement_lines.secondary_qty * COALESCE(products.price, products.mrp, 0)) as total_amount')
+                ->value('total_amount');
+
+            $targetQty = (float) ($target->target_qty ?? 0);
+            $targetAmount = (float) $target->target_amount;
+
             $rows[] = [
-                'scope_name' => $target->scope_name,
-                'plan_level' => $target->plan_level,
-                'target' => $targetVal,
-                'primary_achievement' => $primaryAmount,
-                'secondary_achievement' => $secondaryTotal,
-                'primary_pct' => $targetVal > 0 ? round(($primaryAmount / $targetVal) * 100, 1) : 0,
+                'headquarter_name' => $target->headquarter->name ?? '-',
+                'product_name' => $target->product->name ?? '-',
+                'target_qty' => $targetQty,
+                'target_amount' => $targetAmount,
+                'primary_qty' => $primaryQty,
+                'primary_amount' => $primaryAmount,
+                'primary_qty_pct' => $targetQty > 0 ? round(($primaryQty / $targetQty) * 100, 1) : 0,
+                'primary_amount_pct' => $targetAmount > 0 ? round(($primaryAmount / $targetAmount) * 100, 1) : 0,
+                'secondary_qty' => $secondaryQty,
+                'secondary_amount' => $secondaryAmount,
+                'secondary_qty_pct' => $targetQty > 0 ? round(($secondaryQty / $targetQty) * 100, 1) : 0,
+                'secondary_amount_pct' => $targetAmount > 0 ? round(($secondaryAmount / $targetAmount) * 100, 1) : 0,
+                'balance_qty' => max($targetQty - $secondaryQty, 0),
+                'balance_amount' => max($targetAmount - $secondaryAmount, 0),
             ];
+        }
+
+        $headquartersQuery = \App\Models\PharmaHeadquarter::where('company_id', company()->id)->orderBy('name');
+        if (!user()->hasAdminLikeAccess() && is_array($hqIds)) {
+            $headquartersQuery->whereIn('id', $hqIds);
+        }
+
+        $productsQuery = Product::where('company_id', company()->id)->orderBy('name');
+        if (!user()->hasAdminLikeAccess() && is_array($hqIds)) {
+            $productsQuery->whereIn('id', function ($query) use ($hqIds, $periodMonth, $periodYear) {
+                $query->select('product_id')
+                    ->from('sales_plan_targets')
+                    ->where('company_id', company()->id)
+                    ->where('period_month', $periodMonth)
+                    ->where('period_year', $periodYear)
+                    ->where('plan_level', 'headquarter')
+                    ->whereIn('headquarter_id', $hqIds);
+                });
         }
 
         $this->reportRows = $rows;
         $this->periodMonth = $periodMonth;
         $this->periodYear = $periodYear;
-        $headquartersQuery = \App\Models\PharmaHeadquarter::where('company_id', company()->id)->orderBy('name');
-        $areasQuery = \App\Models\PharmaArea::where('company_id', company()->id)->orderBy('name');
-        $regionsQuery = \App\Models\PharmaRegion::where('company_id', company()->id)->orderBy('name');
-        if (!user()->hasAdminLikeAccess() && $hqIds !== null && $areaIds !== null) {
-            $headquartersQuery->whereIn('id', $hqIds);
-            $areasQuery->whereIn('id', $areaIds);
-            $regionsQuery->whereIn('id', $regionIds ?? []);
-        }
         $this->headquarters = $headquartersQuery->get(['id', 'name']);
-        $this->areas = $areasQuery->get(['id', 'name']);
-        $this->regions = $regionsQuery->get(['id', 'name']);
-        $this->filterPlanLevel = $request->plan_level;
+        $this->products = $productsQuery->get(['id', 'name']);
         $this->filterHeadquarterId = $request->headquarter_id;
-        $this->filterAreaId = $request->area_id;
-        $this->filterRegionId = $request->region_id;
+        $this->filterProductId = $request->product_id;
 
         return view('stock-statements.target-vs-achievement', $this->data);
     }

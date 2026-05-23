@@ -413,7 +413,7 @@
                 <x-sub-menu-item :link="route('stock-statements.target-vs-achievement')" text="Target vs Achievement" />
                 @php
                     $salesPlanLevel = \App\Helper\RoleHierarchy::userHierarchyLevel(user());
-                    $showSalesPlan = user()->hasAdminLikeAccess() || ($salesPlanLevel !== null && $salesPlanLevel >= 2);
+                    $showSalesPlan = user()->hasAdminLikeAccess();
                 @endphp
                 @if ($showSalesPlan)
                     <x-sub-menu-item :link="route('sales-plan.index')" :text="__('app.salesPlan')" />
