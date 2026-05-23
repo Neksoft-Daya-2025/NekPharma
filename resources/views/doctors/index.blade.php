@@ -322,15 +322,31 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
         function updateDoctorsExportLink() {
             const $exportLink = $('#doctors-export-link');
             const hq = $('#doctors-filter-headquarter').val() || 'all';
+            const qual = ($('#doctors-filter-qualification').val() || '').trim();
+            const spec = ($('#doctors-filter-speciality').val() || '').trim();
+            const search = ($('#doctors-inline-search').val() || '').trim();
 
             if (!$exportLink.length) {
                 return;
             }
 
             const url = new URL(@json(route('doctors.export')), window.location.origin);
+            url.searchParams.set('list_filter', '1');
 
             if (hq !== 'all') {
                 url.searchParams.set('headquarter_id', hq);
+            }
+
+            if (qual) {
+                url.searchParams.set('qualification', qual);
+            }
+
+            if (spec) {
+                url.searchParams.set('speciality', spec);
+            }
+
+            if (search) {
+                url.searchParams.set('search', search);
             }
 
             $exportLink.attr('href', url.toString());

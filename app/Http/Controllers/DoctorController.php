@@ -47,77 +47,7 @@ class DoctorController extends AccountBaseController
         $this->viewPermission = user()->permission('view_doctors');
         abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
 
-        // Build query with relationships
-        $query = Doctor::with(['headquarter', 'area', 'exstation', 'outstation', 'products'])
-            ->where('company_id', company()->id);
-
-        $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
-        $accessibleAreaIds = $this->accessibleAreaIds();
-        $accessibleStationIds = $this->accessibleStations();
-
-        // Only apply geography filtering if user is NOT admin
-        // Admins should see all doctors regardless of headquarter restrictions
-        if (! user()->hasAdminLikeAccess() && $accessibleHeadquarterIds !== null) {
-            $this->applyCustomerGeoScope(
-                $query,
-                $accessibleHeadquarterIds,
-                $accessibleAreaIds ?? [],
-                $accessibleStationIds
-            );
-        }
-
-        // Filter by headquarter (with guardrail: silently drop any HQ id the user cannot access)
-        $requestedHqId = $request->input('headquarter_id');
-        if ($requestedHqId && $requestedHqId != 'all'
-            && !user()->hasAdminLikeAccess()
-            && is_array($accessibleHeadquarterIds)
-            && !in_array((int) $requestedHqId, $accessibleHeadquarterIds, true)) {
-            $requestedHqId = null;
-        }
-
-        if ($requestedHqId && $requestedHqId != 'all') {
-            $hqId = $requestedHqId;
-            
-            // Get ex-stations and out-stations linked to this HQ
-            $hq = \App\Models\PharmaHeadquarter::with(['exstations', 'outstations'])->find($hqId);
-            $exstationIds = $hq ? $hq->exstations->pluck('id')->toArray() : [];
-            $outstationIds = $hq ? $hq->outstations->pluck('id')->toArray() : [];
-            
-            // Second filter: Station (specific station or all)
-            if ($request->has('station') && $request->station != 'all') {
-                $station = $request->station;
-                
-                if ($station == 'hq') {
-                    // Show only doctors at Headquarter
-                    $query->where('headquarter_id', $hqId)
-                          ->whereNull('exstation_id')
-                          ->whereNull('outstation_id');
-                          
-                } elseif (strpos($station, 'ex-') === 0) {
-                    // Show doctors at specific Ex-Station
-                    $exstationId = str_replace('ex-', '', $station);
-                    $query->where('exstation_id', $exstationId);
-                    
-                } elseif (strpos($station, 'out-') === 0) {
-                    // Show doctors at specific Out-Station
-                    $outstationId = str_replace('out-', '', $station);
-                    $query->where('outstation_id', $outstationId);
-                }
-            } else {
-                // No station filter - show ALL doctors linked to this HQ
-                $query->where(function($q) use ($hqId, $exstationIds, $outstationIds) {
-                    $q->where('headquarter_id', $hqId);
-                    
-                    if (!empty($exstationIds)) {
-                        $q->orWhereIn('exstation_id', $exstationIds);
-                    }
-                    
-                    if (!empty($outstationIds)) {
-                        $q->orWhereIn('outstation_id', $outstationIds);
-                    }
-                });
-            }
-        }
+        $query = $this->scopedDoctorsQuery($request, applyHeadquarterStationFilter: true);
 
         $headquarters = $this->accessibleHeadquartersCollection();
 
@@ -151,26 +81,31 @@ class DoctorController extends AccountBaseController
         $this->viewPermission = user()->permission('view_doctors');
         abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
 
+        // Match the on-screen list: same geography scope as index, then the same inline filters.
+        $useInlineFilters = $request->boolean('list_filter');
+        $query = $this->scopedDoctorsQuery($request, applyHeadquarterStationFilter: ! $useInlineFilters);
+
+        if ($useInlineFilters) {
+            $this->applyDoctorsInlineListFilters($query, $request);
+        }
+
+        $doctors = $query->orderBy('fullname')->get();
+
+        return Excel::download(new DoctorExport($doctors), 'doctors-' . now()->format('Y-m-d') . '.xlsx');
+    }
+
+    /**
+     * Base doctor query with designation-based geography access (MR, ABM, RBM, admin, etc.).
+     * Index and export both use this so every role sees the same scoped dataset.
+     */
+    private function scopedDoctorsQuery(Request $request, bool $applyHeadquarterStationFilter = true): Builder
+    {
         $query = Doctor::with(['headquarter', 'area', 'exstation', 'outstation', 'products'])
             ->where('company_id', company()->id);
 
         $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
         $accessibleAreaIds = $this->accessibleAreaIds();
         $accessibleStationIds = $this->accessibleStations();
-        $requestedHqId = $request->input('headquarter_id');
-
-        if (! user()->hasAdminLikeAccess()
-            && $accessibleHeadquarterIds === null
-            && (! $requestedHqId || $requestedHqId === 'all')
-            && $this->shouldRestrictNullHeadquarterScopeToDirectHq()) {
-            $employeeHeadquarterIds = $this->employeeAssignedHeadquarterIds(user());
-
-            if (! empty($employeeHeadquarterIds)) {
-                $accessibleHeadquarterIds = $employeeHeadquarterIds;
-                $accessibleAreaIds = [];
-                $accessibleStationIds = $this->stationIdsForHeadquarters($employeeHeadquarterIds);
-            }
-        }
 
         if (! user()->hasAdminLikeAccess() && $accessibleHeadquarterIds !== null) {
             $this->applyCustomerGeoScope(
@@ -181,43 +116,103 @@ class DoctorController extends AccountBaseController
             );
         }
 
+        if ($applyHeadquarterStationFilter) {
+            $this->applyDoctorsHeadquarterStationFilter($query, $request, $accessibleHeadquarterIds);
+        }
+
+        return $query;
+    }
+
+    /**
+     * Inline filters from the doctors index table (search, HQ, qualification, speciality).
+     * Mirrors the client-side applyDoctorsTableFilters() logic.
+     */
+    private function applyDoctorsInlineListFilters(Builder $query, Request $request): void
+    {
+        $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+
+        $requestedHqId = $request->input('headquarter_id');
         if ($requestedHqId && $requestedHqId !== 'all') {
-            $this->assertHeadquarterAccessible((int) $requestedHqId);
-            $hqId = $requestedHqId;
-            $hq = PharmaHeadquarter::with(['exstations', 'outstations'])->find($hqId);
-            $exstationIds = $hq ? $hq->exstations->pluck('id')->toArray() : [];
-            $outstationIds = $hq ? $hq->outstations->pluck('id')->toArray() : [];
+            $hqId = (int) $requestedHqId;
 
-            if ($request->has('station') && $request->station !== 'all') {
-                $station = $request->station;
-
-                if ($station === 'hq') {
-                    $query->where('headquarter_id', $hqId)
-                        ->whereNull('exstation_id')
-                        ->whereNull('outstation_id');
-                } elseif (strpos($station, 'ex-') === 0) {
-                    $query->where('exstation_id', str_replace('ex-', '', $station));
-                } elseif (strpos($station, 'out-') === 0) {
-                    $query->where('outstation_id', str_replace('out-', '', $station));
-                }
+            if (! user()->hasAdminLikeAccess()
+                && is_array($accessibleHeadquarterIds)
+                && ! in_array($hqId, $accessibleHeadquarterIds, true)) {
+                $query->whereRaw('1 = 0');
             } else {
-                $query->where(function ($q) use ($hqId, $exstationIds, $outstationIds) {
-                    $q->where('headquarter_id', $hqId);
-
-                    if (!empty($exstationIds)) {
-                        $q->orWhereIn('exstation_id', $exstationIds);
-                    }
-
-                    if (!empty($outstationIds)) {
-                        $q->orWhereIn('outstation_id', $outstationIds);
-                    }
-                });
+                $query->where('headquarter_id', $hqId);
             }
         }
 
-        $doctors = $query->orderBy('fullname')->get();
+        $qualification = trim((string) $request->input('qualification'));
+        if ($qualification !== '') {
+            $query->whereRaw('LOWER(TRIM(qualification)) = ?', [strtolower($qualification)]);
+        }
 
-        return Excel::download(new DoctorExport($doctors), 'doctors-' . now()->format('Y-m-d') . '.xlsx');
+        $speciality = trim((string) $request->input('speciality'));
+        if ($speciality !== '') {
+            $query->whereRaw('LOWER(TRIM(speciality)) = ?', [strtolower($speciality)]);
+        }
+
+        $search = trim((string) $request->input('search'));
+        if ($search !== '') {
+            $term = '%' . strtolower($search) . '%';
+            $query->where(function ($q) use ($term) {
+                $q->whereRaw('LOWER(fullname) LIKE ?', [$term])
+                    ->orWhereRaw('LOWER(COALESCE(email, \'\')) LIKE ?', [$term])
+                    ->orWhereRaw('LOWER(COALESCE(mobile, \'\')) LIKE ?', [$term]);
+            });
+        }
+    }
+
+    /**
+     * URL / server-side headquarter + station filter (includes ex/out stations linked to HQ).
+     */
+    private function applyDoctorsHeadquarterStationFilter(Builder $query, Request $request, ?array $accessibleHeadquarterIds): void
+    {
+        $requestedHqId = $request->input('headquarter_id');
+
+        if ($requestedHqId && $requestedHqId != 'all'
+            && ! user()->hasAdminLikeAccess()
+            && is_array($accessibleHeadquarterIds)
+            && ! in_array((int) $requestedHqId, $accessibleHeadquarterIds, true)) {
+            $requestedHqId = null;
+        }
+
+        if (! $requestedHqId || $requestedHqId == 'all') {
+            return;
+        }
+
+        $hqId = $requestedHqId;
+        $hq = PharmaHeadquarter::with(['exstations', 'outstations'])->find($hqId);
+        $exstationIds = $hq ? $hq->exstations->pluck('id')->toArray() : [];
+        $outstationIds = $hq ? $hq->outstations->pluck('id')->toArray() : [];
+
+        if ($request->has('station') && $request->station != 'all') {
+            $station = $request->station;
+
+            if ($station == 'hq') {
+                $query->where('headquarter_id', $hqId)
+                    ->whereNull('exstation_id')
+                    ->whereNull('outstation_id');
+            } elseif (strpos($station, 'ex-') === 0) {
+                $query->where('exstation_id', str_replace('ex-', '', $station));
+            } elseif (strpos($station, 'out-') === 0) {
+                $query->where('outstation_id', str_replace('out-', '', $station));
+            }
+        } else {
+            $query->where(function ($q) use ($hqId, $exstationIds, $outstationIds) {
+                $q->where('headquarter_id', $hqId);
+
+                if (! empty($exstationIds)) {
+                    $q->orWhereIn('exstation_id', $exstationIds);
+                }
+
+                if (! empty($outstationIds)) {
+                    $q->orWhereIn('outstation_id', $outstationIds);
+                }
+            });
+        }
     }
 
     public function create()
