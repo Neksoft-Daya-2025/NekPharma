@@ -345,8 +345,7 @@ $(function() {
         loadOpeningPrimaryForRow($tr);
     });
 
-    // Before submit: remove rows with no product, then reindex so only valid lines are sent
-    $('#saveStockStatementForm').on('submit', function(e) {
+    function prepareStatementRows() {
         $tbody.find('tr.statement-line-row').each(function() {
             if (!$(this).find('select.product-select').val()) {
                 $(this).remove();
@@ -354,8 +353,42 @@ $(function() {
         });
         reindexRows();
         if ($tbody.find('tr.statement-line-row').length === 0) {
-            e.preventDefault();
             alert('Please add at least one statement line with a product selected.');
+            return false;
+        }
+
+        return true;
+    }
+
+    $('#save-statement-form').on('click', function() {
+        var $form = $('#saveStockStatementForm');
+        if (!prepareStatementRows()) {
+            return;
+        }
+        if ($form[0].checkValidity && !$form[0].checkValidity()) {
+            $form[0].reportValidity();
+            return;
+        }
+
+        $.easyAjax({
+            url: $form.attr('action'),
+            container: '#saveStockStatementForm',
+            type: 'POST',
+            disableButton: true,
+            buttonSelector: '#save-statement-form',
+            data: $form.serialize(),
+            success: function(response) {
+                if (response.status === 'success' && response.action === 'redirect' && response.url) {
+                    window.location.href = response.url;
+                }
+            }
+        });
+    });
+
+    // Keep native submit behavior valid if the form is submitted by Enter key.
+    $('#saveStockStatementForm').on('submit', function(e) {
+        if (!prepareStatementRows()) {
+            e.preventDefault();
             return false;
         }
     });
