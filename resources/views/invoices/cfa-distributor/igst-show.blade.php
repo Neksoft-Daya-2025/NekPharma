@@ -35,39 +35,19 @@
             <?php Session::forget('error'); ?>
         @endif
 
-        <!-- INVOICE CARD START -->
-        <div class="card border-0 invoice">
-            <div class="card-body">
-                <div class="invoice-table-wrapper">
-                    <div class="row">
-                        <div class="col-sm-12">
-                            <div class="invoice-table-header">
-                                <div class="row">
-                                    <div class="col-sm-6">
-                                        <h4 class="invoice-title">@lang('app.invoice')</h4>
-                                    </div>
-                                    <div class="col-sm-6 text-right">
-                                        @if (!in_array('client', user_roles()))
-                                            <div class="invoice-actions">
-                                                @if ($editInvoicePermission == 'all' || ($editInvoicePermission == 'added' && $invoice->added_by == user()->id))
-                                                    <a href="{{ route('cfa-distributor-invoices.edit', [$invoice->id]) }}?type=igst" class="btn btn-sm btn-secondary">
-                                                        <i class="fa fa-edit"></i> @lang('app.edit')
-                                                    </a>
-                                                @endif
-                                                <button onclick="printInvoice()" class="btn btn-sm btn-info">
-                                                    <i class="fa fa-print"></i> @lang('app.print')
-                                                </button>
-                                            </div>
-                                        @endif
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+        <!-- Action buttons -->
+        <div class="d-flex justify-content-end mb-3 no-print">
+            <div class="btn-group">
+                @if ($editInvoicePermission == 'all' || ($editInvoicePermission == 'added' && ($invoice->added_by == user()->id)))
+                    <a href="{{ route('cfa-distributor-invoices.edit', $invoice->id) }}?type=igst" class="btn btn-secondary">
+                        <i class="fa fa-edit"></i> @lang('app.edit')
+                    </a>
+                @endif
+                <button onclick="printInvoice()" class="btn btn-info">
+                    <i class="fa fa-print"></i> @lang('app.print')
+                </button>
             </div>
         </div>
-        <!-- INVOICE CARD END -->
 
         <script>
             // Print function - inline for immediate availability

@@ -1,15 +1,16 @@
 @php
-    $deployNotice = \App\Helper\DeployNotice::current();
+    $deployNotice = \App\Helper\DeployNotice::visibleToCurrentUser()
+        ? \App\Helper\DeployNotice::current()
+        : null;
 @endphp
 @if ($deployNotice)
 <script>
-    $(function () {
-        var noticeId = @json($deployNotice['id']);
+    (function () {
         var noticeMessage = @json($deployNotice['message']);
         var deployedAt = @json($deployNotice['deployed_at'] ?? '');
-        var storageKey = 'ryva_deploy_notice_seen';
+        var storageKey = 'ryva_deploy_notice_dismissed';
 
-        if (localStorage.getItem(storageKey) === noticeId) {
+        if (localStorage.getItem(storageKey) === '1') {
             return;
         }
 
@@ -18,26 +19,33 @@
             text += ' (' + deployedAt + ')';
         }
 
-        Swal.fire({
-            icon: 'success',
-            title: 'System updated',
-            text: text,
-            toast: true,
-            position: 'top-end',
-            timer: 10000,
-            timerProgressBar: true,
-            showConfirmButton: true,
-            confirmButtonText: 'OK',
-            customClass: {
-                confirmButton: 'btn btn-primary',
-            },
-            showClass: {
-                popup: 'swal2-noanimation',
-                backdrop: 'swal2-noanimation',
-            },
-        });
+        function showDeployNotice() {
+            if (typeof Swal === 'undefined') {
+                return;
+            }
 
-        localStorage.setItem(storageKey, noticeId);
-    });
+            Swal.fire({
+                icon: 'success',
+                title: 'System updated',
+                html: '<p class="mb-0 text-left">' + text + '</p>',
+                width: '32rem',
+                showConfirmButton: true,
+                confirmButtonText: 'Close',
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+                customClass: {
+                    confirmButton: 'btn btn-primary',
+                },
+            }).then(function () {
+                localStorage.setItem(storageKey, '1');
+            });
+        }
+
+        if (document.readyState === 'complete') {
+            showDeployNotice();
+        } else {
+            window.addEventListener('load', showDeployNotice);
+        }
+    })();
 </script>
 @endif

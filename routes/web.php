@@ -1055,15 +1055,18 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
 
     // Pharma Field Force Management Routes
     Route::group(['prefix' => 'doctors'], function () {
-        Route::get('import', [DoctorController::class, 'importDoctor'])->name('doctors.import');
+                Route::get('export', [DoctorController::class, 'export'])->name('doctors.export');
+                Route::get('import', [DoctorController::class, 'importDoctor'])->name('doctors.import');
         Route::get('import/sample', [DoctorController::class, 'downloadSample'])->name('doctors.import.sample');
         Route::post('import', [DoctorController::class, 'importStore'])->name('doctors.import.store');
+        Route::post('import/process', [DoctorController::class, 'importProcess'])->name('doctors.import.process');
         Route::get('merge-duplicates', [DoctorController::class, 'mergeDuplicates'])->name('doctors.merge-duplicates');
         Route::post('merge-duplicates', [DoctorController::class, 'mergeDuplicatesRun'])->name('doctors.merge-duplicates.run');
     });
     Route::resource('doctors', DoctorController::class);
 
     Route::group(['prefix' => 'stockists'], function () {
+        Route::get('export', [StockistController::class, 'export'])->name('stockists.export');
         Route::get('import', [StockistController::class, 'importStockist'])->name('stockists.import');
         Route::get('import/sample', [StockistController::class, 'downloadSample'])->name('stockists.import.sample');
         Route::post('import', [StockistController::class, 'importStore'])->name('stockists.import.store');
@@ -1074,6 +1077,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::resource('stockists', StockistController::class);
 
     Route::group(['prefix' => 'chemists'], function () {
+        Route::get('export', [ChemistController::class, 'export'])->name('chemists.export');
         Route::get('import', [ChemistController::class, 'importChemist'])->name('chemists.import');
         Route::get('import/sample', [ChemistController::class, 'downloadSample'])->name('chemists.import.sample');
         Route::post('import', [ChemistController::class, 'importStore'])->name('chemists.import.store');

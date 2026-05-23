@@ -7,12 +7,25 @@ trait ExcelImportable
 
     private function getColumnValue(string $column)
     {
-        return $this->isColumnExists($column) ? $this->row[array_keys($this->columns, $column)[0]] : null;
+        $index = $this->columnIndexFor($column);
+
+        return $index === null ? null : ($this->row[$index] ?? null);
     }
 
     private function isColumnExists(string $column)
     {
-        return !empty(array_keys($this->columns, $column));
+        return $this->columnIndexFor($column) !== null;
+    }
+
+    private function columnIndexFor(string $column): ?int
+    {
+        $indices = array_keys($this->columns, $column, true);
+
+        if (empty($indices)) {
+            return null;
+        }
+
+        return (int) min($indices);
     }
 
     private function getRowValuesAsString(array $values)

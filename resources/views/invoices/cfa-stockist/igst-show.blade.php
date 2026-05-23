@@ -35,65 +35,19 @@
             <?php Session::forget('error'); ?>
         @endif
 
-        <!-- INVOICE CARD START -->
-        <div class="card border-0 invoice">
-            <div class="card-body">
-                <div class="invoice-table-wrapper">
-                    <div class="row">
-                        <div class="col-sm-12">
-                            <div class="invoice-table-header">
-                                <div class="row">
-                                    <div class="col-sm-6">
-                                        <h4 class="invoice-title">@lang('app.invoice')</h4>
-                                    </div>
-                                    <div class="col-sm-6 text-right">
-                                        <div class="invoice-actions">
-                                            @if (!in_array('client', user_roles()))
-                                                <a href="{{ route('invoices.download', [$invoice->id]) }}?type=igst" class="btn btn-sm btn-primary">
-                                                    <i class="fa fa-download"></i> @lang('app.download')
-                                                </a>
-                                            @endif
-                                            @if (!empty($canEditCfaStockistInvoice) || $editInvoicePermission == 'all' || ($editInvoicePermission == 'added' && $invoice->added_by == user()->id))
-                                                <a href="{{ route('cfa-stockist-invoices.edit', [$invoice->id]) }}?type=igst" class="btn btn-sm btn-secondary">
-                                                    <i class="fa fa-edit"></i> @lang('app.edit')
-                                                </a>
-                                            @endif
-                                            @if (!empty($canDeleteCfaStockistInvoice) || $deleteInvoicePermission == 'all' || ($deleteInvoicePermission == 'added' && $invoice->added_by == user()->id))
-                                                <a href="javascript:;" class="btn btn-sm btn-danger delete-invoice" data-invoice-id="{{ $invoice->id }}">
-                                                    <i class="fa fa-trash"></i> @lang('app.delete')
-                                                </a>
-                                            @endif
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+        <!-- Action buttons -->
+        <div class="d-flex justify-content-end mb-3 no-print">
+            <div class="btn-group">
+                @if (!empty($canEditCfaStockistInvoice) || $editInvoicePermission == 'all' || ($editInvoicePermission == 'added' && ($invoice->added_by == user()->id)))
+                    <a href="{{ route('cfa-stockist-invoices.edit', $invoice->id) }}?type=igst" class="btn btn-secondary">
+                        <i class="fa fa-edit"></i> @lang('app.edit')
+                    </a>
+                @endif
+                <button onclick="window.print()" class="btn btn-info">
+                    <i class="fa fa-print"></i> @lang('app.print')
+                </button>
             </div>
         </div>
-        <!-- INVOICE CARD END -->
-
-        <script>
-            $(document).ready(function() {
-                // Handle delete invoice
-                $('.delete-invoice').on('click', function() {
-                    var invoiceId = $(this).data('invoice-id');
-                    if (confirm('Are you sure you want to delete this invoice?')) {
-                        $.easyAjax({
-                            url: "{{ route('invoices.destroy', [$invoice->id]) }}",
-                            type: "POST",
-                            data: { '_method': 'DELETE', '_token': '{{ csrf_token() }}' },
-                            success: function(response) {
-                                if (response.status == 'success') {
-                                    window.location.href = "{{ route('cfa-stockist-invoices.index') }}";
-                                }
-                            }
-                        });
-                    }
-                });
-            });
-        </script>
 
         <!-- Invoice Content -->
         <div class="card border-0 invoice">

@@ -1,4 +1,6 @@
 @php
+    $isIgstInvoiceFormat = $isIgstInvoiceFormat ?? (($invoice->invoice_type ?? '') === 'igst');
+
     // Helper function to format scheme display (e.g., "30 10+1" means 30 paid with 10+1 scheme)
     if (!function_exists('formatSchemeDisplay')) {
         function formatSchemeDisplay($quantity, $scheme) {
@@ -112,7 +114,9 @@
                         
                         // Identify SGST and CGST by tax name
                         $taxNameUpper = strtoupper($tax->tax_name ?? '');
-                        if (strpos($taxNameUpper, 'SGST') !== false) {
+                        if ($isIgstInvoiceFormat) {
+                            $gstBreakdown[$rate]['total_gst'] += $taxAmount;
+                        } elseif (strpos($taxNameUpper, 'SGST') !== false) {
                             $gstBreakdown[$rate]['sgst'] += $taxAmount;
                         } elseif (strpos($taxNameUpper, 'CGST') !== false) {
                             $gstBreakdown[$rate]['cgst'] += $taxAmount;
@@ -121,7 +125,9 @@
                             $gstBreakdown[$rate]['sgst'] += $taxAmount / 2;
                             $gstBreakdown[$rate]['cgst'] += $taxAmount / 2;
                         }
-                        $gstBreakdown[$rate]['total_gst'] += $taxAmount;
+                        if (!$isIgstInvoiceFormat) {
+                            $gstBreakdown[$rate]['total_gst'] += $taxAmount;
+                        }
                     }
                 }
             }
@@ -612,7 +618,7 @@
         <table class="phi-title-row" style="margin-bottom:0;border-bottom:0;">
             <tr>
                 <td colspan="4" style="text-align:center;border-bottom:1px solid #000;">
-                    <div class="phi-title">TAX INVOICE</div>
+                    <div class="phi-title">{{ $isIgstInvoiceFormat ? 'IGST INVOICE' : 'TAX INVOICE' }}</div>
                     <div class="phi-sub-legal">Issued under sec. 31 of CGST act, 2017 read with rule 48 of CGST Rule, 2017</div>
                 </td>
                 <td style="width:11%;text-align:right;vertical-align:top;font-size:8px;border-bottom:1px solid #000;">PAGE 1 OF 1</td>
@@ -751,8 +757,12 @@
                 <th width="6%">PTS</th>
                 <th width="6%">PTR</th>
                 <th width="5%">DIS (%)</th>
-                <th width="5%">SGST</th>
-                <th width="5%">CGST</th>
+                @if($isIgstInvoiceFormat)
+                    <th width="10%">IGST</th>
+                @else
+                    <th width="5%">SGST</th>
+                    <th width="5%">CGST</th>
+                @endif
                 <th width="10%">Amount</th>
             </tr>
         </thead>
@@ -976,6 +986,7 @@
                     // Calculate tax amounts - identify SGST and CGST by tax name
                     $sgstAmount = 0;
                     $cgstAmount = 0;
+                    $igstAmount = 0;
                     
                     // Get taxes from invoice item, or fallback to purchase entry or product
                     $taxIds = [];
@@ -1042,8 +1053,9 @@
                                 $taxAmount = ($taxBaseAmount * $tax->rate_percent) / 100;
                                 $taxNameUpper = strtoupper($tax->tax_name ?? '');
                                 
-                                // Check if tax name contains SGST or CGST
-                                if (strpos($taxNameUpper, 'SGST') !== false) {
+                                if ($isIgstInvoiceFormat) {
+                                    $igstAmount += $taxAmount;
+                                } elseif (strpos($taxNameUpper, 'SGST') !== false) {
                                     $sgstAmount += $taxAmount;
                                 } elseif (strpos($taxNameUpper, 'CGST') !== false) {
                                     $cgstAmount += $taxAmount;
@@ -1094,8 +1106,12 @@
                     <td class="text-center">{{ number_format($pts, 2) }}</td>
                     <td class="text-center">{{ number_format($ptr, 2) }}</td>
                     <td class="text-center">{{ number_format($dis, 2) }}</td>
-                    <td class="text-center">{{ number_format($sgstAmount, 2) }}</td>
-                    <td class="text-center">{{ number_format($cgstAmount, 2) }}</td>
+                    @if($isIgstInvoiceFormat)
+                        <td class="text-center">{{ number_format($igstAmount, 2) }}</td>
+                    @else
+                        <td class="text-center">{{ number_format($sgstAmount, 2) }}</td>
+                        <td class="text-center">{{ number_format($cgstAmount, 2) }}</td>
+                    @endif
                     <td class="text-center">{{ number_format($item->amount, 2) }}</td>
                 </tr>
             @endforeach
@@ -1114,9 +1130,13 @@
                             <th width="15%">TOTAL</th>
                             <th width="12%">SCHEME</th>
                             <th width="12%">DISCOUNT</th>
-                            <th width="12%">SGST</th>
-                            <th width="12%">CGST</th>
-                            <th width="17%">TOTAL GST</th>
+                            @if($isIgstInvoiceFormat)
+                                <th width="41%">IGST</th>
+                            @else
+                                <th width="12%">SGST</th>
+                                <th width="12%">CGST</th>
+                                <th width="17%">TOTAL GST</th>
+                            @endif
                         </tr>
                     </thead>
                     <tbody>
@@ -1137,9 +1157,13 @@
                                 <td class="text-right">{{ number_format($data['total'], 2) }}</td>
                                 <td class="text-right">0.00</td>
                                 <td class="text-right">0.00</td>
-                                <td class="text-right">{{ number_format($data['sgst'], 2) }}</td>
-                                <td class="text-right">{{ number_format($data['cgst'], 2) }}</td>
-                                <td class="text-right">{{ number_format($data['total_gst'], 2) }}</td>
+                                @if($isIgstInvoiceFormat)
+                                    <td class="text-right">{{ number_format($data['total_gst'], 2) }}</td>
+                                @else
+                                    <td class="text-right">{{ number_format($data['sgst'], 2) }}</td>
+                                    <td class="text-right">{{ number_format($data['cgst'], 2) }}</td>
+                                    <td class="text-right">{{ number_format($data['total_gst'], 2) }}</td>
+                                @endif
                             </tr>
                         @endforeach
                         <tr style="font-weight: bold;">
@@ -1147,9 +1171,13 @@
                             <td class="text-right">{{ number_format($invoice->sub_total, 2) }}</td>
                             <td class="text-right">0.00</td>
                             <td class="text-right">{{ number_format($discount, 2) }}</td>
-                            <td class="text-right">{{ number_format($totalSGST, 2) }}</td>
-                            <td class="text-right">{{ number_format($totalCGST, 2) }}</td>
-                            <td class="text-right">{{ number_format($totalGST, 2) }}</td>
+                            @if($isIgstInvoiceFormat)
+                                <td class="text-right">{{ number_format($totalGST, 2) }}</td>
+                            @else
+                                <td class="text-right">{{ number_format($totalSGST, 2) }}</td>
+                                <td class="text-right">{{ number_format($totalCGST, 2) }}</td>
+                                <td class="text-right">{{ number_format($totalGST, 2) }}</td>
+                            @endif
                         </tr>
                     </tbody>
                 </table>
@@ -1178,8 +1206,12 @@
                         <!-- Right Column: DIS AMT., SGST PAYBLE, CGST PAYBLE, CR/DR NOTE -->
                         <td style="padding: 3px 4px; border: 1px solid #000; font-size: 9px; vertical-align: top; line-height: 1.3; width: 50%;">
                             DIS AMT.: {{ number_format($discount, 2) }}<br>
-                            SGST PAYBLE: {{ number_format($totalSGST, 2) }}<br>
-                            CGST PAYBLE: {{ number_format($totalCGST, 2) }}<br>
+                            @if($isIgstInvoiceFormat)
+                                IGST PAYBLE: {{ number_format($totalGST, 2) }}<br>
+                            @else
+                                SGST PAYBLE: {{ number_format($totalSGST, 2) }}<br>
+                                CGST PAYBLE: {{ number_format($totalCGST, 2) }}<br>
+                            @endif
                             CR/DR NOTE: 0.00
                         </td>
                     </tr>

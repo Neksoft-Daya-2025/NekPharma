@@ -13,7 +13,7 @@
                         <a href="{{ route('doctors.import.sample') }}" class="btn btn-sm btn-primary ml-2" id="download-sample-file" target="_blank">
                             <i class="fa fa-download"></i> @lang('Download Sample File')
                         </a>
-                        <p class="mb-0 mt-2 small text-muted">Keep &quot;Contains headings&quot; enabled if your file has a header row. <strong>Do not delete empty columns</strong> between Speciality and Products (Mobile, Email, Gender, DOB, DOM can be blank but columns must stay). HQ names must match your system exactly (e.g. BALRAMPUR). Station Type: use <strong>HQ</strong> or <strong>headquarter</strong> for HQ doctors.</p>
+                        <p class="mb-0 mt-2 small text-muted"><strong>Step 1:</strong> Upload your file, then on the next screen you will <strong>map Excel headers</strong> to fields (Dr. Name, HQ, etc.) before import runs. Keep &quot;Contains headings&quot; enabled. <strong>Do not delete empty columns</strong> between Speciality and Products (Mobile–DOM can be blank). HQ names must match your system (e.g. BALRAMPUR). Station Type: use <strong>HQ</strong> or <strong>headquarter</strong> for HQ doctors.</p>
                     </div>
                 </div>
                 <div class="row py-20">

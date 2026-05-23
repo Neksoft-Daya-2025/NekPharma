@@ -13,9 +13,11 @@ use App\Models\PharmaHeadquarterAssign;
 use App\Imports\DoctorImport;
 use App\Jobs\ImportDoctorJob;
 use App\Exports\DoctorSampleExport;
+use App\Exports\DoctorExport;
 use App\Traits\ImportExcel;
 use App\Traits\AccessibleHeadquarters;
 use App\Http\Requests\Admin\Employee\ImportRequest;
+use App\Http\Requests\Admin\Employee\ImportProcessRequest;
 use Maatwebsite\Excel\Facades\Excel;
 use Maatwebsite\Excel\HeadingRowImport;
 use Illuminate\Support\Facades\Bus;
@@ -140,8 +142,75 @@ class DoctorController extends AccountBaseController
             ->values();
         $this->headquarterStations = $this->formatHeadquarterStations($headquarters);
         $this->defaultHeadquarterId = $this->determineDefaultHeadquarterId($headquarters, request()->get('headquarter_id'));
-        
+
         return view('doctors.index', $this->data);
+    }
+
+    public function export(Request $request)
+    {
+        $this->viewPermission = user()->permission('view_doctors');
+        abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
+
+        $query = Doctor::with(['headquarter', 'area', 'exstation', 'outstation', 'products'])
+            ->where('company_id', company()->id);
+
+        $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+        $accessibleAreaIds = $this->accessibleAreaIds();
+        $accessibleStationIds = $this->accessibleStations();
+
+        if (! user()->hasAdminLikeAccess() && $accessibleHeadquarterIds !== null) {
+            $this->applyCustomerGeoScope(
+                $query,
+                $accessibleHeadquarterIds,
+                $accessibleAreaIds ?? [],
+                $accessibleStationIds
+            );
+        }
+
+        $requestedHqId = $request->input('headquarter_id');
+        if ($requestedHqId && $requestedHqId !== 'all'
+            && !user()->hasAdminLikeAccess()
+            && is_array($accessibleHeadquarterIds)
+            && !in_array((int) $requestedHqId, $accessibleHeadquarterIds, true)) {
+            $requestedHqId = null;
+        }
+
+        if ($requestedHqId && $requestedHqId !== 'all') {
+            $hqId = $requestedHqId;
+            $hq = PharmaHeadquarter::with(['exstations', 'outstations'])->find($hqId);
+            $exstationIds = $hq ? $hq->exstations->pluck('id')->toArray() : [];
+            $outstationIds = $hq ? $hq->outstations->pluck('id')->toArray() : [];
+
+            if ($request->has('station') && $request->station !== 'all') {
+                $station = $request->station;
+
+                if ($station === 'hq') {
+                    $query->where('headquarter_id', $hqId)
+                        ->whereNull('exstation_id')
+                        ->whereNull('outstation_id');
+                } elseif (strpos($station, 'ex-') === 0) {
+                    $query->where('exstation_id', str_replace('ex-', '', $station));
+                } elseif (strpos($station, 'out-') === 0) {
+                    $query->where('outstation_id', str_replace('out-', '', $station));
+                }
+            } else {
+                $query->where(function ($q) use ($hqId, $exstationIds, $outstationIds) {
+                    $q->where('headquarter_id', $hqId);
+
+                    if (!empty($exstationIds)) {
+                        $q->orWhereIn('exstation_id', $exstationIds);
+                    }
+
+                    if (!empty($outstationIds)) {
+                        $q->orWhereIn('outstation_id', $outstationIds);
+                    }
+                });
+            }
+        }
+
+        $doctors = $query->orderBy('fullname')->get();
+
+        return Excel::download(new DoctorExport($doctors), 'doctors-' . now()->format('Y-m-d') . '.xlsx');
     }
 
     public function create()
@@ -598,186 +667,26 @@ class DoctorController extends AccountBaseController
     public function importStore(ImportRequest $request)
     {
         try {
-            // Direct import without mapping step
-            $this->importClassName = 'DoctorImport';
-            $uploadedFile = Files::upload($request->import_file, Files::IMPORT_FOLDER);
-            $filePath = public_path(Files::UPLOAD_FOLDER . '/' . Files::IMPORT_FOLDER . '/' . $uploadedFile);
+            $rvalue = $this->importDoctorFileProcess($request, DoctorImport::class);
 
-            if (!file_exists($filePath)) {
-                return Reply::error('File not found after upload');
-            }
-
-            // Preserve empty columns (e.g. blank Mobile–DOM with products in N–P); ToArray collapses indices
-            $excelData = $this->readExcelPreserveColumnIndices($filePath);
-
-            if (!is_array($excelData) || empty($excelData)) {
-                Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
-                return Reply::error('No data found in the file');
-            }
-
-            $hasHeading = $request->has('heading');
-            $headingRow = ($hasHeading && isset($excelData[0]) && is_array($excelData[0])) ? $excelData[0] : [];
-
-            if ($hasHeading) {
-                array_shift($excelData);
-            }
-
-            // Check if data is empty after removing header
-            $isDataNull = true;
-            foreach ($excelData as $rowitem) {
-                if (is_array($rowitem) && array_filter($rowitem)) {
-                    $isDataNull = false;
-                    break;
+            if ($rvalue === 'abort') {
+                if (!empty($this->file)) {
+                    Files::deleteFile($this->file, Files::IMPORT_FOLDER);
                 }
-            }
 
-            if ($isDataNull || empty($excelData)) {
-                Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
                 return Reply::error(__('messages.abortAction'));
             }
 
-            // Column map: positional order matches DoctorImport::fields() / sample file (A=Dr. Name, B=HQ, …)
-            $importColumns = DoctorImport::fields();
-            $columns = [];
-            foreach ($importColumns as $index => $column) {
-                $columns[$index] = $column['id'];
-            }
+            $view = view('doctors.ajax.import_mapping', $this->data)->render();
 
-            $heading = $headingRow;
-
-            if ($hasHeading && !empty($heading)) {
-                    \Log::info('Excel headings found: ' . json_encode($heading));
-                    
-                    // Normalize headings for matching
-                    $normalizedHeadings = array_map(function($h) {
-                        return strtolower(trim(preg_replace('/[^a-z0-9]/', '', (string)$h)));
-                    }, $heading);
-                    \Log::info('Normalized headings: ' . json_encode($normalizedHeadings));
-                    
-                    // Create auto-mapping with priority: exact matches first, then partial matches
-                    foreach ($heading as $index => $headingValue) {
-                        if (!isset($normalizedHeadings[$index])) continue;
-                        
-                        $normalizedHeading = $normalizedHeadings[$index];
-                        $bestMatch = null;
-                        $bestMatchScore = 0;
-                        
-                        $normalize = function ($s) {
-                            return strtolower(trim(preg_replace('/[^a-z0-9]/', '', (string)$s)));
-                        };
-
-                        foreach ($importColumns as $column) {
-                            $columnId = $normalize($column['id'] ?? '');
-                            $columnNameValue = is_array($column['name'] ?? null) ? (string)(($column['name'][0] ?? '') ?: '') : (string)($column['name'] ?? '');
-                            $columnName = $normalize($columnNameValue);
-
-                            $columnIdWithoutUnderscore = str_replace('_', '', $columnId);
-                            $columnIdParts = explode('_', $columnId);
-
-                            $score = 0;
-
-                            // Exact match on aliases (client file headers: Doctor Name, Dr Qual., HQ/EX/OS, etc.)
-                            if (!empty($column['aliases']) && is_array($column['aliases'])) {
-                                foreach ($column['aliases'] as $alias) {
-                                    $normAlias = $normalize($alias);
-                                    if ($normalizedHeading === $normAlias) {
-                                        $score = 95;
-                                        break;
-                                    }
-                                    if (strpos($normalizedHeading, $normAlias) !== false || strpos($normAlias, $normalizedHeading) !== false) {
-                                        if ($score < 85) {
-                                            $score = 85;
-                                        }
-                                    }
-                                }
-                            }
-                            // Exact match gets highest priority
-                            if ($score < 100 && ($normalizedHeading === $columnId || $normalizedHeading === $columnIdWithoutUnderscore)) {
-                                $score = 100;
-                            }
-                            // Column name exact match
-                            elseif ($score < 90 && $normalizedHeading === $columnName) {
-                                $score = 90;
-                            }
-                            // Heading starts with column ID
-                            elseif ($score < 80 && (strpos($normalizedHeading, $columnId) === 0 || strpos($normalizedHeading, $columnIdWithoutUnderscore) === 0)) {
-                                $score = 80;
-                            }
-                            // Column ID contains heading
-                            elseif ($score < 70 && (strpos($columnId, $normalizedHeading) === 0 || strpos($columnIdWithoutUnderscore, $normalizedHeading) === 0)) {
-                                $score = 70;
-                            }
-                            // All parts of column ID are in heading (e.g. station_type)
-                            elseif ($score < 60 && count($columnIdParts) > 1) {
-                                $allPartsFound = true;
-                                foreach ($columnIdParts as $part) {
-                                    if (strpos($normalizedHeading, $part) === false) {
-                                        $allPartsFound = false;
-                                        break;
-                                    }
-                                }
-                                if ($allPartsFound) {
-                                    $score = 60;
-                                }
-                            }
-                            // Partial match (heading contains column ID)
-                            elseif ($score < 50 && (strpos($normalizedHeading, $columnId) !== false || strpos($normalizedHeading, $columnIdWithoutUnderscore) !== false)) {
-                                $score = 50;
-                            }
-                            // Column name partial match
-                            elseif ($score < 40 && (strpos($normalizedHeading, $columnName) !== false || strpos($columnName, $normalizedHeading) !== false)) {
-                                $score = 40;
-                            }
-
-                            if ($score > $bestMatchScore) {
-                                $bestMatchScore = $score;
-                                $bestMatch = $column['id'];
-                            }
-                        }
-                        
-                        // Only map if we found a reasonable match (score >= 40)
-                        if ($bestMatch && $bestMatchScore >= 40) {
-                            $columns[$index] = $bestMatch;
-                            \Log::info('Mapped column "' . $headingValue . '" (index ' . $index . ') to "' . $bestMatch . '" (score: ' . $bestMatchScore . ')');
-                        }
-                    }
-                    
-                    \Log::info('Column mapping result: ' . json_encode($columns));
-            }
-
-            // Process import directly
-            $allowedHqIds = $this->accessibleHeadquarterIds();
-            $batch = $this->importJobProcessDirect($excelData, $columns, $uploadedFile, DoctorImport::class, ImportDoctorJob::class, $allowedHqIds);
-
-            if (!$batch) {
-                Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
-                return Reply::error('Failed to create import batch');
-            }
-
-            // Prepare data for view
-            $this->data['batch'] = $batch;
-            $this->data['batchId'] = is_object($batch) && isset($batch->id) ? $batch->id : null;
-            
-            try {
-                $view = view('doctors.ajax.import_progress', $this->data)->render();
-            } catch (\Exception $viewError) {
-                \Log::error('View render error: ' . $viewError->getMessage());
-                Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
-                return Reply::error('Failed to render progress view: ' . $viewError->getMessage());
-            }
-
-            $batchId = is_object($batch) && isset($batch->id) ? $batch->id : null;
-            return Reply::successWithData(__('messages.importProcessStart'), [
-                'view' => $view, 
-                'batchId' => $batchId
-            ]);
+            return Reply::successWithData(__('messages.importUploadSuccess'), ['view' => $view]);
         } catch (\Exception $e) {
             \Log::error('Import error: ' . $e->getMessage());
             \Log::error('Stack trace: ' . $e->getTraceAsString());
             \Log::error('File: ' . $e->getFile() . ' Line: ' . $e->getLine());
-            if (isset($uploadedFile)) {
+            if (!empty($this->file)) {
                 try {
-                    Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
+                    Files::deleteFile($this->file, Files::IMPORT_FOLDER);
                 } catch (\Exception $deleteError) {
                     // Ignore delete errors
                 }
@@ -787,15 +696,75 @@ class DoctorController extends AccountBaseController
         } catch (\Throwable $e) {
             \Log::error('Import fatal error: ' . $e->getMessage());
             \Log::error('Stack trace: ' . $e->getTraceAsString());
-            if (isset($uploadedFile)) {
+            if (!empty($this->file)) {
                 try {
-                    Files::deleteFile($uploadedFile, Files::IMPORT_FOLDER);
+                    Files::deleteFile($this->file, Files::IMPORT_FOLDER);
                 } catch (\Exception $deleteError) {
                     // Ignore delete errors
                 }
             }
             $errorMessage = config('app.debug') ? $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine() : 'Import failed. Please check the file format and try again.';
             return Reply::error($errorMessage);
+        }
+    }
+
+    /**
+     * Run import after user confirms column mapping.
+     */
+    public function importProcess(ImportProcessRequest $request)
+    {
+        try {
+            $this->importClassName = 'DoctorImport';
+            $filePath = public_path(Files::UPLOAD_FOLDER . '/' . Files::IMPORT_FOLDER . '/' . $request->file);
+
+            if (!file_exists($filePath)) {
+                return Reply::error('Import file not found. Please upload again.');
+            }
+
+            $excelData = $this->readExcelPreserveColumnIndices($filePath);
+
+            if ($request->boolean('has_heading', true) && !empty($excelData)) {
+                array_shift($excelData);
+            }
+
+            $excelData = DoctorImport::filterBlankRows($excelData);
+
+            $columns = array_filter($request->columns ?? [], static function ($value) {
+                return $value !== null && $value !== '';
+            });
+
+            if (empty($columns)) {
+                return Reply::error('Please map at least Dr. Name and HQ columns.');
+            }
+
+            $newStationWarnings = $this->newStationWarnings($excelData, $columns);
+            if (!empty($newStationWarnings) && !$request->boolean('confirm_new_stations')) {
+                return Reply::dataOnly([
+                    'status' => 'confirm_station_spellings',
+                    'message' => 'These station names are not assigned yet and will be created automatically. Please check spelling before continuing.',
+                    'stations' => $newStationWarnings,
+                ]);
+            }
+
+            $allowedHqIds = $this->accessibleHeadquarterIds();
+            $batch = $this->importJobProcessDirect(
+                $excelData,
+                $columns,
+                $request->file,
+                DoctorImport::class,
+                ImportDoctorJob::class,
+                $allowedHqIds
+            );
+
+            if (!$batch) {
+                return Reply::error('Failed to start import.');
+            }
+
+            return Reply::successWithData(__('messages.importProcessStart'), ['batch' => $batch]);
+        } catch (\Exception $e) {
+            \Log::error('Doctor import process error: ' . $e->getMessage());
+
+            return Reply::error(config('app.debug') ? $e->getMessage() : 'Import failed. Please try again.');
         }
     }
 
@@ -813,6 +782,85 @@ class DoctorController extends AccountBaseController
             \Log::error('Stack trace: ' . $e->getTraceAsString());
             return Reply::error('Error generating sample file: ' . $e->getMessage());
         }
+    }
+
+    private function newStationWarnings(array $excelData, array $columns): array
+    {
+        $companyId = company()->id;
+        $headquarters = PharmaHeadquarter::with(['exstations', 'outstations'])
+            ->where('company_id', $companyId)
+            ->get()
+            ->keyBy(fn ($headquarter) => ImportDoctorJob::normalizeGeoName($headquarter->name));
+
+        $warnings = [];
+
+        foreach ($excelData as $rowIndex => $row) {
+            $headquarterName = $this->importColumnValue($row, $columns, 'headquarter');
+            $stationName = $this->importColumnValue($row, $columns, 'station');
+            $stationType = ImportDoctorJob::normalizeStationType($this->importColumnValue($row, $columns, 'station_type'));
+
+            if (!in_array($stationType, ['exstation', 'outstation'], true) || $stationName === '') {
+                continue;
+            }
+
+            $headquarter = $this->findImportGeoMatch($headquarters, $headquarterName);
+            if (!$headquarter) {
+                continue;
+            }
+
+            if (ImportDoctorJob::normalizeGeoName($stationName) === ImportDoctorJob::normalizeGeoName($headquarter->name)) {
+                continue;
+            }
+
+            $stations = $stationType === 'exstation' ? $headquarter->exstations : $headquarter->outstations;
+            if ($this->findImportGeoMatch($stations, $stationName)) {
+                continue;
+            }
+
+            $key = $headquarter->id . '|' . $stationType . '|' . ImportDoctorJob::normalizeGeoName($stationName);
+            $warnings[$key] = [
+                'row' => $rowIndex + 2,
+                'headquarter' => $headquarter->name,
+                'station_type' => $stationType === 'exstation' ? 'Ex-Station' : 'Outstation',
+                'station' => $stationName,
+            ];
+        }
+
+        return array_values($warnings);
+    }
+
+    private function importColumnValue(array $row, array $columns, string $field): string
+    {
+        $indices = array_keys($columns, $field, true);
+        if (empty($indices)) {
+            return '';
+        }
+
+        $value = $row[(int) min($indices)] ?? '';
+
+        return trim((string) $value);
+    }
+
+    private function findImportGeoMatch($items, string $name)
+    {
+        $normalizedName = ImportDoctorJob::normalizeGeoName($name);
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        foreach ($items as $item) {
+            $candidate = ImportDoctorJob::normalizeGeoName($item->name ?? '');
+            if ($candidate === $normalizedName || str_starts_with($candidate, $normalizedName) || str_starts_with($normalizedName, $candidate)) {
+                return $item;
+            }
+
+            similar_text($normalizedName, $candidate, $score);
+            if ($score >= 85) {
+                return $item;
+            }
+        }
+
+        return null;
     }
 
     /**

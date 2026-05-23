@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Models\PharmaHeadquarter;
 use App\Models\PharmaExstation;
 use App\Models\PharmaOutstation;
+use App\Models\PharmaHeadquarterAssign;
 use Exception;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
@@ -61,20 +62,20 @@ class ImportDoctorJob implements ShouldQueue
         $headquarters = PharmaHeadquarter::with(['exstations', 'outstations'])
             ->where('company_id', $companyId)
             ->get()
-            ->keyBy('name');
+            ->keyBy(fn ($headquarter) => self::normalizeGeoName($headquarter->name));
         
         \Log::info('Doctor import: Loaded ' . $headquarters->count() . ' headquarters: ' . $headquarters->keys()->implode(', '));
         
         // Build exstations map: headquarter_id => [stations keyed by name]
         $exstations = collect();
         foreach ($headquarters as $hq) {
-            $exstations[$hq->id] = $hq->exstations->keyBy('name');
+            $exstations[$hq->id] = $hq->exstations->keyBy(fn ($station) => self::normalizeGeoName($station->name));
         }
         
         // Build outstations map: headquarter_id => [stations keyed by name]
         $outstations = collect();
         foreach ($headquarters as $hq) {
-            $outstations[$hq->id] = $hq->outstations->keyBy('name');
+            $outstations[$hq->id] = $hq->outstations->keyBy(fn ($station) => self::normalizeGeoName($station->name));
         }
         
         $allProducts = Product::where('company_id', $companyId)
@@ -85,17 +86,25 @@ class ImportDoctorJob implements ShouldQueue
         $existingDoctorsByEmail = Doctor::where('company_id', $companyId)
             ->whereNotNull('email')
             ->get()
-            ->keyBy('email');
+            ->mapWithKeys(function ($doctor) {
+                $key = self::normalizeEmailForDuplicate($doctor->email);
+
+                return $key ? [$key => $doctor] : [];
+            });
         
         $existingDoctorsByMobile = Doctor::where('company_id', $companyId)
             ->whereNotNull('mobile')
             ->get()
-            ->keyBy('mobile');
+            ->mapWithKeys(function ($doctor) {
+                $key = self::normalizeMobileForDuplicate($doctor->mobile);
+
+                return $key ? [$key => $doctor] : [];
+            });
         
         $existingDoctorsByNameHq = Doctor::where('company_id', $companyId)
             ->get()
             ->groupBy(function($doctor) {
-                return $doctor->fullname . '|' . $doctor->headquarter_id;
+                return strtolower(preg_replace('/\s+/', ' ', trim($doctor->fullname))) . '|' . $doctor->headquarter_id;
             });
         
         // Process all rows in this chunk within a single transaction
@@ -115,8 +124,13 @@ class ImportDoctorJob implements ShouldQueue
 
                 \Log::info('Processing row ' . $rowNum . ' of ' . count($this->rows));
 
+                if (!$this->rowHasData($rowData)) {
+                    continue;
+                }
+
                 // Only Dr. Name and HQ are mandatory; rest have defaults for client format (Dr. Name, HQ, Station Name, Dr. Type)
-                $fullname = $this->isColumnExists('fullname') ? trim((string) $this->getColumnValue('fullname')) : '';
+                // Collapse internal whitespace so "MUKESH  SRIVASTAVA" and "MUKESH SRIVASTAVA" are treated the same.
+                $fullname = $this->isColumnExists('fullname') ? preg_replace('/\s+/', ' ', trim((string) $this->getColumnValue('fullname'))) : '';
                 $headquarterName = $this->isColumnExists('headquarter') ? trim((string) $this->getColumnValue('headquarter')) : '';
 
                 if (empty($fullname) || empty($headquarterName)) {
@@ -223,16 +237,11 @@ class ImportDoctorJob implements ShouldQueue
     {
         // Get headquarter from cache (no DB query)
         // Try exact match first
-        $headquarter = $headquarters->get($headquarterName);
+        $headquarter = $headquarters->get(self::normalizeGeoName($headquarterName));
 
-        // If not found, try case-insensitive match
+        // If not found, try case-insensitive/fuzzy match
         if (!$headquarter) {
-            foreach ($headquarters as $hq) {
-                if (strcasecmp(trim($hq->name), trim($headquarterName)) === 0) {
-                    $headquarter = $hq;
-                    break;
-                }
-            }
+            $headquarter = $this->findGeoByName($headquarters, $headquarterName);
         }
 
         // If still not found, try partial match (handles truncated Excel column names)
@@ -250,7 +259,7 @@ class ImportDoctorJob implements ShouldQueue
         }
 
         if (!$headquarter) {
-            $availableHQs = $headquarters->keys()->implode(', ');
+            $availableHQs = $headquarters->pluck('name')->implode(', ');
             $errorMsg = 'Doctor import failed for "' . $fullname . '": Headquarter "' . $headquarterName . '" not found. Available headquarters: ' . $availableHQs;
             \Log::warning($errorMsg);
             throw new \Exception($errorMsg);
@@ -265,36 +274,24 @@ class ImportDoctorJob implements ShouldQueue
 
         // Get email and mobile for matching
         $email = $this->isColumnExists('email') ? trim($this->getColumnValue('email')) : null;
+        $emailKey = self::normalizeEmailForDuplicate($email);
         $mobileRaw = $this->isColumnExists('mobile') ? trim($this->getColumnValue('mobile')) : null;
 
-        // Convert scientific notation to regular number (Excel converts large numbers to scientific notation)
-        $mobile = null;
-        if (!empty($mobileRaw)) {
-            // Check if it's in scientific notation (e.g., 9.88E+09)
-            if (preg_match('/^[\d.]+E\+?\d+$/i', $mobileRaw)) {
-                $mobile = (string)(int)(float)$mobileRaw; // Convert scientific notation to integer string
-            } else {
-                // Remove any non-numeric characters except + at the start
-                $mobile = preg_replace('/[^\d+]/', '', $mobileRaw);
-                // Remove leading + if present (we'll store without country code prefix)
-                $mobile = ltrim($mobile, '+');
-            }
-            // Ensure it's not empty after processing
-            $mobile = !empty($mobile) ? $mobile : null;
-        }
+        $mobile = self::normalizeMobileForStorage($mobileRaw);
+        $mobileKey = self::normalizeMobileForDuplicate($mobile);
         
         // Find existing doctor from cache (no DB query)
         $doctor = null;
-        if (!empty($email)) {
-            $doctor = $existingDoctorsByEmail->get($email);
+        if (!empty($emailKey)) {
+            $doctor = $existingDoctorsByEmail->get($emailKey);
         }
         
-        if (!$doctor && !empty($mobile)) {
-            $doctor = $existingDoctorsByMobile->get($mobile);
+        if (!$doctor && !empty($mobileKey)) {
+            $doctor = $existingDoctorsByMobile->get($mobileKey);
         }
         
         if (!$doctor) {
-            $key = $fullname . '|' . $headquarter->id;
+            $key = strtolower(preg_replace('/\s+/', ' ', trim($fullname))) . '|' . $headquarter->id;
             $doctors = $existingDoctorsByNameHq->get($key);
             $doctor = $doctors ? $doctors->first() : null;
         }
@@ -365,31 +362,35 @@ class ImportDoctorJob implements ShouldQueue
         }
 
         // Station handling - use mandatory fields passed as parameters
-        $stationTypeLower = strtolower(trim($stationType));
+        $stationTypeLower = self::normalizeStationType($stationType);
+
+        if (self::normalizeGeoName($stationName) !== '' && self::normalizeGeoName($stationName) === self::normalizeGeoName($headquarter->name)) {
+            $stationTypeLower = 'headquarter';
+        }
         
-        if ($stationTypeLower === 'exstation' || $stationTypeLower === 'ex-station') {
-            $station = $exstations->get($headquarter->id)?->get($stationName);
-            if ($station) {
-                $doctor->exstation_id = $station->id;
-                $doctor->outstation_id = null;
-            } else {
-                $errorMsg = 'Doctor import: Ex-Station "' . $stationName . '" not found for headquarter "' . $headquarter->name . '"';
-                \Log::warning($errorMsg);
-                // Throw exception to be caught by outer handler
-                throw new \Exception($errorMsg);
-            }
-        } elseif ($stationTypeLower === 'outstation' || $stationTypeLower === 'out-station') {
-            $station = $outstations->get($headquarter->id)?->get($stationName);
-            if ($station) {
-                $doctor->outstation_id = $station->id;
-                $doctor->exstation_id = null;
-            } else {
-                $errorMsg = 'Doctor import: Out-Station "' . $stationName . '" not found for headquarter "' . $headquarter->name . '"';
-                \Log::warning($errorMsg);
-                // Throw exception to be caught by outer handler
-                throw new \Exception($errorMsg);
-            }
-        } elseif ($stationTypeLower === 'headquarter' || $stationTypeLower === 'hq') {
+        if ($stationTypeLower === 'exstation') {
+            $station = $this->resolveStation(
+                $exstations,
+                $headquarter,
+                $stationName,
+                $companyId,
+                PharmaExstation::class,
+                'exstation'
+            );
+            $doctor->exstation_id = $station->id;
+            $doctor->outstation_id = null;
+        } elseif ($stationTypeLower === 'outstation') {
+            $station = $this->resolveStation(
+                $outstations,
+                $headquarter,
+                $stationName,
+                $companyId,
+                PharmaOutstation::class,
+                'outstation'
+            );
+            $doctor->outstation_id = $station->id;
+            $doctor->exstation_id = null;
+        } elseif ($stationTypeLower === 'headquarter') {
             // Doctor is at headquarter, no station
             $doctor->exstation_id = null;
             $doctor->outstation_id = null;
@@ -404,13 +405,15 @@ class ImportDoctorJob implements ShouldQueue
         
         try {
             $doctor->save();
-            if (!empty($doctor->email)) {
-                $existingDoctorsByEmail->put($doctor->email, $doctor);
+            $savedEmailKey = self::normalizeEmailForDuplicate($doctor->email);
+            if (!empty($savedEmailKey)) {
+                $existingDoctorsByEmail->put($savedEmailKey, $doctor);
             }
-            if (!empty($doctor->mobile)) {
-                $existingDoctorsByMobile->put($doctor->mobile, $doctor);
+            $savedMobileKey = self::normalizeMobileForDuplicate($doctor->mobile);
+            if (!empty($savedMobileKey)) {
+                $existingDoctorsByMobile->put($savedMobileKey, $doctor);
             }
-            $nameHqKey = $fullname . '|' . $headquarter->id;
+            $nameHqKey = strtolower(preg_replace('/\s+/', ' ', trim($fullname))) . '|' . $headquarter->id;
             if (!$existingDoctorsByNameHq->has($nameHqKey)) {
                 $existingDoctorsByNameHq->put($nameHqKey, collect());
             }
@@ -458,6 +461,152 @@ class ImportDoctorJob implements ShouldQueue
         }
 
         return true;
+    }
+
+    public static function normalizeEmailForDuplicate($email): ?string
+    {
+        $email = strtolower(trim((string) $email));
+
+        return $email !== '' ? $email : null;
+    }
+
+    public static function normalizeMobileForStorage($mobile): ?string
+    {
+        $mobile = trim((string) $mobile);
+
+        if ($mobile === '') {
+            return null;
+        }
+
+        if (preg_match('/^[\d.]+E\+?\d+$/i', $mobile)) {
+            $mobile = number_format((float) $mobile, 0, '', '');
+        }
+
+        $mobile = preg_replace('/\D+/', '', $mobile);
+
+        return $mobile !== '' ? $mobile : null;
+    }
+
+    public static function normalizeMobileForDuplicate($mobile): ?string
+    {
+        $mobile = self::normalizeMobileForStorage($mobile);
+
+        if ($mobile === null) {
+            return null;
+        }
+
+        return strlen($mobile) > 10 ? substr($mobile, -10) : $mobile;
+    }
+
+    public static function normalizeGeoName($name): string
+    {
+        return preg_replace('/[^a-z0-9]/', '', strtolower(trim((string) $name)));
+    }
+
+    public static function normalizeStationType($stationType): string
+    {
+        $stationType = self::normalizeGeoName($stationType);
+
+        return match ($stationType) {
+            'hq', 'headquarter', 'headquarters' => 'headquarter',
+            'ex', 'exstation', 'exstations' => 'exstation',
+            'os', 'outstation', 'outstations' => 'outstation',
+            default => $stationType,
+        };
+    }
+
+    private function rowHasData(array $row): bool
+    {
+        foreach ($row as $value) {
+            if ($value !== null && trim((string) $value) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function findGeoByName($items, string $name)
+    {
+        $normalizedName = self::normalizeGeoName($name);
+
+        if ($normalizedName === '') {
+            return null;
+        }
+
+        $direct = $items->get($normalizedName);
+        if ($direct) {
+            return $direct;
+        }
+
+        $bestMatch = null;
+        $bestScore = 0;
+
+        foreach ($items as $item) {
+            $candidate = self::normalizeGeoName($item->name ?? '');
+
+            if ($candidate === '') {
+                continue;
+            }
+
+            if ($candidate === $normalizedName || str_starts_with($candidate, $normalizedName) || str_starts_with($normalizedName, $candidate)) {
+                return $item;
+            }
+
+            similar_text($normalizedName, $candidate, $score);
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestMatch = $item;
+            }
+        }
+
+        return $bestScore >= 85 ? $bestMatch : null;
+    }
+
+    private function resolveStation(&$stationMaps, $headquarter, string $stationName, int $companyId, string $stationModel, string $stationType)
+    {
+        $stationName = trim($stationName);
+        $normalizedName = self::normalizeGeoName($stationName);
+
+        if ($normalizedName === '') {
+            throw new \Exception('Doctor import: Station name is required for station type "' . $stationType . '"');
+        }
+
+        if (!$stationMaps->has($headquarter->id)) {
+            $stationMaps->put($headquarter->id, collect());
+        }
+
+        $stations = $stationMaps->get($headquarter->id);
+        $station = $this->findGeoByName($stations, $stationName);
+
+        if ($station) {
+            return $station;
+        }
+
+        $station = $stationModel::firstOrCreate(
+            [
+                'company_id' => $companyId,
+                'name' => $stationName,
+            ],
+            [
+                'company_id' => $companyId,
+                'name' => $stationName,
+            ]
+        );
+
+        PharmaHeadquarterAssign::firstOrCreate([
+            'company_id' => $companyId,
+            'headquarter_id' => $headquarter->id,
+            'station' => $stationType,
+            'station_id' => $station->id,
+        ]);
+
+        $stations->put(self::normalizeGeoName($station->name), $station);
+        $stationMaps->put($headquarter->id, $stations);
+
+        \Log::info('Doctor import: Auto-created ' . $stationType . ' "' . $station->name . '" for headquarter "' . $headquarter->name . '"');
+
+        return $station;
     }
 
     /**

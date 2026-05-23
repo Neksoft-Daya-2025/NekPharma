@@ -72,10 +72,15 @@ def main():
 
     sftp.close()
 
+    pw_escaped = PASSWORD.replace("'", "'\"'\"'")
     deploy_script = f"""
 set -e
 APP="{APP_DIR}"
-sudo cp -r /tmp/ryva-deploy/* "$APP/" 2>/dev/null || cp -r /tmp/ryva-deploy/* "$APP/"
+if echo '{pw_escaped}' | sudo -S cp -r /tmp/ryva-deploy/. "$APP/" 2>/dev/null; then
+  echo "Files copied with sudo"
+else
+  cp -r /tmp/ryva-deploy/. "$APP/" 2>/dev/null || true
+fi
 cd "$APP"
 git config --global --add safe.directory "$APP" 2>/dev/null || true
 git pull origin main 2>/dev/null || true

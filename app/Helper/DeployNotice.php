@@ -6,6 +6,12 @@ class DeployNotice
 {
     private const NOTICE_FILE = 'app/deploy_notice.json';
 
+    /** Deploy toast is for admins / technical users only (not MR, employee, client). */
+    public static function visibleToCurrentUser(): bool
+    {
+        return function_exists('user_is_admin_like') && user_is_admin_like();
+    }
+
     public static function path(): string
     {
         return storage_path(self::NOTICE_FILE);
@@ -38,7 +44,7 @@ class DeployNotice
         }
 
         $payload = [
-            'id' => $commit ?: ('deploy-' . now()->format('YmdHis')),
+            'id' => 'deploy-' . now()->format('YmdHis'),
             'message' => $message,
             'deployed_at' => now()->toIso8601String(),
             'commit' => $commit ?: null,

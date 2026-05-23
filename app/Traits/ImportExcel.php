@@ -118,6 +118,58 @@ trait ImportExcel
         $this->importSample = array_slice($excelData, 0, 5);
     }
 
+    /**
+     * Doctor import: preserve empty Excel columns + exact header map for the mapping UI.
+     */
+    public function importDoctorFileProcess($request, $importClass): string
+    {
+        $this->importClassName = (new ReflectionClass($importClass))->getShortName();
+        $this->file = Files::upload($request->import_file, Files::IMPORT_FOLDER);
+        $filePath = public_path(Files::UPLOAD_FOLDER . '/' . Files::IMPORT_FOLDER . '/' . $this->file);
+
+        if (!file_exists($filePath)) {
+            return 'abort';
+        }
+
+        $excelData = $this->readExcelPreserveColumnIndices($filePath);
+
+        if (!is_array($excelData) || empty($excelData)) {
+            return 'abort';
+        }
+
+        $hasHeading = $request->boolean('heading', true);
+        $headingRow = ($hasHeading && isset($excelData[0]) && is_array($excelData[0])) ? $excelData[0] : [];
+
+        if ($hasHeading) {
+            array_shift($excelData);
+        }
+
+        $isDataNull = true;
+
+        foreach ($excelData as $rowitem) {
+            if (is_array($rowitem) && array_filter($rowitem)) {
+                $isDataNull = false;
+                break;
+            }
+        }
+
+        if ($isDataNull || empty($excelData)) {
+            return 'abort';
+        }
+
+        $this->hasHeading = $hasHeading;
+        $this->fileHeading = $headingRow;
+        $this->columns = $importClass::fields();
+        $this->heading = method_exists($importClass, 'buildColumnIndexMap')
+            ? $importClass::buildColumnIndexMap($hasHeading ? $headingRow : [])
+            : [];
+        $this->matchedColumns = array_values($this->heading);
+        $this->importMatchedColumns = $this->heading;
+        $this->importSample = array_slice($excelData, 0, 5);
+
+        return 'ok';
+    }
+
     public function importJobProcess($request, $importClass, $importJobClass)
     {
         // get class name from $importClass

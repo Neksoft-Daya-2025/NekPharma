@@ -31,6 +31,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Traits\AccessibleHeadquarters;
+use App\Support\EnterpriseAudit;
 
 class DcrReportController extends AccountBaseController
 {
@@ -2511,6 +2512,7 @@ class DcrReportController extends AccountBaseController
             'headquarter_id' => 'required|exists:pharma_headquarters,id',
         ]);
 
+        $this->ensureInlineHeadquarterAccessible((int) $request->headquarter_id);
         $headquarter = PharmaHeadquarter::find($request->headquarter_id);
         
         $doctor = new Doctor();
@@ -2568,6 +2570,7 @@ class DcrReportController extends AccountBaseController
             'headquarter_id' => 'required|exists:pharma_headquarters,id',
         ]);
 
+        $this->ensureInlineHeadquarterAccessible((int) $request->headquarter_id);
         $headquarter = PharmaHeadquarter::find($request->headquarter_id);
         
         $chemist = new Chemist();
@@ -2611,6 +2614,7 @@ class DcrReportController extends AccountBaseController
             'headquarter_id' => 'required|exists:pharma_headquarters,id',
         ]);
 
+        $this->ensureInlineHeadquarterAccessible((int) $request->headquarter_id);
         $headquarter = PharmaHeadquarter::find($request->headquarter_id);
         
         $stockist = new Stockist();
@@ -2641,6 +2645,17 @@ class DcrReportController extends AccountBaseController
                 'owner_mobile' => $stockist->owner_mobile,
             ]
         ]);
+    }
+
+    private function ensureInlineHeadquarterAccessible(int $headquarterId): void
+    {
+        $allowedHqIds = $this->accessibleHeadquarterIds(user());
+
+        if ($allowedHqIds === null) {
+            return;
+        }
+
+        abort_403(!in_array($headquarterId, array_map('intval', $allowedHqIds), true));
     }
     
     /**
@@ -2822,11 +2837,13 @@ class DcrReportController extends AccountBaseController
         abort_403(! $canApprove);
         abort_403(!$this->canViewDcr($dcr));
         
+        $before = $dcr->only(['approved', 'approved_by', 'approved_at', 'status']);
         $dcr->approved = true;
         $dcr->approved_by = user()->id;
         $dcr->approved_at = now();
         $dcr->status = 'approved';
         $dcr->save();
+        EnterpriseAudit::record('dcr_report.approved', $dcr, $before, $dcr->only(['approved', 'approved_by', 'approved_at', 'status']));
 
         return Reply::success(__('DCR report approved successfully'));
     }
@@ -2852,11 +2869,13 @@ class DcrReportController extends AccountBaseController
         abort_403(! $canApprove);
         abort_403(!$this->canViewDcr($dcr));
         
+        $before = $dcr->only(['approved', 'approved_by', 'approved_at', 'status']);
         $dcr->approved = false;
         $dcr->approved_by = user()->id;
         $dcr->approved_at = now();
         $dcr->status = 'rejected';
         $dcr->save();
+        EnterpriseAudit::record('dcr_report.rejected', $dcr, $before, $dcr->only(['approved', 'approved_by', 'approved_at', 'status']), [], 'warning');
 
         return Reply::success(__('DCR report rejected'));
     }
@@ -2908,12 +2927,20 @@ class DcrReportController extends AccountBaseController
             });
         }
         
+        $dcrsToApprove = (clone $query)->get(['id', 'approved', 'approved_by', 'approved_at', 'status']);
         $query->update([
             'approved' => true,
             'approved_by' => user()->id,
             'approved_at' => now(),
             'status' => 'approved'
         ]);
+        foreach ($dcrsToApprove as $dcr) {
+            EnterpriseAudit::record('dcr_report.bulk_approved', $dcr, $dcr->only(['approved', 'approved_by', 'approved_at', 'status']), [
+                'approved' => true,
+                'approved_by' => user()->id,
+                'status' => 'approved',
+            ]);
+        }
         
         return Reply::success(__('All DCR reports approved successfully'));
     }

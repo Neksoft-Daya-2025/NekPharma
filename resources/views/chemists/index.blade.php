@@ -15,6 +15,11 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
 @endphp
 
 @section('content')
+    <div class="d-flex justify-content-end mb-3">
+        <x-forms.link-secondary :link="route('chemists.export', request()->query())" class="mr-3" icon="file-export">
+            @lang('app.exportExcel') Chemists
+        </x-forms.link-secondary>
+    </div>
     <div class="content-wrapper">
         @if(session('success'))
             <div class="alert alert-success alert-dismissible fade show mt-3" role="alert">
@@ -245,4 +250,3 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
         applyChemistsTableFilters();
     </script>
 @endpush
-

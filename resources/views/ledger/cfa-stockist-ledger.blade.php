@@ -77,7 +77,7 @@
             var start = range.startDate.format('{{ company()->moment_date_format }}');
             var end = range.endDate.format('{{ company()->moment_date_format }}');
             var partyId = $('#partyID').val();
-            if (partyId === 'all' || !partyId) {
+            if (!partyId) {
                 $('#ledger-message').removeClass('d-none').text('Select a stockist and click Apply');
                 $('#ledger-tbody').html('<tr><td colspan="5" class="text-center text-muted">Select a stockist and click Apply</td></tr>');
                 return;
@@ -89,6 +89,11 @@
                 type: 'GET',
                 data: { party_id: partyId, start_date: start, end_date: end },
                 success: function (res) {
+                    if (res && res.groups) {
+                        $('#ledger-tbody').html(renderLedgerGroups(res.groups));
+                        return;
+                    }
+
                     if (res && res.rows) {
                         var rows = res.rows;
                         var partyName = res.party_name || '';
@@ -103,7 +108,7 @@
                         for (var i = 0; i < rows.length; i++) {
                             var r = rows[i];
                             var partCell = r.link ? '<a href="' + r.link + '" class="text-dark">' + escapeHtml(r.particular) + '</a>' : escapeHtml(r.particular);
-                            html += '<tr><td>' + r.date + '</td><td>' + partCell + '</td><td class="text-right">' + (r.debit ? r.debit.toFixed(2) : '') + '</td><td class="text-right">' + (r.credit ? r.credit.toFixed(2) : '') + '</td><td class="text-right">' + r.balance.toFixed(2) + '</td></tr>';
+                            html += renderLedgerRow(r);
                         }
                         if (rows.length === 0 && opening === 0) {
                             html = '<tr><td colspan="5" class="text-center text-muted">@lang("messages.noData")</td></tr>';
@@ -123,6 +128,51 @@
             var div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function formatAmount(value) {
+            var amount = parseFloat(value) || 0;
+            return amount === 0 ? '' : amount.toFixed(2);
+        }
+
+        function formatBalance(value) {
+            return (parseFloat(value) || 0).toFixed(2);
+        }
+
+        function renderLedgerRow(row) {
+            var partCell = row.link ? '<a href="' + row.link + '" class="text-dark">' + escapeHtml(row.particular) + '</a>' : escapeHtml(row.particular);
+
+            return '<tr><td>' + row.date + '</td><td>' + partCell + '</td><td class="text-right">' + formatAmount(row.debit) + '</td><td class="text-right">' + formatAmount(row.credit) + '</td><td class="text-right">' + formatBalance(row.balance) + '</td></tr>';
+        }
+
+        function renderOpeningRow(opening) {
+            opening = parseFloat(opening) || 0;
+
+            return '<tr><td>-</td><td>@lang("app.openingBalance")</td><td class="text-right">' + (opening > 0 ? opening.toFixed(2) : '') + '</td><td class="text-right">' + (opening < 0 ? (-opening).toFixed(2) : '') + '</td><td class="text-right">' + opening.toFixed(2) + '</td></tr>';
+        }
+
+        function renderLedgerGroups(groups) {
+            if (!groups.length) {
+                return '<tr><td colspan="5" class="text-center text-muted">@lang("messages.noData")</td></tr>';
+            }
+
+            var html = '';
+            for (var i = 0; i < groups.length; i++) {
+                var group = groups[i];
+                var rows = group.rows || [];
+                var opening = parseFloat(group.opening_balance) || 0;
+                html += '<tr class="table-light"><td colspan="5" class="font-weight-bold">' + escapeHtml(group.party_name || '') + '</td></tr>';
+
+                if (opening !== 0) {
+                    html += renderOpeningRow(opening);
+                }
+
+                for (var j = 0; j < rows.length; j++) {
+                    html += renderLedgerRow(rows[j]);
+                }
+            }
+
+            return html;
         }
     });
 </script>

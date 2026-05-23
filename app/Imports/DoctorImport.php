@@ -77,7 +77,7 @@ class DoctorImport implements ToArray
             ),
             array(
                 'id' => 'email',
-                'name' => __('Email'),
+                'name' => 'Email',
                 'required' => 'No',
                 'aliases' => ['Email', 'Dr EMail', 'Dr Email', 'EMail'],
             ),
@@ -117,5 +117,107 @@ class DoctorImport implements ToArray
         return $this->processedData;
     }
 
-}
+    public static function rowHasData(array $row): bool
+    {
+        return collect($row)->contains(function ($value) {
+            return $value !== null && trim((string) $value) !== '';
+        });
+    }
 
+    public static function filterBlankRows(array $rows): array
+    {
+        return array_values(array_filter($rows, [self::class, 'rowHasData']));
+    }
+
+    /**
+     * Map Excel column index => field id using header text matching.
+     *
+     * Header matching is always preferred because the sample file contains an
+     * empty column B (index 2) that makes positional mapping unreliable — every
+     * field after HQ would be off by one.  A positional fallback is only used
+     * when no headers are present at all.
+     */
+    public static function buildColumnIndexMap(?array $headingRow): array
+    {
+        $fields = self::fields();
+
+        $normalize = static function ($value): string {
+            return preg_replace('/[^a-z0-9]/', '', strtolower(trim((string) $value)));
+        };
+
+        // Build positional fallback (field array order → column index)
+        $positionalMap = [];
+        foreach ($fields as $index => $field) {
+            $positionalMap[$index] = $field['id'];
+        }
+
+        if (empty($headingRow)) {
+            return $positionalMap;
+        }
+
+        // Always attempt header-based matching so that files with extra/empty
+        // columns (like the sample file's blank column 2) are handled correctly.
+        $headerMap    = [];
+        $assignedFields = [];
+
+        foreach ($headingRow as $colIndex => $headingValue) {
+            $normalizedHeading = $normalize($headingValue);
+
+            if ($normalizedHeading === '') {
+                continue;
+            }
+
+            foreach ($fields as $field) {
+                $fieldId = $field['id'];
+
+                if (in_array($fieldId, $assignedFields, true)) {
+                    continue;
+                }
+
+                $matchKeys = array_merge([$fieldId], $field['aliases'] ?? []);
+
+                if (!empty($field['name']) && is_string($field['name'])) {
+                    $matchKeys[] = $field['name'];
+                }
+
+                $matched = false;
+                foreach ($matchKeys as $key) {
+                    if ($normalize($key) === $normalizedHeading) {
+                        $matched = true;
+                        break;
+                    }
+                }
+
+                if ($matched) {
+                    $headerMap[$colIndex] = $fieldId;
+                    $assignedFields[]     = $fieldId;
+                    break;
+                }
+            }
+        }
+
+        // Require at least the two mandatory fields (fullname + headquarter)
+        // before trusting the header-based map.
+        $hasName = in_array('fullname',    $assignedFields, true);
+        $hasHq   = in_array('headquarter', $assignedFields, true);
+
+        return ($hasName && $hasHq) ? $headerMap : $positionalMap;
+    }
+
+    /**
+     * @deprecated No longer used — buildColumnIndexMap always tries header matching.
+     */
+    public static function matchesSampleFileHeaders(array $headingRow): bool
+    {
+        $normalize = static function ($value): string {
+            return preg_replace('/[^a-z0-9]/', '', strtolower(trim((string) $value)));
+        };
+
+        $first  = $normalize($headingRow[0] ?? '');
+        $second = $normalize($headingRow[1] ?? '');
+
+        return in_array($first,  ['drname', 'doctorname', 'fullname'],         true)
+            && in_array($second, ['hq', 'headquarter', 'headquarters'], true);
+    }
+
+}

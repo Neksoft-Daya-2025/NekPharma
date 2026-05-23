@@ -1,3 +1,24 @@
+@php
+    $formatImportPreviewValue = function ($value) use (&$formatImportPreviewValue) {
+        if (is_array($value)) {
+            return collect(\Illuminate\Support\Arr::flatten($value))
+                ->filter(fn ($item) => $item !== null && $item !== '')
+                ->map(fn ($item) => is_scalar($item) ? (string) $item : json_encode($item))
+                ->implode(', ');
+        }
+
+        if ($value instanceof \BackedEnum) {
+            return (string) $value->value;
+        }
+
+        if (is_object($value)) {
+            return method_exists($value, '__toString') ? (string) $value : json_encode($value);
+        }
+
+        return $value === null ? '' : (string) $value;
+    };
+@endphp
+
 <div class="col-sm-12">
     <x-form id="process-{{ $importClassName }}-data-form">
         <div class="add-{{ $importClassName }} bg-white rounded">
@@ -33,19 +54,20 @@
                 <div class="col-md-12 import-table">
                     <input type="hidden" name="file" value="{{ $file }}">
                     <input type="hidden" name="has_heading" value="{{ $hasHeading }}">
+                    <input type="hidden" name="confirm_new_stations" id="confirm_new_stations" value="0">
                     @isset($importExtraHidden)
                         {!! $importExtraHidden !!}
                     @endisset
 
                     <div class="row">
                         @forelse ($importSample[0] as $key => $item)
-                            <div class="col-md-3 importBox  border-grey {{ !empty($heading) ? (collect($columns)->whereIn('id', $heading[$key])->first() ? 'matched' : 'unmatched') : 'unmatched' }}"
+                            <div class="col-md-3 importBox  border-grey {{ !empty($heading[$key]) && collect($columns)->firstWhere('id', $heading[$key]) ? 'matched' : 'unmatched' }}"
                                 id="box_{{ $key }}" data-key="{{ $key }}">
                                 <div class="importOptions w-100">
                                     <div class="col-sm-12 p-0">
                                         @if (!empty($heading))
                                             <h4>
-                                                {{$fileHeading[$key]}}
+                                                {{ $formatImportPreviewValue($fileHeading[$key] ?? '') }}
                                             </h4>
                                         @endif
                                     </div>
@@ -60,12 +82,10 @@
                                                 <div id="selectOptionList_{{ $key }}">
                                                     <select class="form-control select-picker mb-2" id="columnName_{{ $key }}" name="columns[{{ $key }}]">
                                                         <option value="">@lang("app.selectAColumn")</option>
-                                                        @if (!empty($heading) && collect($columns)->whereIn('id', $heading[$key])->first())
-                                                            @foreach($columns as $selectKey => $selectColumn)
-                                                            <option value="{{ $selectColumn['id'] }}" {{ ($heading[$key]==$selectColumn['id']) ? 'selected' : '' }}>{{$selectColumn['name'] }}
+                                                        @foreach($columns as $selectKey => $selectColumn)
+                                                            <option value="{{ $selectColumn['id'] }}" {{ (!empty($heading[$key]) && $heading[$key] == $selectColumn['id']) ? 'selected' : '' }}>{{ $formatImportPreviewValue($selectColumn['name'] ?? '') }}
                                                             </option>
-                                                            @endforeach
-                                                        @endif
+                                                        @endforeach
                                                     </select>
                                                 </div>
                                             </div>
@@ -83,14 +103,10 @@
                                     <div class="row columnDescriptionBox" id="columnDescriptionBox_{{ $key }}">
                                         <div class="col-sm-12">
                                             <p id="columnDescriptionBoxText_{{ $key }}">
-                                                @if (!empty($heading))
-                                                    @if(collect($columns)->whereIn('id', $heading[$key])->first())
-                                                        {{ collect($columns)->whereIn('id', $heading[$key])->first()['name'] }}
-                                                    @else
-                                                    <span class="unmatchedWarning" id="unmatchedWarning_{{$key}}">(@lang('app.unmatchedColumn'))</span>
-                                                    @endif
+                                                @if (!empty($heading[$key]) && ($mappedCol = collect($columns)->firstWhere('id', $heading[$key])))
+                                                    {{ $formatImportPreviewValue($mappedCol['name'] ?? '') }}
                                                 @else
-                                                <span class="unmatchedWarning" id="unmatchedWarning_{{$key}}">(@lang('app.unmatchedColumn'))</span>
+                                                    <span class="unmatchedWarning" id="unmatchedWarning_{{$key}}">(@lang('app.unmatchedColumn'))</span>
                                                 @endif
                                                 </p>
                                                 <p class="alert alert-warning notimported" style="display:none;" id="columnSkipBox_{{ $key }}">
@@ -112,7 +128,7 @@
 
                                     @foreach ($importSample as $dataKey => $value)
                                     <p class="sample">
-                                        {{ $value[$key] }}
+                                        {{ $formatImportPreviewValue($value[$key] ?? '') }}
                                     </p>
                                     @endforeach
                                 </div>
@@ -142,6 +158,9 @@
         </div>
         <div class="alert alert-danger" role="alert" id="failedJobsCount" style="display:none">
         </div>
+        <div class="alert alert-info" role="alert" id="importSummaryAlert" style="display:none">
+        </div>
+        <div id="importDetailTables" class="col-sm-12 mt-2" style="display:none"></div>
         <div id="progressError" style="display:none"></div>
         <div id="progress">
             <p>@lang('app.importInProgress') <strong id="progressAmount">@lang('app.pleaseWait')</strong></p>
@@ -419,6 +438,85 @@
         }
 
 
+        const importProgressModule = @json($importProgressModule ?? $importClassName);
+
+        function escapeImportHtml(text) {
+            if (text == null) return '';
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showDoctorImportSummary(summary) {
+            var dupCount = 0;
+            if (summary.skipped_details) {
+                summary.skipped_details.forEach(function(r) {
+                    if (r.reason && r.reason.toLowerCase().indexOf('duplicate') !== -1) dupCount++;
+                });
+            }
+
+            if (typeof Swal !== 'undefined') {
+                if (dupCount > 0 && (summary.new || 0) === 0) {
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Already in database',
+                        html: '<b>' + dupCount + ' doctor' + (dupCount > 1 ? 's' : '') + '</b> already exist in the database.<br>No new records were added.',
+                        confirmButtonText: 'OK',
+                        customClass: { confirmButton: 'btn btn-warning' },
+                    });
+                } else if (dupCount > 0 && (summary.new || 0) > 0) {
+                    Swal.fire({
+                        icon: 'info',
+                        title: 'Import done',
+                        html: '<b>' + summary.new + '</b> doctor(s) added.<br>' +
+                              '<b>' + dupCount + '</b> already existed and were skipped.',
+                        confirmButtonText: 'OK',
+                        customClass: { confirmButton: 'btn btn-primary' },
+                    });
+                } else if ((summary.new || 0) > 0) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Import successful',
+                        html: '<b>' + summary.new + '</b> new doctor(s) added successfully.',
+                        toast: true,
+                        position: 'top-end',
+                        timer: 5000,
+                        timerProgressBar: true,
+                        showConfirmButton: false,
+                    });
+                }
+            }
+
+            var parts = [];
+            if (summary.new > 0) parts.push(summary.new + ' new doctor(s) added');
+            if (summary.updated > 0) parts.push(summary.updated + ' existing record(s) updated');
+            if (summary.skipped > 0) parts.push(summary.skipped + ' row(s) skipped');
+            if (summary.errors > 0) parts.push(summary.errors + ' error(s)');
+            if (parts.length === 0) return;
+
+            var html = '<strong>Import summary:</strong> ' + parts.join('. ');
+            $('#importSummaryAlert').html(html).show();
+
+            var detailHtml = '';
+            if (summary.skipped_details && summary.skipped_details.length > 0) {
+                detailHtml += '<div class="card mb-3"><div class="card-header bg-warning text-dark"><strong>Skipped rows (' + summary.skipped_details.length + ')</strong></div><div class="card-body p-0"><div class="table-responsive" style="max-height:320px;overflow-y:auto;"><table class="table table-sm table-striped table-bordered mb-0"><thead><tr><th>Row #</th><th>Dr. Name</th><th>HQ</th><th>Reason</th></tr></thead><tbody>';
+                summary.skipped_details.forEach(function(r) {
+                    detailHtml += '<tr><td>' + (r.row || '') + '</td><td>' + escapeImportHtml(r.name || '') + '</td><td>' + escapeImportHtml(r.hq || '') + '</td><td>' + escapeImportHtml(r.reason || '') + '</td></tr>';
+                });
+                detailHtml += '</tbody></table></div></div></div>';
+            }
+            if (summary.error_details && summary.error_details.length > 0) {
+                detailHtml += '<div class="card mb-3"><div class="card-header bg-danger text-white"><strong>Errors (' + summary.error_details.length + ')</strong></div><div class="card-body p-0"><div class="table-responsive" style="max-height:320px;overflow-y:auto;"><table class="table table-sm table-striped table-bordered mb-0"><thead><tr><th>Row #</th><th>Dr. Name</th><th>HQ</th><th>Error</th></tr></thead><tbody>';
+                summary.error_details.forEach(function(r) {
+                    detailHtml += '<tr><td>' + (r.row || '') + '</td><td>' + escapeImportHtml(r.name || '') + '</td><td>' + escapeImportHtml(r.hq || '') + '</td><td>' + escapeImportHtml(r.reason || '') + '</td></tr>';
+                });
+                detailHtml += '</tbody></table></div></div></div>';
+            }
+            if (detailHtml) {
+                $('#importDetailTables').html(detailHtml).show();
+            }
+        }
+
         function getProgress(batchId){
 
             $('#process-{{ $importClassName }}-data-form').hide();
@@ -464,6 +562,9 @@
                             $('#progress').hide();
                             $('#afterProcessing').removeClass('d-none');
                             $('#afterProcessing').addClass('d-lg-flex d-md-flex d-block');
+                            if (importProgressModule === 'DoctorImport' && response.importSummary) {
+                                showDoctorImportSummary(response.importSummary);
+                            }
                             getQueueException();
                         }
                     },
@@ -515,16 +616,16 @@
         });
 
         if (allRequiredMatched && jsMatchedColumnArray.length > 0) {
-            // All required columns are matched, auto-submit
             $("#getUnMatchedSuccess").show();
             $("#process-{{ $importClassName }}-form").removeAttr("disabled");
-            
-            // Auto-submit if all required columns matched automatically
+
+            @if ($autoSubmitImport ?? true)
             setTimeout(function() {
                 if ($("#process-{{ $importClassName }}-form").is(":enabled")) {
                     $("#process-{{ $importClassName }}-form").click();
                 }
             }, 1000);
+            @endif
         } else if (getUnMatched() == 0) {
             $("#getUnMatchedSuccess").show();
             $("#process-{{ $importClassName }}-form").removeAttr("disabled");
@@ -553,6 +654,16 @@
                 success: function (response) {
                     if (response.status == 'success') {
                         getProgress(response.batch.id);
+                    } else if (response.status == 'confirm_station_spellings') {
+                        let stationLines = (response.stations || []).map(function(item) {
+                            return '- ' + item.station + ' (' + item.station_type + ', HQ: ' + item.headquarter + ')';
+                        }).join('\n');
+                        let message = response.message + '\n\n' + stationLines + '\n\nContinue only if spellings are correct.';
+
+                        if (confirm(message)) {
+                            $('#confirm_new_stations').val('1');
+                            $('#process-{{ $importClassName }}-form').click();
+                        }
                     }
                 }
             });

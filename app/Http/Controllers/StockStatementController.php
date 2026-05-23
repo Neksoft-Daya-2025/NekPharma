@@ -42,6 +42,9 @@ class StockStatementController extends AccountBaseController
         if ($hqIds === null) {
             return $q->orderBy('shopname');
         }
+        if ((is_array($hqIds) && count($hqIds) === 0) && (is_array($areaIds) && count($areaIds) === 0)) {
+            return $q->whereRaw('1 = 0')->orderBy('shopname');
+        }
         if ((is_array($hqIds) && count($hqIds) > 0) || (is_array($areaIds) && count($areaIds) > 0)) {
             $q->where(function ($query) use ($hqIds, $areaIds) {
                 if (is_array($hqIds) && count($hqIds) > 0) {
@@ -264,7 +267,7 @@ class StockStatementController extends AccountBaseController
             $closingInput = isset($row['closing_qty']) && $row['closing_qty'] !== '' ? (float) $row['closing_qty'] : null;
             $opening = $openingInput !== null ? $openingInput : $this->getOpeningQty($cfaStockistId, $productId, $statement->period_month, $statement->period_year);
             $primary = $primaryInput !== null ? $primaryInput : $this->getPrimaryQty($cfaStockistId, $productId, $statement->period_month, $statement->period_year);
-            $closing = $closingInput !== null ? $closingInput : ($opening + $primary + $secondary);
+            $closing = $closingInput !== null ? $closingInput : ($opening + $primary - $secondary);
             StockStatementLine::create([
                 'stock_statement_id' => $statement->id,
                 'product_id' => $productId,
@@ -365,7 +368,7 @@ class StockStatementController extends AccountBaseController
             $closingInput = isset($row['closing_qty']) && $row['closing_qty'] !== '' ? (float) $row['closing_qty'] : null;
             $opening = $openingInput !== null ? $openingInput : $this->getOpeningQty($cfaStockistId, $productId, $statement->period_month, $statement->period_year);
             $primary = $primaryInput !== null ? $primaryInput : $this->getPrimaryQty($cfaStockistId, $productId, $statement->period_month, $statement->period_year);
-            $closing = $closingInput !== null ? $closingInput : ($opening + $primary + $secondary);
+            $closing = $closingInput !== null ? $closingInput : ($opening + $primary - $secondary);
             StockStatementLine::create([
                 'stock_statement_id' => $statement->id,
                 'product_id' => $productId,
@@ -411,7 +414,7 @@ class StockStatementController extends AccountBaseController
         } else {
             $hqIds = $this->accessibleHeadquarterIds();
             $areaIds = $this->accessibleAreaIds();
-            if ((!is_array($hqIds) || count($hqIds) === 0) && (!is_array($areaIds) || count($areaIds) === 0)) {
+            if ($hqIds !== null && $areaIds !== null && count($hqIds) === 0 && count($areaIds) === 0) {
                 abort_403(true);
             }
         }
@@ -508,6 +511,38 @@ class StockStatementController extends AccountBaseController
             ->where('period_month', $periodMonth)
             ->where('period_year', $periodYear);
 
+        if (!user()->hasAdminLikeAccess() && $hqIds !== null && $areaIds !== null) {
+            $regionIds = [];
+            if (!empty($areaIds)) {
+                $regionIds = \App\Models\PharmaArea::where('company_id', company()->id)
+                    ->whereIn('id', $areaIds)
+                    ->whereNotNull('region_id')
+                    ->pluck('region_id')
+                    ->map(fn ($id) => (int) $id)
+                    ->unique()
+                    ->values()
+                    ->toArray();
+            }
+
+            $targetsQuery->where(function ($q) use ($hqIds, $areaIds, $regionIds) {
+                if (!empty($hqIds)) {
+                    $q->orWhere(function ($sub) use ($hqIds) {
+                        $sub->where('plan_level', 'headquarter')->whereIn('headquarter_id', $hqIds);
+                    });
+                }
+                if (!empty($areaIds)) {
+                    $q->orWhere(function ($sub) use ($areaIds) {
+                        $sub->where('plan_level', 'area')->whereIn('area_id', $areaIds);
+                    });
+                }
+                if (!empty($regionIds)) {
+                    $q->orWhere(function ($sub) use ($regionIds) {
+                        $sub->where('plan_level', 'region')->whereIn('region_id', $regionIds);
+                    });
+                }
+            });
+        }
+
         if ($request->filled('plan_level')) {
             $targetsQuery->where('plan_level', $request->plan_level);
         }
@@ -567,7 +602,7 @@ class StockStatementController extends AccountBaseController
                 $secondaryQ->join('pharma_areas', 'pharma_areas.id', '=', 'cfa_stockists.area_id')
                     ->where('pharma_areas.region_id', $scopeRegionId);
             }
-            $secondaryTotal = (float) (clone $secondaryQ)->sum('stock_statement_lines.primary_qty');
+            $secondaryTotal = (float) (clone $secondaryQ)->sum('stock_statement_lines.secondary_qty');
 
             $targetVal = (float) $target->target_amount;
             $rows[] = [
@@ -583,9 +618,17 @@ class StockStatementController extends AccountBaseController
         $this->reportRows = $rows;
         $this->periodMonth = $periodMonth;
         $this->periodYear = $periodYear;
-        $this->headquarters = \App\Models\PharmaHeadquarter::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
-        $this->areas = \App\Models\PharmaArea::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
-        $this->regions = \App\Models\PharmaRegion::where('company_id', company()->id)->orderBy('name')->get(['id', 'name']);
+        $headquartersQuery = \App\Models\PharmaHeadquarter::where('company_id', company()->id)->orderBy('name');
+        $areasQuery = \App\Models\PharmaArea::where('company_id', company()->id)->orderBy('name');
+        $regionsQuery = \App\Models\PharmaRegion::where('company_id', company()->id)->orderBy('name');
+        if (!user()->hasAdminLikeAccess() && $hqIds !== null && $areaIds !== null) {
+            $headquartersQuery->whereIn('id', $hqIds);
+            $areasQuery->whereIn('id', $areaIds);
+            $regionsQuery->whereIn('id', $regionIds ?? []);
+        }
+        $this->headquarters = $headquartersQuery->get(['id', 'name']);
+        $this->areas = $areasQuery->get(['id', 'name']);
+        $this->regions = $regionsQuery->get(['id', 'name']);
         $this->filterPlanLevel = $request->plan_level;
         $this->filterHeadquarterId = $request->headquarter_id;
         $this->filterAreaId = $request->area_id;

@@ -12,6 +12,7 @@ use App\Models\PharmaHeadquarter;
 use App\Models\PharmaHeadquarterAssign;
 use App\Imports\ChemistImport;
 use App\Jobs\ImportChemistJob;
+use App\Exports\ChemistExport;
 use App\Exports\ChemistSampleExport;
 use App\Services\ChemistDuplicateMergeService;
 use App\Traits\ImportExcel;
@@ -126,6 +127,66 @@ class ChemistController extends AccountBaseController
             ->distinct()->orderBy('gender')->pluck('gender')->values();
 
         return view('chemists.index', $this->data);
+    }
+
+    public function export(Request $request)
+    {
+        $this->viewPermission = user()->permission('view_chemists');
+        abort_403(!in_array($this->viewPermission, ['all', 'added', 'owned', 'both']));
+
+        $query = Chemist::with(['headquarter', 'area', 'exstation', 'outstation'])
+            ->where('company_id', company()->id);
+
+        $accessibleHeadquarterIds = $this->accessibleHeadquarterIds();
+        $accessibleAreaIds = $this->accessibleAreaIds();
+        $accessibleStationIds = $this->accessibleStations();
+
+        if ($accessibleHeadquarterIds !== null && ! user()->hasAdminLikeAccess()) {
+            $this->applyCustomerGeoScope(
+                $query,
+                $accessibleHeadquarterIds,
+                $accessibleAreaIds ?? [],
+                $accessibleStationIds
+            );
+        }
+
+        $requestedHqId = $request->input('headquarter_id');
+        if ($requestedHqId && $requestedHqId !== 'all') {
+            $this->assertHeadquarterAccessible((int) $requestedHqId);
+            $hq = PharmaHeadquarter::with(['exstations', 'outstations'])->find($requestedHqId);
+            $exstationIds = $hq ? $hq->exstations->pluck('id')->toArray() : [];
+            $outstationIds = $hq ? $hq->outstations->pluck('id')->toArray() : [];
+
+            if ($request->has('station') && $request->station !== 'all') {
+                $station = $request->station;
+
+                if ($station === 'hq') {
+                    $query->where('headquarter_id', $requestedHqId)
+                        ->whereNull('exstation_id')
+                        ->whereNull('outstation_id');
+                } elseif (strpos($station, 'ex-') === 0) {
+                    $query->where('exstation_id', str_replace('ex-', '', $station));
+                } elseif (strpos($station, 'out-') === 0) {
+                    $query->where('outstation_id', str_replace('out-', '', $station));
+                }
+            } else {
+                $query->where(function ($q) use ($requestedHqId, $exstationIds, $outstationIds) {
+                    $q->where('headquarter_id', $requestedHqId);
+
+                    if (!empty($exstationIds)) {
+                        $q->orWhereIn('exstation_id', $exstationIds);
+                    }
+
+                    if (!empty($outstationIds)) {
+                        $q->orWhereIn('outstation_id', $outstationIds);
+                    }
+                });
+            }
+        }
+
+        $chemists = $query->orderBy('shopname')->get();
+
+        return Excel::download(new ChemistExport($chemists), 'chemists-' . now()->format('Y-m-d') . '.xlsx');
     }
 
     public function create()

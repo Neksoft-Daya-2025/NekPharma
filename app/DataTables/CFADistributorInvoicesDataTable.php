@@ -179,6 +179,14 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
             </div>';
         });
 
+        $datatables->addColumn('tax_type', function ($row) {
+            $isIgst = ($row->invoice_type ?? '') === 'igst';
+            $label = $isIgst ? 'IGST' : 'CGST';
+            $class = $isIgst ? 'primary' : 'info';
+
+            return '<span class="badge badge-' . $class . '">' . $label . '</span>';
+        });
+
         $datatables->addColumn('invoice', function ($row) {
             return $row->invoice_number;
         });
@@ -203,7 +211,7 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
             return $row->amountDue();
         });
 
-        $datatables->rawColumns(['invoice_number', 'status', 'action', 'delivery_status']);
+        $datatables->rawColumns(['invoice_number', 'status', 'action', 'delivery_status', 'tax_type']);
 
         return $datatables;
     }
@@ -271,6 +279,7 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
                 'invoices.hash',
                 'invoices.custom_invoice_number',
                 'invoices.delivery_status',
+                'invoices.invoice_type',
             ])
             ->addSelect('invoices.company_id')
             ->distinct();
@@ -389,6 +398,7 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
             __('modules.invoices.total') . ' ' . __('modules.invoices.amount') => ['data' => 'export_total', 'name' => 'invoices.total', 'visible' => false, 'exportable' => true, 'orderable' => false, 'title' => __('modules.invoices.total') . ' ' . __('modules.invoices.amount')],
             __('modules.invoices.paid') => ['data' => 'export_paid', 'name' => 'cfa_dist_export_paid', 'visible' => false, 'orderable' => false, 'searchable' => false, 'title' => __('modules.invoices.paid') . ' ' . __('modules.invoices.amount')],
             __('modules.invoices.unpaid') => ['data' => 'export_unpaid', 'name' => 'cfa_dist_export_unpaid', 'visible' => false, 'orderable' => false, 'searchable' => false, 'title' => __('modules.invoices.unpaid') . ' ' . __('modules.invoices.amount')],
+            __('Invoice Type') => ['data' => 'tax_type', 'name' => 'invoices.invoice_type', 'width' => '8%', 'title' => __('Invoice Type'), 'orderable' => true, 'searchable' => false],
             __('app.status') => ['data' => 'status', 'name' => 'invoices.status', 'width' => '10%', 'title' => __('app.status')],
             __('Delivery Status') => ['data' => 'delivery_status', 'name' => 'invoices.delivery_status', 'width' => '12%', 'title' => __('Delivery Status'), 'orderable' => false, 'searchable' => false]
         ];
@@ -429,4 +439,3 @@ class CFADistributorInvoicesDataTable extends BaseDataTable
         return array_merge($data, $customFields, $action);
     }
 }
-

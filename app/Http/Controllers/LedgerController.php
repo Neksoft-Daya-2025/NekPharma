@@ -53,17 +53,19 @@ class LedgerController extends AccountBaseController
         }
 
         $partyId = $request->party_id;
+        $startDate = $this->parseDateParam($request->start_date, now()->startOfMonth()->toDateString());
+        $endDate = $this->parseDateParam($request->end_date, now()->toDateString());
+
         if (!$partyId || $partyId === 'all') {
-            return Reply::dataOnly(['rows' => [], 'party_name' => '', 'opening_balance' => 0]);
+            return Reply::dataOnly([
+                'groups' => $this->buildAllCFALedgerGroups($startDate, $endDate),
+            ]);
         }
 
         $partyId = (int) $partyId;
         if (in_array('client', user_roles(), true) && $partyId !== (int) user()->id) {
             return Reply::error(__('messages.permissionDenied'));
         }
-
-        $startDate = $this->parseDateParam($request->start_date, now()->startOfMonth()->toDateString());
-        $endDate = $this->parseDateParam($request->end_date, now()->toDateString());
 
         $result = $this->buildCFALedgerData((int) $partyId, $startDate, $endDate);
         $partyName = User::without('session')->with('clientDetails')->find($partyId);
@@ -109,8 +111,13 @@ class LedgerController extends AccountBaseController
         }
 
         $partyId = $request->party_id;
+        $startDate = $this->parseDateParam($request->start_date, now()->startOfMonth()->toDateString());
+        $endDate = $this->parseDateParam($request->end_date, now()->toDateString());
+
         if (!$partyId || $partyId === 'all') {
-            return Reply::dataOnly(['rows' => [], 'party_name' => '', 'opening_balance' => 0]);
+            return Reply::dataOnly([
+                'groups' => $this->buildAllCFAStockistLedgerGroups($startDate, $endDate),
+            ]);
         }
 
         $partyId = (int) $partyId;
@@ -123,9 +130,6 @@ class LedgerController extends AccountBaseController
                 return Reply::error(__('messages.permissionDenied'));
             }
         }
-
-        $startDate = $this->parseDateParam($request->start_date, now()->startOfMonth()->toDateString());
-        $endDate = $this->parseDateParam($request->end_date, now()->toDateString());
 
         $result = $this->buildCFAStockistLedgerData($partyId, $startDate, $endDate);
         $stockist = CFAStockist::find($partyId);
@@ -203,6 +207,50 @@ class LedgerController extends AccountBaseController
             ->whereHas('cfaDistributors', fn ($q) => $q->where('cfa_distributor_id', user()->id))
             ->orderBy('shopname')
             ->get();
+    }
+
+    protected function buildAllCFALedgerGroups(string $startDate, string $endDate): array
+    {
+        $groups = [];
+
+        foreach ($this->getCFAClientsForLedger() as $client) {
+            $result = $this->buildCFALedgerData((int) $client->id, $startDate, $endDate);
+
+            if (empty($result['rows']) && (float) $result['opening_balance'] === 0.0) {
+                continue;
+            }
+
+            $groups[] = [
+                'party_id' => $client->id,
+                'party_name' => $client->company_name ?? $client->name,
+                'opening_balance' => $result['opening_balance'],
+                'rows' => $result['rows'],
+            ];
+        }
+
+        return $groups;
+    }
+
+    protected function buildAllCFAStockistLedgerGroups(string $startDate, string $endDate): array
+    {
+        $groups = [];
+
+        foreach ($this->getStockistsForLedger() as $stockist) {
+            $result = $this->buildCFAStockistLedgerData((int) $stockist->id, $startDate, $endDate);
+
+            if (empty($result['rows']) && (float) $result['opening_balance'] === 0.0) {
+                continue;
+            }
+
+            $groups[] = [
+                'party_id' => $stockist->id,
+                'party_name' => $stockist->shopname ?? $stockist->fullname ?? $stockist->cfa_stockist_id,
+                'opening_balance' => $result['opening_balance'],
+                'rows' => $result['rows'],
+            ];
+        }
+
+        return $groups;
     }
 
     /**

@@ -89,6 +89,50 @@
     }
 
     function showImportSummary(summary) {
+        var totalRows  = (summary.new || 0) + (summary.updated || 0) + (summary.skipped || 0) + (summary.errors || 0);
+        var dupCount   = 0;
+        if (summary.skipped_details) {
+            summary.skipped_details.forEach(function(r) {
+                if (r.reason && r.reason.toLowerCase().indexOf('duplicate') !== -1) dupCount++;
+            });
+        }
+
+        // Swal toast based on outcome
+        if (typeof Swal !== 'undefined') {
+            if (dupCount > 0 && (summary.new || 0) === 0) {
+                // All rows were duplicates — nothing added
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Already in database',
+                    html: '<b>' + dupCount + ' doctor' + (dupCount > 1 ? 's' : '') + '</b> already exist in the database.<br>No new records were added.',
+                    confirmButtonText: 'OK',
+                    customClass: { confirmButton: 'btn btn-warning' },
+                });
+            } else if (dupCount > 0 && (summary.new || 0) > 0) {
+                // Mix — some added, some duplicate
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Import done',
+                    html: '<b>' + (summary.new) + '</b> doctor(s) added.<br>' +
+                          '<b>' + dupCount + '</b> already existed in the database and were skipped.',
+                    confirmButtonText: 'OK',
+                    customClass: { confirmButton: 'btn btn-primary' },
+                });
+            } else if ((summary.new || 0) > 0) {
+                // All new
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Import successful',
+                    html: '<b>' + summary.new + '</b> new doctor(s) added successfully.',
+                    toast: true,
+                    position: 'top-end',
+                    timer: 5000,
+                    timerProgressBar: true,
+                    showConfirmButton: false,
+                });
+            }
+        }
+
         var parts = [];
         if (summary.new > 0) {
             parts.push(summary.new + ' new doctor(s) added');
@@ -106,12 +150,6 @@
             return;
         }
         var html = '<strong>Import summary:</strong> ' + parts.join('. ');
-        if (summary.duplicate_names && summary.duplicate_names.length > 0) {
-            html += '<br><strong>Duplicates / notes:</strong> ' + summary.duplicate_names.slice(0, 20).join(', ');
-            if (summary.duplicate_names.length > 20) {
-                html += ' <span class="text-muted">and ' + (summary.duplicate_names.length - 20) + ' more</span>';
-            }
-        }
         $('#importSummaryAlert').html(html).show();
 
         // Build detailed tables for skipped and errors

@@ -61,6 +61,7 @@ use App\Models\InvoicePaymentDetail;
 use App\Helper\UserService;
 use App\Models\Stockist;
 use App\Models\ClientCategory;
+use App\Support\EnterpriseAudit;
 
 class InvoiceController extends AccountBaseController
 {
@@ -3660,8 +3661,6 @@ class InvoiceController extends AccountBaseController
     public function updatePaymentStatus(Request $request)
     {
         try {
-            \Log::info('Payment status update request', $request->all());
-            
             $request->validate([
                 'invoice_id' => 'required|exists:invoices,id',
                 'payment_mode' => 'required|string',
@@ -3680,13 +3679,15 @@ class InvoiceController extends AccountBaseController
             ));
 
             $paymentAmount = floatval($request->payment_amount);
+            DB::beginTransaction();
             
             // Check if this is an edit or new payment
             if ($request->edit_payment_id) {
                 // Edit existing payment
-                $payment = Payment::findOrFail($request->edit_payment_id);
+                $payment = Payment::where('invoice_id', $invoice->id)->findOrFail($request->edit_payment_id);
                 
                 // Store old amount for recalculation
+                $before = $payment->only(['amount', 'gateway', 'transaction_id', 'paid_on', 'remarks', 'status']);
                 $oldAmount = $payment->amount;
                 
                 $payment->amount = $paymentAmount;
@@ -3701,6 +3702,9 @@ class InvoiceController extends AccountBaseController
                     'old_amount' => $oldAmount,
                     'new_amount' => $paymentAmount
                 ]);
+                EnterpriseAudit::record('payment.updated', $payment, $before, $payment->only(['amount', 'gateway', 'transaction_id', 'paid_on', 'remarks', 'status']), [
+                    'invoice_id' => $invoice->id,
+                ], 'warning');
             } else {
                 // Create new payment record
                 $payment = new Payment();
@@ -3720,28 +3724,12 @@ class InvoiceController extends AccountBaseController
                     'payment_id' => $payment->id,
                     'amount' => $paymentAmount
                 ]);
+                EnterpriseAudit::record('payment.created', $payment, [], $payment->only(['amount', 'gateway', 'transaction_id', 'paid_on', 'remarks', 'status']), [
+                    'invoice_id' => $invoice->id,
+                ]);
             }
 
-            // Recalculate invoice status
-            $totalPaid = $invoice->getPaidAmount();
-            $newDueAmount = $invoice->total - $totalPaid;
-
-            // Update invoice status based on total paid amount
-            if ($newDueAmount <= 0.01) {
-                // Fully paid (with small tolerance for rounding)
-                $invoice->status = 'paid';
-                $invoice->due_amount = 0;
-            } else if ($totalPaid > 0) {
-                // Partially paid
-                $invoice->status = 'partial';
-                $invoice->due_amount = $newDueAmount;
-            } else {
-                // No payment yet
-                $invoice->status = 'unpaid';
-                $invoice->due_amount = $invoice->total;
-            }
-            
-            $invoice->save();
+            $totalPaid = $this->recalculateInvoicePaymentStatus($invoice);
 
             \Log::info('Invoice status updated', [
                 'invoice_id' => $invoice->id,
@@ -3749,6 +3737,8 @@ class InvoiceController extends AccountBaseController
                 'new_due_amount' => $invoice->due_amount,
                 'new_status' => $invoice->status
             ]);
+
+            DB::commit();
 
             return Reply::successWithData(__('Payment recorded successfully'), [
                 'invoice_id' => $invoice->id,
@@ -3766,6 +3756,9 @@ class InvoiceController extends AccountBaseController
             ]);
             return Reply::error($e->validator->errors()->first());
         } catch (\Exception $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
             \Log::error('Error updating payment status', [
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
@@ -3774,21 +3767,41 @@ class InvoiceController extends AccountBaseController
         }
     }
 
+    private function recalculateInvoicePaymentStatus(Invoice $invoice): float
+    {
+        $invoice->refresh();
+        $totalPaid = $invoice->getPaidAmount();
+        $newDueAmount = $invoice->total - $totalPaid;
+
+        if ($newDueAmount <= 0.01 && $totalPaid > 0) {
+            $invoice->status = 'paid';
+            $invoice->due_amount = 0;
+        } elseif ($totalPaid > 0) {
+            $invoice->status = 'partial';
+            $invoice->due_amount = $newDueAmount;
+        } else {
+            $invoice->status = 'unpaid';
+            $invoice->due_amount = $invoice->total;
+        }
+
+        $invoice->save();
+
+        return (float) $totalPaid;
+    }
+
     /**
      * Delete a payment record and update invoice status
      */
     public function deletePayment(Request $request)
     {
         try {
-            \Log::info('Delete payment request', $request->all());
-            
             $request->validate([
                 'payment_id' => 'required|exists:payments,id',
                 'invoice_id' => 'required|exists:invoices,id'
             ]);
 
-            $payment = Payment::findOrFail($request->payment_id);
             $invoice = Invoice::findOrFail($request->invoice_id);
+            $payment = Payment::where('invoice_id', $invoice->id)->findOrFail($request->payment_id);
             
             // Check permissions
             $deletePaymentPermission = user()->permission('delete_payments');
@@ -3801,12 +3814,9 @@ class InvoiceController extends AccountBaseController
                 || ($deletePaymentPermission == 'added' && $invoice->added_by == user()->id)
             ));
 
-            // Verify payment belongs to invoice
-            if ($payment->invoice_id != $invoice->id) {
-                return Reply::error('Payment does not belong to this invoice');
-            }
-
             $deletedAmount = $payment->amount;
+            $before = $payment->only(['amount', 'gateway', 'transaction_id', 'paid_on', 'remarks', 'status']);
+            DB::beginTransaction();
             
             // Delete the payment
             $payment->delete();
@@ -3816,24 +3826,11 @@ class InvoiceController extends AccountBaseController
                 'amount' => $deletedAmount,
                 'invoice_id' => $invoice->id
             ]);
+            EnterpriseAudit::record('payment.deleted', $payment, $before, [], [
+                'invoice_id' => $invoice->id,
+            ], 'warning');
 
-            // Recalculate invoice status
-            $totalPaid = $invoice->getPaidAmount();
-            $newDueAmount = $invoice->total - $totalPaid;
-
-            // Update invoice status
-            if ($newDueAmount <= 0.01 && $totalPaid > 0) {
-                $invoice->status = 'paid';
-                $invoice->due_amount = 0;
-            } else if ($totalPaid > 0) {
-                $invoice->status = 'partial';
-                $invoice->due_amount = $newDueAmount;
-            } else {
-                $invoice->status = 'unpaid';
-                $invoice->due_amount = $invoice->total;
-            }
-            
-            $invoice->save();
+            $totalPaid = $this->recalculateInvoicePaymentStatus($invoice);
 
             \Log::info('Invoice status updated after payment deletion', [
                 'invoice_id' => $invoice->id,
@@ -3841,6 +3838,8 @@ class InvoiceController extends AccountBaseController
                 'new_due_amount' => $invoice->due_amount,
                 'total_paid' => $totalPaid
             ]);
+
+            DB::commit();
 
             return Reply::successWithData(__('Payment deleted successfully'), [
                 'invoice_id' => $invoice->id,
@@ -3856,6 +3855,9 @@ class InvoiceController extends AccountBaseController
             ]);
             return Reply::error($e->validator->errors()->first());
         } catch (\Exception $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
             \Log::error('Error deleting payment', [
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
@@ -3998,7 +4000,8 @@ class InvoiceController extends AccountBaseController
         $this->firstInvoice = Invoice::where('company_id', company()->id)->orderBy('id', 'desc')->first();
         $this->credentials = PaymentGatewayCredentials::first();
         $this->methods = OfflinePaymentMethod::activeMethod();
-        $this->user = $this->invoice->client;
+        $this->invoiceClient = $this->invoice->client;
+        $this->user = user();
         $this->payments = Payment::with(['offlineMethod'])->where('invoice_id', $this->invoice->id)->where('status', 'complete')->orderByDesc('paid_on')->get();
         $this->deletePermission = user()->permission('delete_invoices');
         $this->addInvoicesPermission = user()->permission('add_invoices');
@@ -4334,7 +4337,11 @@ class InvoiceController extends AccountBaseController
             $savedItemsCount++;
 
             if (!empty($request->cfa_distributor_stock_id[$key])) {
-                $distributorStock = CFADistributorStock::find($request->cfa_distributor_stock_id[$key]);
+                $distributorStock = CFADistributorStock::where('company_id', company()->id)
+                    ->where('cfa_distributor_id', $request->cfa_distributor_id)
+                    ->where('product_id', $request->product_id[$key])
+                    ->lockForUpdate()
+                    ->find($request->cfa_distributor_stock_id[$key]);
 
                 if ($distributorStock) {
                     if ($distributorStock->available_quantity < $totalQty) {
@@ -4348,10 +4355,13 @@ class InvoiceController extends AccountBaseController
                         return 'Insufficient stock available. Required: ' . $totalQty . ', Available: ' . $distributorStock->available_quantity;
                     }
 
+                    $beforeStock = [
+                        'available_quantity' => (float) $distributorStock->available_quantity,
+                    ];
                     $distributorStock->available_quantity -= $totalQty;
                     $distributorStock->save();
 
-                    CFAStockistStock::create([
+                    $stockistStock = CFAStockistStock::create([
                         'company_id' => company()->id,
                         'cfa_distributor_id' => $request->cfa_distributor_id,
                         'cfa_stockist_id' => $request->cfa_stockist_id,
@@ -4365,6 +4375,21 @@ class InvoiceController extends AccountBaseController
                         'ptr' => isset($request->ptr[$key]) ? round($request->ptr[$key] ?? 0, 2) : ($distributorStock->ptr ?? 0),
                         'mrp' => isset($request->mrp[$key]) ? round($request->mrp[$key] ?? 0, 2) : ($distributorStock->mrp ?? 0),
                         'dis' => isset($request->dis[$key]) ? round($request->dis[$key] ?? 0, 2) : ($distributorStock->dis ?? 0),
+                    ]);
+                    EnterpriseAudit::record('cfa_stockist_stock.created_from_distributor_stock', $stockistStock, [], $stockistStock->only([
+                        'cfa_distributor_id',
+                        'cfa_stockist_id',
+                        'product_id',
+                        'cfa_distributor_stock_id',
+                        'invoice_id',
+                        'quantity',
+                        'batch',
+                        'expiry',
+                    ]), [
+                        'distributor_stock_before' => $beforeStock,
+                        'distributor_stock_after' => [
+                            'available_quantity' => (float) $distributorStock->available_quantity,
+                        ],
                     ]);
                 } else {
                     \Log::error('CFA Distributor Stock not found', [
@@ -4397,6 +4422,17 @@ class InvoiceController extends AccountBaseController
             
             if (empty($request->cfa_stockist_id)) {
                 return Reply::error('CFA Stockist is required.');
+            }
+
+            $stockistBelongsToDistributor = CFAStockist::where('company_id', company()->id)
+                ->where('id', $request->cfa_stockist_id)
+                ->whereHas('cfaDistributors', function ($q) use ($request) {
+                    $q->where('cfa_distributor_id', $request->cfa_distributor_id);
+                })
+                ->exists();
+
+            if (!$stockistBelongsToDistributor) {
+                return Reply::error(__('messages.unauthorizedAccess'));
             }
             
             // Validate items
@@ -4433,6 +4469,8 @@ class InvoiceController extends AccountBaseController
                     return Reply::error(__('messages.amountNumber'));
                 }
             }
+
+            DB::beginTransaction();
 
             // Create invoice
             $invoice = new Invoice();
@@ -4479,6 +4517,7 @@ class InvoiceController extends AccountBaseController
 
             $lineErr = $this->persistCfaStockistInvoiceLineItems($invoice, $request);
             if ($lineErr !== null) {
+                DB::rollBack();
                 return Reply::error($lineErr);
             }
 
@@ -4493,11 +4532,16 @@ class InvoiceController extends AccountBaseController
                 'cfa_stockist_id' => $request->cfa_stockist_id
             ]);
 
+            DB::commit();
+
             return Reply::successWithData(__('messages.recordSaved'), [
                 'redirectUrl' => route('cfa-stockist-invoices.show', $invoice->id),
                 'invoiceID' => $invoice->id
             ]);
         } catch (\Exception $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
             \Log::error('Error storing CFA/Stockist invoice: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
             ]);
@@ -4760,7 +4804,8 @@ class InvoiceController extends AccountBaseController
         $this->firstInvoice = Invoice::where('company_id', company()->id)->orderBy('id', 'desc')->first();
         $this->credentials = PaymentGatewayCredentials::first();
         $this->methods = OfflinePaymentMethod::activeMethod();
-        $this->user = $this->invoice->client; // CFA/Distributor who is billing
+        $this->invoiceClient = $this->invoice->client; // CFA/Distributor who is billing
+        $this->user = user();
         $this->payments = Payment::with(['offlineMethod'])->where('invoice_id', $this->invoice->id)->where('status', 'complete')->orderByDesc('paid_on')->get();
         $this->deletePermission = user()->permission('delete_invoices');
         $this->addInvoicesPermission = user()->permission('add_invoices');

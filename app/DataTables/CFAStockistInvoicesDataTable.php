@@ -169,6 +169,14 @@ class CFAStockistInvoicesDataTable extends BaseDataTable
             return $row->due_date->format(company()->date_format);
         });
 
+        $datatables->addColumn('tax_type', function ($row) {
+            $isIgst = ($row->invoice_type ?? '') === 'igst';
+            $label = $isIgst ? 'IGST' : 'CGST';
+            $class = $isIgst ? 'primary' : 'info';
+
+            return '<span class="badge badge-' . $class . '">' . $label . '</span>';
+        });
+
         $datatables->addColumn('invoice', function ($row) {
             return $row->invoice_number;
         });
@@ -195,7 +203,7 @@ class CFAStockistInvoicesDataTable extends BaseDataTable
             return $row->amountDue();
         });
 
-        $datatables->rawColumns(['invoice_number', 'status', 'action']);
+        $datatables->rawColumns(['invoice_number', 'status', 'tax_type', 'action']);
 
         return $datatables;
     }
@@ -236,6 +244,7 @@ class CFAStockistInvoicesDataTable extends BaseDataTable
                 'invoices.currency_id',
                 'invoices.total',
                 'invoices.status',
+                'invoices.invoice_type',
                 'invoices.issue_date',
                 'invoices.due_date',
                 'invoices.credit_note',
@@ -357,6 +366,7 @@ class CFAStockistInvoicesDataTable extends BaseDataTable
             __('modules.invoices.total') . ' ' . __('modules.invoices.amount') => ['data' => 'export_total', 'name' => 'invoices.total', 'visible' => false, 'exportable' => true, 'orderable' => false, 'title' => __('modules.invoices.total') . ' ' . __('modules.invoices.amount')],
             __('modules.invoices.paid') => ['data' => 'export_paid', 'name' => 'cfa_export_paid', 'visible' => false, 'orderable' => false, 'searchable' => false, 'title' => __('modules.invoices.paid') . ' ' . __('modules.invoices.amount')],
             __('modules.invoices.unpaid') => ['data' => 'export_unpaid', 'name' => 'cfa_export_unpaid', 'visible' => false, 'orderable' => false, 'searchable' => false, 'title' => __('modules.invoices.unpaid') . ' ' . __('modules.invoices.amount')],
+            __('Invoice Type') => ['data' => 'tax_type', 'name' => 'invoices.invoice_type', 'width' => '8%', 'title' => __('Invoice Type'), 'orderable' => true, 'searchable' => false],
             __('app.status') => ['data' => 'status', 'name' => 'invoices.status', 'width' => '10%', 'title' => __('app.status')],
         ];
 
@@ -372,4 +382,3 @@ class CFAStockistInvoicesDataTable extends BaseDataTable
         return array_merge($data, CustomFieldGroup::customFieldsDataMerge(new Invoice()), $action);
     }
 }
-
