@@ -43,11 +43,14 @@
                     </div>
                 </form>
             </div>
-            @if(user()->hasAdminLikeAccess())
-                <div class="mb-2 mb-lg-0 mb-md-0">
+            <div class="mb-2 mb-lg-0 mb-md-0 d-flex flex-wrap">
+                <a href="{{ route('sales-plan.export', request()->query()) }}" class="btn btn-sm btn-secondary mr-2 mb-2 mb-md-0">
+                    <i class="fa fa-download"></i> @lang('app.exportExcel')
+                </a>
+                @if(user()->hasAdminLikeAccess())
                     <x-forms.link-primary :link="route('sales-plan.create')" icon="plus">@lang('app.add') Product HQ Target</x-forms.link-primary>
-                </div>
-            @endif
+                @endif
+            </div>
         </div>
 
         <div class="d-flex flex-column w-tables rounded mt-3 bg-white">
@@ -84,6 +87,16 @@
                             <tr><td colspan="6" class="text-center">@lang('messages.noRecordFound')</td></tr>
                         @endforelse
                     </tbody>
+                    @if(($targets ?? collect())->count() > 0)
+                        <tfoot>
+                            <tr class="font-weight-bold bg-light">
+                                <td colspan="3" class="text-right">Total</td>
+                                <td class="text-right">{{ number_format($totalTargetQty ?? 0, 2) }}</td>
+                                <td class="text-right">{{ number_format($totalTargetAmount ?? 0, 2) }}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    @endif
                 </table>
             </div>
             @if($targets->hasPages())

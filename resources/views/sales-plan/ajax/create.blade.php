@@ -51,7 +51,18 @@
                 </div>
             </div>
             <div class="col-md-12">
-                <label class="f-14 text-dark-grey mb-12">Product Targets <span class="text-danger">*</span></label>
+                <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
+                    <label class="f-14 text-dark-grey mb-0">Product Targets <span class="text-danger">*</span></label>
+                    <div>
+                        <a href="{{ route('sales-plan.import.sample') }}" class="btn btn-sm btn-secondary mr-2 mb-2 mb-md-0">
+                            <i class="fa fa-download"></i> Sample CSV
+                        </a>
+                        <label class="btn btn-sm btn-secondary mb-2 mb-md-0 mb-0" for="sales-plan-import-file">
+                            <i class="fa fa-file-upload"></i> Import CSV
+                        </label>
+                        <input type="file" id="sales-plan-import-file" accept=".csv,text/csv" class="d-none">
+                    </div>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-bordered mb-2" id="product-targets-table">
                         <thead>
@@ -90,6 +101,9 @@
 $(function() {
     var $productSelect = $('#product_ids');
     var $targetTableBody = $('#product-targets-table tbody');
+    var importTargetsUrl = "{{ route('sales-plan.import.targets') }}";
+    var importCsrf = "{{ csrf_token() }}";
+    var importedTargetValues = {};
 
     function productName(productId) {
         return $productSelect.find('option[value="' + productId + '"]').text();
@@ -115,7 +129,7 @@ $(function() {
         }
 
         selectedProductIds.forEach(function(productId, index) {
-            var values = existingValues[productId] || { qty: '0', amount: '0' };
+            var values = existingValues[productId] || importedTargetValues[productId] || { qty: '0', amount: '0' };
             var row = [
                 '<tr class="product-target-row" data-product-id="' + productId + '">',
                 '<td>',
@@ -140,6 +154,73 @@ $(function() {
         });
         $productSelect.selectpicker('val', selectedProductIds);
         syncProductTargetRows();
+    });
+
+    $('#sales-plan-import-file').on('change', function() {
+        var fileInput = this;
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) {
+            return;
+        }
+
+        var periodMonth = $('#period_month').val();
+        var periodYear = $('#period_year').val();
+        var headquarterId = $('#headquarter_id').val();
+
+        if (!periodMonth || !periodYear || !headquarterId) {
+            alert('Please select Period Month, Period Year, and Headquarter before importing CSV.');
+            fileInput.value = '';
+            return;
+        }
+
+        var formData = new FormData();
+        formData.append('_token', importCsrf);
+        formData.append('import_file', file);
+        formData.append('period_month', periodMonth);
+        formData.append('period_year', periodYear);
+        formData.append('headquarter_id', headquarterId);
+
+        $.ajax({
+            url: importTargetsUrl,
+            type: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(res) {
+                if (res.status !== 'success' || !res.lines || !res.lines.length) {
+                    alert(res.message || 'No valid rows were imported.');
+                    return;
+                }
+
+                var productIds = [];
+                importedTargetValues = {};
+                res.lines.forEach(function(line) {
+                    var productId = String(line.product_id);
+                    productIds.push(productId);
+                    importedTargetValues[productId] = {
+                        qty: parseFloat(line.target_qty || 0),
+                        amount: parseFloat(line.target_amount || 0)
+                    };
+                });
+
+                $productSelect.selectpicker('val', productIds);
+                syncProductTargetRows();
+
+                var skippedCount = (res.skipped || []).length;
+                var message = res.imported + ' target row(s) imported from CSV.';
+                if (skippedCount > 0) {
+                    message += ' ' + skippedCount + ' row(s) skipped.';
+                }
+                alert(message);
+            },
+            error: function(xhr) {
+                var message = (xhr.responseJSON && xhr.responseJSON.message) ? xhr.responseJSON.message : 'CSV import failed.';
+                alert(message);
+            },
+            complete: function() {
+                fileInput.value = '';
+            }
+        });
     });
 
     $('#save-sales-plan-form').on('click', function() {

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\SalesPlanExport;
+use App\Exports\SalesPlanSampleExport;
 use App\Helper\Reply;
 use App\Helper\RoleHierarchy;
 use App\Models\PharmaArea;
@@ -9,10 +11,13 @@ use App\Models\PharmaHeadquarter;
 use App\Models\PharmaRegion;
 use App\Models\Product;
 use App\Models\SalesPlanTarget;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Maatwebsite\Excel\Facades\Excel;
 use App\Traits\AccessibleHeadquarters;
 use App\Support\EnterpriseAudit;
 
@@ -165,6 +170,52 @@ class SalesPlanController extends AccountBaseController
             ->exists();
     }
 
+    private function salesPlanTargetsQuery(Request $request): Builder
+    {
+        $query = SalesPlanTarget::with(['headquarter', 'product'])
+            ->where('company_id', company()->id)
+            ->where('plan_level', 'headquarter');
+
+        $this->applyAccessibleTargetScope($query);
+
+        if ($request->filled('period_month')) {
+            $query->where('period_month', $request->period_month);
+        }
+        if ($request->filled('period_year')) {
+            $query->where('period_year', $request->period_year);
+        }
+        if ($request->filled('headquarter_id')) {
+            $query->where('headquarter_id', $request->headquarter_id);
+        }
+        if ($request->filled('product_id')) {
+            $query->where('product_id', $request->product_id);
+        }
+
+        return $query;
+    }
+
+    private function attachAssignedEmployeeNames($targets)
+    {
+        $headquarterIds = $targets->pluck('headquarter_id')->filter()->unique()->values();
+        if ($headquarterIds->isEmpty()) {
+            return $targets;
+        }
+
+        $employeesByHeadquarter = User::withoutGlobalScopes()
+            ->with('employeeDetail')
+            ->where('company_id', company()->id)
+            ->whereHas('employeeDetail', fn ($query) => $query->whereIn('headquarter_id', $headquarterIds))
+            ->get()
+            ->groupBy(fn ($user) => optional($user->employeeDetail)->headquarter_id)
+            ->map(fn ($users) => $users->pluck('name')->filter()->implode(', '));
+
+        $targets->each(function ($target) use ($employeesByHeadquarter) {
+            $target->assigned_employee_names = $employeesByHeadquarter->get($target->headquarter_id, '-');
+        });
+
+        return $targets;
+    }
+
     private function scopedAreas()
     {
         $query = PharmaArea::where('company_id', company()->id)->orderBy('name');
@@ -191,24 +242,9 @@ class SalesPlanController extends AccountBaseController
 
     public function index(Request $request)
     {
-        $query = SalesPlanTarget::with(['headquarter', 'area', 'region', 'product'])
-            ->where('company_id', company()->id)
-            ->where('plan_level', 'headquarter');
-
-        $this->applyAccessibleTargetScope($query);
-
-        if ($request->filled('period_month')) {
-            $query->where('period_month', $request->period_month);
-        }
-        if ($request->filled('period_year')) {
-            $query->where('period_year', $request->period_year);
-        }
-        if ($request->filled('headquarter_id')) {
-            $query->where('headquarter_id', $request->headquarter_id);
-        }
-        if ($request->filled('product_id')) {
-            $query->where('product_id', $request->product_id);
-        }
+        $query = $this->salesPlanTargetsQuery($request);
+        $this->totalTargetQty = (clone $query)->sum('target_qty');
+        $this->totalTargetAmount = (clone $query)->sum('target_amount');
 
         $this->targets = $query->orderBy('period_year', 'desc')
             ->orderBy('period_month', 'desc')
@@ -225,6 +261,213 @@ class SalesPlanController extends AccountBaseController
         $this->filterProductId = $request->product_id;
 
         return view('sales-plan.index', $this->data);
+    }
+
+    public function export(Request $request)
+    {
+        $targets = $this->salesPlanTargetsQuery($request)
+            ->orderBy('period_year', 'desc')
+            ->orderBy('period_month', 'desc')
+            ->orderBy('headquarter_id')
+            ->orderBy('product_id')
+            ->get();
+
+        $this->attachAssignedEmployeeNames($targets);
+
+        return Excel::download(new SalesPlanExport($targets), 'sales-plan-' . now()->format('Y-m-d') . '.xlsx');
+    }
+
+    public function downloadSample()
+    {
+        $this->abortIfNotAdmin();
+
+        return Excel::download(
+            new SalesPlanSampleExport(),
+            'sales-plan-targets-sample.csv',
+            \Maatwebsite\Excel\Excel::CSV,
+            ['Content-Type' => 'text/csv']
+        );
+    }
+
+    public function importTargets(Request $request)
+    {
+        $this->abortIfNotAdmin();
+
+        $request->validate([
+            'import_file' => 'required|file|mimes:csv,txt|max:5120',
+            'period_month' => 'required|integer|between:1,12',
+            'period_year' => 'required|integer|min:2020|max:2100',
+            'headquarter_id' => 'required|exists:pharma_headquarters,id',
+        ]);
+
+        /** @var UploadedFile $file */
+        $file = $request->file('import_file');
+        $parsed = $this->parseSalesPlanCsv($file->getRealPath());
+
+        if ($parsed['errors']) {
+            return Reply::error(implode(' ', $parsed['errors']));
+        }
+
+        if (empty($parsed['rows'])) {
+            return Reply::error(__('messages.noRecordFound'));
+        }
+
+        $productsByName = Product::where('company_id', company()->id)
+            ->get(['id', 'name'])
+            ->keyBy(fn ($product) => $this->normalizeProductKey($product->name));
+
+        $lines = [];
+        $skipped = [];
+        $seenProductIds = [];
+        $periodMonth = (int) $request->period_month;
+        $periodYear = (int) $request->period_year;
+        $headquarterId = (int) $request->headquarter_id;
+
+        foreach ($parsed['rows'] as $rowNum => $row) {
+            $product = $productsByName->get($this->normalizeProductKey($row['product']));
+            if (! $product) {
+                $skipped[] = ['row' => $rowNum, 'product' => $row['product'], 'reason' => 'Product not found'];
+                continue;
+            }
+
+            if (in_array($product->id, $seenProductIds, true)) {
+                $skipped[] = ['row' => $rowNum, 'product' => $row['product'], 'reason' => 'Duplicate product in file'];
+                continue;
+            }
+
+            if ($this->duplicateTargetExists($periodMonth, $periodYear, $headquarterId, (int) $product->id)) {
+                $skipped[] = ['row' => $rowNum, 'product' => $row['product'], 'reason' => 'Target already exists'];
+                continue;
+            }
+
+            $seenProductIds[] = $product->id;
+            $lines[] = [
+                'product_id' => $product->id,
+                'product_name' => $product->name,
+                'target_qty' => round($row['target_qty'], 2),
+                'target_amount' => round($row['target_amount'], 2),
+            ];
+        }
+
+        if (empty($lines)) {
+            return Reply::error(__('messages.noRecordFound') . ' — no valid target rows matched.');
+        }
+
+        return Reply::dataOnly([
+            'status' => 'success',
+            'lines' => $lines,
+            'skipped' => $skipped,
+            'imported' => count($lines),
+        ]);
+    }
+
+    private function parseSalesPlanCsv(string $path): array
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            return ['rows' => [], 'errors' => ['Could not read CSV file.']];
+        }
+
+        $headerMap = null;
+        $rows = [];
+        $errors = [];
+        $lineNumber = 0;
+
+        while (($data = fgetcsv($handle)) !== false) {
+            $lineNumber++;
+
+            if ($this->csvRowIsEmpty($data)) {
+                continue;
+            }
+
+            if ($headerMap === null) {
+                $headerMap = $this->mapSalesPlanCsvHeaders($data);
+                if ($headerMap === null) {
+                    fclose($handle);
+
+                    return ['rows' => [], 'errors' => ['Invalid CSV header. Expected columns: Product, Target Qty, Target Amount.']];
+                }
+                continue;
+            }
+
+            $product = trim((string) ($data[$headerMap['product']] ?? ''));
+            if ($product === '') {
+                continue;
+            }
+
+            $targetQty = $this->parseCsvNumber($data[$headerMap['target_qty']] ?? null);
+            $targetAmount = $this->parseCsvNumber($data[$headerMap['target_amount']] ?? null);
+
+            if ($targetQty === null || $targetQty < 0) {
+                $errors[] = "Row {$lineNumber}: Target Qty must be a non-negative number.";
+            }
+            if ($targetAmount === null || $targetAmount < 0) {
+                $errors[] = "Row {$lineNumber}: Target Amount must be a non-negative number.";
+            }
+
+            $rows[$lineNumber] = [
+                'product' => $product,
+                'target_qty' => $targetQty ?? 0,
+                'target_amount' => $targetAmount ?? 0,
+            ];
+        }
+
+        fclose($handle);
+
+        return ['rows' => $rows, 'errors' => $errors];
+    }
+
+    private function mapSalesPlanCsvHeaders(array $headerRow): ?array
+    {
+        $normalize = static fn ($value) => strtolower(trim(preg_replace('/[^a-z0-9]/', '', (string) $value)));
+        $aliases = [
+            'product' => ['product', 'productname', 'item', 'itemname', 'medicine'],
+            'target_qty' => ['targetqty', 'targetquantity', 'qty', 'quantity'],
+            'target_amount' => ['targetamount', 'targetvalue', 'amount', 'value'],
+        ];
+
+        $map = [];
+        foreach ($headerRow as $index => $heading) {
+            $key = $normalize($heading);
+            foreach ($aliases as $field => $options) {
+                if (in_array($key, $options, true) && ! isset($map[$field])) {
+                    $map[$field] = $index;
+                    break;
+                }
+            }
+        }
+
+        return isset($map['product'], $map['target_qty'], $map['target_amount']) ? $map : null;
+    }
+
+    private function parseCsvNumber($value): ?float
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $trimmed = trim((string) $value);
+        if ($trimmed === '' || ! is_numeric($trimmed)) {
+            return null;
+        }
+
+        return (float) $trimmed;
+    }
+
+    private function csvRowIsEmpty(array $row): bool
+    {
+        foreach ($row as $cell) {
+            if (trim((string) $cell) !== '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function normalizeProductKey(?string $name): string
+    {
+        return strtolower(trim(preg_replace('/\s+/', ' ', (string) $name)));
     }
 
     public function create()

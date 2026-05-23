@@ -53,6 +53,9 @@
             </div>
         </form>
 
+        @php
+            $reportTotals = collect($reportRows ?? []);
+        @endphp
         <div class="d-flex flex-column w-tables rounded bg-white">
             <div class="table-responsive">
                 <table class="table table-bordered table-hover w-100">
@@ -92,6 +95,23 @@
                             <tr><td colspan="12" class="text-center">@lang('messages.noRecordFound')</td></tr>
                         @endforelse
                     </tbody>
+                    @if($reportTotals->isNotEmpty())
+                        <tfoot>
+                            <tr class="font-weight-bold bg-light">
+                                <td colspan="2" class="text-right">Total</td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('target_qty'), 2) }}</td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('target_amount'), 2) }}</td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('primary_qty'), 2) }}</td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('primary_amount'), 2) }}</td>
+                                <td></td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('secondary_qty'), 2) }}</td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('secondary_amount'), 2) }}</td>
+                                <td></td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('balance_qty'), 2) }}</td>
+                                <td class="text-right">{{ number_format($reportTotals->sum('balance_amount'), 2) }}</td>
+                            </tr>
+                        </tfoot>
+                    @endif
                 </table>
             </div>
         </div>

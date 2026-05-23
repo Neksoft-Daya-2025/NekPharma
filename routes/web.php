@@ -1189,6 +1189,9 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::get('stock-statements/target-vs-achievement', [StockStatementController::class, 'targetVsAchievement'])->name('stock-statements.target-vs-achievement');
     Route::resource('stock-statements', StockStatementController::class);
 
+    Route::get('sales-plan/export', [SalesPlanController::class, 'export'])->name('sales-plan.export');
+    Route::get('sales-plan/import/sample', [SalesPlanController::class, 'downloadSample'])->name('sales-plan.import.sample');
+    Route::post('sales-plan/import/targets', [SalesPlanController::class, 'importTargets'])->name('sales-plan.import.targets');
     Route::resource('sales-plan', SalesPlanController::class)->except(['show']);
 
     Route::get('all-notifications', [NotificationController::class, 'all'])->name('all-notifications');
