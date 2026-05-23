@@ -1183,6 +1183,8 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('dcr-management-approve-all', [DcrReportController::class, 'approveAll'])->name('dcr-management.approve-all');
 
     Route::get('stock-statements/get-opening-primary', [StockStatementController::class, 'getOpeningPrimary'])->name('stock-statements.get-opening-primary');
+    Route::get('stock-statements/import/sample', [StockStatementController::class, 'downloadSample'])->name('stock-statements.import.sample');
+    Route::post('stock-statements/import/lines', [StockStatementController::class, 'importLines'])->name('stock-statements.import.lines');
     Route::get('stock-statements/consolidation', [StockStatementController::class, 'consolidation'])->name('stock-statements.consolidation');
     Route::get('stock-statements/target-vs-achievement', [StockStatementController::class, 'targetVsAchievement'])->name('stock-statements.target-vs-achievement');
     Route::resource('stock-statements', StockStatementController::class);

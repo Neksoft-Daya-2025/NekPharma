@@ -40,10 +40,20 @@
         </div>
 
         <div class="px-lg-4 px-md-4 px-3 py-2">
-            <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
                 <label class="f-14 text-dark-grey mb-0">Statement Lines (Opening / Primary / Secondary / Closing)</label>
-                <button type="button" class="btn btn-sm btn-primary" id="add-statement-line"><i class="fa fa-plus"></i> Add line</button>
+                <div class="d-flex flex-wrap align-items-center">
+                    <a href="{{ route('stock-statements.import.sample') }}" class="btn btn-sm btn-secondary mr-2 mb-2 mb-md-0">
+                        <i class="fa fa-download"></i> Sample CSV
+                    </a>
+                    <label class="btn btn-sm btn-secondary mr-2 mb-2 mb-md-0 mb-0" for="stock-statement-import-file">
+                        <i class="fa fa-file-upload"></i> Import CSV
+                    </label>
+                    <input type="file" id="stock-statement-import-file" accept=".csv,text/csv" class="d-none">
+                    <button type="button" class="btn btn-sm btn-primary mb-2 mb-md-0" id="add-statement-line"><i class="fa fa-plus"></i> Add line</button>
+                </div>
             </div>
+            <p class="text-muted small mb-2">Select period and CFA stockist first, then import CSV or add lines manually. Closing = Opening + Primary − Secondary unless Closing Qty is provided in the file.</p>
             <div class="table-responsive">
                 <table class="table table-bordered" id="statement-lines-table">
                     <thead>
@@ -61,7 +71,7 @@
                     </tbody>
                 </table>
             </div>
-            <p class="text-muted small mb-0">Closing is computed as Opening + Primary + Secondary. Tick "Override" to enter Closing manually.</p>
+            <p class="text-muted small mb-0">Closing is computed as Opening + Primary − Secondary. Tick "Override" to enter Closing manually.</p>
             @if($products->isEmpty())
                 <p class="text-muted mt-2">@lang('messages.noRecordFound') Add products first.</p>
             @endif
@@ -121,6 +131,8 @@
 <script>
 $(function() {
     var getOpeningPrimaryUrl = "{{ route('stock-statements.get-opening-primary') }}";
+    var importLinesUrl = "{{ route('stock-statements.import.lines') }}";
+    var importCsrf = "{{ csrf_token() }}";
     var $tbody = $('#statement-lines-table tbody');
     var $template = $('#statement-line-row-template').html();
     var lineIndex = 0;
@@ -183,7 +195,7 @@ $(function() {
         var open = getNumericVal($tr.find('.opening-qty-input'));
         var primary = getNumericVal($tr.find('.primary-qty-input'));
         var secondary = getNumericVal($tr.find('.secondary-qty-input'));
-        var closing = open + primary + secondary;
+        var closing = open + primary - secondary;
         $tr.find('.closing-qty-display').text(closing.toFixed(2));
     }
 
@@ -249,6 +261,78 @@ $(function() {
             }
         });
     }
+
+    function addRowFromImport(line) {
+        var $row = $($template);
+        $tbody.append($row);
+        $row.find('select.product-select').val(String(line.product_id));
+        $row.find('.opening-qty-input').val(parseFloat(line.opening_qty || 0));
+        $row.find('.primary-qty-input').val(parseFloat(line.primary_qty || 0));
+        $row.find('.secondary-qty-input').val(parseFloat(line.secondary_qty || 0));
+        $row.find('.closing-qty-display').text(parseFloat(line.closing_qty || 0).toFixed(2));
+        reindexRows();
+        bindRowEvents($row);
+        return $row;
+    }
+
+    $('#stock-statement-import-file').on('change', function() {
+        var fileInput = this;
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) {
+            return;
+        }
+
+        var cfaStockistId = $('#cfa_stockist_id').val();
+        var periodMonth = $('#period_month').val();
+        var periodYear = $('#period_year').val();
+
+        if (!cfaStockistId || !periodMonth || !periodYear) {
+            alert('Please select Period Month, Period Year, and CFA Stockist before importing CSV.');
+            fileInput.value = '';
+            return;
+        }
+
+        var formData = new FormData();
+        formData.append('_token', importCsrf);
+        formData.append('import_file', file);
+        formData.append('cfa_stockist_id', cfaStockistId);
+        formData.append('period_month', periodMonth);
+        formData.append('period_year', periodYear);
+
+        $.ajax({
+            url: importLinesUrl,
+            type: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(res) {
+                if (res.status !== 'success' || !res.lines || !res.lines.length) {
+                    alert(res.message || 'No valid rows were imported.');
+                    return;
+                }
+
+                $tbody.empty();
+                res.lines.forEach(function(line) {
+                    addRowFromImport(line);
+                });
+                reindexRows();
+
+                var skippedCount = (res.skipped || []).length;
+                var message = res.imported + ' line(s) imported from CSV.';
+                if (skippedCount > 0) {
+                    message += ' ' + skippedCount + ' row(s) skipped.';
+                }
+                alert(message);
+            },
+            error: function(xhr) {
+                var message = (xhr.responseJSON && xhr.responseJSON.message) ? xhr.responseJSON.message : 'CSV import failed.';
+                alert(message);
+            },
+            complete: function() {
+                fileInput.value = '';
+            }
+        });
+    });
 
     $('#add-statement-line').on('click', function() {
         addRow();

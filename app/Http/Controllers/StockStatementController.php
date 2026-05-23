@@ -12,9 +12,12 @@ use App\Models\SalesPlanTarget;
 use App\Models\StockStatement;
 use App\Models\StockStatementLine;
 use App\Models\User;
+use App\Exports\StockStatementSampleExport;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Maatwebsite\Excel\Facades\Excel;
 use App\Traits\AccessibleHeadquarters;
 
 class StockStatementController extends AccountBaseController
@@ -152,6 +155,241 @@ class StockStatementController extends AccountBaseController
             return Reply::dataOnly(['status' => 'success', 'html' => $html, 'title' => $this->pageTitle]);
         }
         return view('stock-statements.create', $this->data);
+    }
+
+    /**
+     * Sample CSV for statement line import on the create form.
+     */
+    public function downloadSample()
+    {
+        return Excel::download(
+            new StockStatementSampleExport(),
+            'stock-statement-lines-sample.csv',
+            \Maatwebsite\Excel\Excel::CSV,
+            ['Content-Type' => 'text/csv']
+        );
+    }
+
+    /**
+     * Parse uploaded CSV and return statement lines for the create form.
+     */
+    public function importLines(Request $request)
+    {
+        $request->validate([
+            'import_file' => 'required|file|mimes:csv,txt|max:5120',
+            'cfa_stockist_id' => 'required|exists:cfa_stockists,id',
+            'period_month' => 'required|integer|between:1,12',
+            'period_year' => 'required|integer|min:2020|max:2100',
+        ]);
+
+        $cfaStockistId = (int) $request->cfa_stockist_id;
+        $periodMonth = (int) $request->period_month;
+        $periodYear = (int) $request->period_year;
+
+        $stockistIds = $this->assignedCfaStockistsQuery()->pluck('id')->toArray();
+        if (! in_array($cfaStockistId, $stockistIds, true)) {
+            return Reply::error(__('messages.unauthorizedAccess'));
+        }
+
+        /** @var UploadedFile $file */
+        $file = $request->file('import_file');
+        $parsed = $this->parseStockStatementCsv($file->getRealPath());
+
+        if ($parsed['errors']) {
+            return Reply::error(implode(' ', $parsed['errors']));
+        }
+
+        if (empty($parsed['rows'])) {
+            return Reply::error(__('messages.noRecordFound'));
+        }
+
+        $productsByName = Product::where('company_id', company()->id)
+            ->get(['id', 'name'])
+            ->keyBy(fn ($product) => $this->normalizeProductKey($product->name));
+
+        $lines = [];
+        $skipped = [];
+        $seenProductIds = [];
+
+        foreach ($parsed['rows'] as $rowNum => $row) {
+            $productKey = $this->normalizeProductKey($row['product']);
+            $product = $productsByName->get($productKey);
+
+            if (! $product) {
+                $skipped[] = ['row' => $rowNum, 'product' => $row['product'], 'reason' => 'Product not found'];
+                continue;
+            }
+
+            if (in_array($product->id, $seenProductIds, true)) {
+                $skipped[] = ['row' => $rowNum, 'product' => $row['product'], 'reason' => 'Duplicate product in file'];
+                continue;
+            }
+
+            $seenProductIds[] = $product->id;
+
+            $opening = $row['opening_qty'] !== null
+                ? $row['opening_qty']
+                : $this->getOpeningQty($cfaStockistId, $product->id, $periodMonth, $periodYear);
+            $primary = $row['primary_qty'] !== null
+                ? $row['primary_qty']
+                : $this->getPrimaryQty($cfaStockistId, $product->id, $periodMonth, $periodYear);
+            $secondary = $row['secondary_qty'] ?? 0;
+            $closing = $row['closing_qty'] !== null
+                ? $row['closing_qty']
+                : ($opening + $primary - $secondary);
+
+            $lines[] = [
+                'product_id' => $product->id,
+                'product_name' => $product->name,
+                'opening_qty' => round($opening, 2),
+                'primary_qty' => round($primary, 2),
+                'secondary_qty' => round($secondary, 2),
+                'closing_qty' => round($closing, 2),
+            ];
+        }
+
+        if (empty($lines)) {
+            return Reply::error(__('messages.noRecordFound') . ' — no valid product rows matched.');
+        }
+
+        return Reply::dataOnly([
+            'status' => 'success',
+            'lines' => $lines,
+            'skipped' => $skipped,
+            'imported' => count($lines),
+        ]);
+    }
+
+    /**
+     * @return array{rows: array<int, array{product: string, opening_qty: ?float, primary_qty: ?float, secondary_qty: float, closing_qty: ?float}>, errors: array<int, string>}
+     */
+    private function parseStockStatementCsv(string $path): array
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            return ['rows' => [], 'errors' => ['Could not read CSV file.']];
+        }
+
+        $headerMap = null;
+        $rows = [];
+        $errors = [];
+        $lineNumber = 0;
+
+        while (($data = fgetcsv($handle)) !== false) {
+            $lineNumber++;
+
+            if ($this->csvRowIsEmpty($data)) {
+                continue;
+            }
+
+            if ($headerMap === null) {
+                $headerMap = $this->mapStockStatementCsvHeaders($data);
+                if ($headerMap === null) {
+                    fclose($handle);
+
+                    return ['rows' => [], 'errors' => ['Invalid CSV header. Expected columns: Product, Opening Qty, Primary Qty, Secondary Qty, Closing Qty.']];
+                }
+                continue;
+            }
+
+            $product = trim((string) ($data[$headerMap['product']] ?? ''));
+            if ($product === '') {
+                continue;
+            }
+
+            $opening = $this->parseCsvQty($data[$headerMap['opening_qty']] ?? null);
+            $primary = $this->parseCsvQty($data[$headerMap['primary_qty']] ?? null);
+            $secondary = $this->parseCsvQty($data[$headerMap['secondary_qty']] ?? null);
+            $closing = $this->parseCsvQty($data[$headerMap['closing_qty']] ?? null);
+
+            if ($opening !== null && $opening < 0) {
+                $errors[] = "Row {$lineNumber}: Opening Qty cannot be negative.";
+            }
+            if ($primary !== null && $primary < 0) {
+                $errors[] = "Row {$lineNumber}: Primary Qty cannot be negative.";
+            }
+            if ($secondary !== null && $secondary < 0) {
+                $errors[] = "Row {$lineNumber}: Secondary Qty cannot be negative.";
+            }
+            if ($closing !== null && $closing < 0) {
+                $errors[] = "Row {$lineNumber}: Closing Qty cannot be negative.";
+            }
+
+            $rows[$lineNumber] = [
+                'product' => $product,
+                'opening_qty' => $opening,
+                'primary_qty' => $primary,
+                'secondary_qty' => $secondary ?? 0.0,
+                'closing_qty' => $closing,
+            ];
+        }
+
+        fclose($handle);
+
+        return ['rows' => $rows, 'errors' => $errors];
+    }
+
+    private function mapStockStatementCsvHeaders(array $headerRow): ?array
+    {
+        $normalize = static fn ($value) => strtolower(trim(preg_replace('/[^a-z0-9]/', '', (string) $value)));
+
+        $aliases = [
+            'product' => ['product', 'productname', 'productname', 'item', 'itemname', 'medicine'],
+            'opening_qty' => ['openingqty', 'opening', 'openingstock', 'openqty'],
+            'primary_qty' => ['primaryqty', 'primary', 'primarysales', 'purchaseqty'],
+            'secondary_qty' => ['secondaryqty', 'secondary', 'secondarysales', 'salesqty'],
+            'closing_qty' => ['closingqty', 'closing', 'closingstock', 'closeqty'],
+        ];
+
+        $map = [];
+        foreach ($headerRow as $index => $heading) {
+            $key = $normalize($heading);
+            if ($key === '') {
+                continue;
+            }
+            foreach ($aliases as $field => $options) {
+                if (in_array($key, $options, true) && ! isset($map[$field])) {
+                    $map[$field] = $index;
+                    break;
+                }
+            }
+        }
+
+        return isset($map['product']) ? $map : null;
+    }
+
+    private function parseCsvQty($value): ?float
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $trimmed = trim((string) $value);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        if (! is_numeric($trimmed)) {
+            return null;
+        }
+
+        return (float) $trimmed;
+    }
+
+    private function csvRowIsEmpty(array $row): bool
+    {
+        foreach ($row as $cell) {
+            if (trim((string) $cell) !== '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function normalizeProductKey(?string $name): string
+    {
+        return strtolower(trim(preg_replace('/\s+/', ' ', (string) $name)));
     }
 
     /**
