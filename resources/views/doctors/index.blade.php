@@ -225,11 +225,11 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             </x-table>
             </div>
             
-            <!-- Count (all matching doctors loaded; list scrolls in .doctors-table-scroll) -->
+            <!-- Count reflects doctors currently visible after inline filters. -->
             @if($doctors->isNotEmpty())
                 <div class="d-flex justify-content-between align-items-center mt-3 px-3 pb-3">
                     <div class="text-muted">
-                        {{ $doctors->count() }} doctor(s) total
+                        <span id="doctors-visible-count">{{ $doctors->count() }}</span> doctor(s) total
                     </div>
                 </div>
             @endif
@@ -275,7 +275,9 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
                         },
                         success: function(response) {
                             if (response.status === "success") {
-                                $('#row-' + id).fadeOut();
+                                $('#row-' + id).fadeOut(function() {
+                                    applyDoctorsTableFilters();
+                                });
                             }
                         }
                     });
@@ -290,6 +292,8 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
             const qual = ($('#doctors-filter-qualification').val() || '').toLowerCase().trim();
             const spec = ($('#doctors-filter-speciality').val() || '').toLowerCase().trim();
 
+            let visibleCount = 0;
+
             $('#doctors-table tbody tr').each(function() {
                 const $row = $(this);
                 if ($row.find('td[colspan]').length) {
@@ -303,8 +307,15 @@ $selectedHeadquarterInline = request('headquarter_id', $defaultHeadquarterId ?? 
                 const matchQual = !qual || rowQual === qual;
                 const rowSpec = String($row.attr('data-speciality') || '');
                 const matchSpec = !spec || rowSpec === spec;
-                $row.toggle(matchSearch && matchHq && matchQual && matchSpec);
+                const isVisible = matchSearch && matchHq && matchQual && matchSpec;
+                $row.toggle(isVisible);
+
+                if (isVisible) {
+                    visibleCount++;
+                }
             });
+
+            $('#doctors-visible-count').text(visibleCount);
         }
 
         $('#doctors-inline-search').on('keyup input', function() {
