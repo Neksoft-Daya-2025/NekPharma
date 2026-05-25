@@ -39,6 +39,17 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class PayrollController extends AccountBaseController
 {
+    public static function visibleSalaryComponents(array $components): array
+    {
+        return array_filter($components, function ($value, $key) {
+            if ($key === 'Total Hours') {
+                return true;
+            }
+
+            return trim((string) $value) !== '' && (float) $value != 0.0;
+        }, ARRAY_FILTER_USE_BOTH);
+    }
+
 
     public function __construct()
     {
@@ -180,8 +191,8 @@ class PayrollController extends AccountBaseController
         ));
 
         $salaryJson = json_decode($this->salarySlip->salary_json, true);
-        $this->earnings = $salaryJson['earnings'];
-        $this->deductions = $salaryJson['deductions'];
+        $this->earnings = self::visibleSalaryComponents($salaryJson['earnings']);
+        $this->deductions = self::visibleSalaryComponents($salaryJson['deductions']);
         $extraJson = json_decode($this->salarySlip->extra_json, true);
         $additionalEarnings = json_decode($this->salarySlip->additional_earning_json, true);
 
@@ -218,8 +229,8 @@ class PayrollController extends AccountBaseController
 
         if (!is_null($extraJson)) {
 
-            $this->earningsExtra = $extraJson['earnings'];
-            $this->deductionsExtra = $extraJson['deductions'];
+            $this->earningsExtra = self::visibleSalaryComponents($extraJson['earnings']);
+            $this->deductionsExtra = self::visibleSalaryComponents($extraJson['deductions']);
         }
         else {
             $this->earningsExtra = '';
@@ -227,7 +238,7 @@ class PayrollController extends AccountBaseController
         }
 
         if (!is_null($additionalEarnings)) {
-            $this->earningsAdditional = $additionalEarnings['earnings'];
+            $this->earningsAdditional = self::visibleSalaryComponents($additionalEarnings['earnings']);
         }
         else {
             $this->earningsAdditional = '';
@@ -1305,8 +1316,8 @@ class PayrollController extends AccountBaseController
         $this->company = $this->salarySlip->company;
 
         $salaryJson = json_decode($this->salarySlip->salary_json, true);
-        $this->earnings = $salaryJson['earnings'];
-        $this->deductions = $salaryJson['deductions'];
+        $this->earnings = self::visibleSalaryComponents($salaryJson['earnings']);
+        $this->deductions = self::visibleSalaryComponents($salaryJson['deductions']);
         $extraJson = json_decode($this->salarySlip->extra_json, true);
         $additionalEarnings = json_decode($this->salarySlip->additional_earning_json, true);
 
@@ -1325,8 +1336,8 @@ class PayrollController extends AccountBaseController
         }
 
         if (!is_null($extraJson)) {
-            $this->earningsExtra = $extraJson['earnings'];
-            $this->deductionsExtra = $extraJson['deductions'];
+            $this->earningsExtra = self::visibleSalaryComponents($extraJson['earnings']);
+            $this->deductionsExtra = self::visibleSalaryComponents($extraJson['deductions']);
         }
         else {
             $this->earningsExtra = '';
@@ -1334,7 +1345,7 @@ class PayrollController extends AccountBaseController
         }
 
         if (!is_null($additionalEarnings)) {
-            $this->earningsAdditional = $additionalEarnings['earnings'];
+            $this->earningsAdditional = self::visibleSalaryComponents($additionalEarnings['earnings']);
         }
         else {
             $this->earningsAdditional = '';

@@ -135,14 +135,16 @@
                                     @endforeach
 
 
-                                    <tr>
-                                        <td>@lang('payroll::modules.payroll.fixedAllowance')</td>
-                                        <td class="text-right text-uppercase">
-                                            @php
-                                                $fixedAllow = ($salarySlip->fixed_allowance > 0) ? $salarySlip->fixed_allowance : $fixedAllowance;
-                                            @endphp
-                                            {{ currency_format($fixedAllow, ($currency->currency ? $currency->currency->id : company()->currency->id )) }}</td>
-                                    </tr>
+                                    @php
+                                        $fixedAllow = ($salarySlip->fixed_allowance > 0) ? $salarySlip->fixed_allowance : $fixedAllowance;
+                                    @endphp
+                                    @if($fixedAllow > 0)
+                                        <tr>
+                                            <td>@lang('payroll::modules.payroll.fixedAllowance')</td>
+                                            <td class="text-right text-uppercase">
+                                                {{ currency_format($fixedAllow, ($currency->currency ? $currency->currency->id : company()->currency->id )) }}</td>
+                                        </tr>
+                                    @endif
 
                                     @forelse ($earningsAdditional as $key=>$item)
                                         <tr>
