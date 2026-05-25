@@ -53,6 +53,13 @@
                                       fieldName="semimonthly_value" fieldRequired="false">
                         </x-forms.number>
                     </div>
+                    <div class="col-lg-6">
+                        <x-forms.checkbox fieldId="show_in_payslip"
+                                          fieldName="show_in_payslip"
+                                          fieldValue="1"
+                                          :fieldLabel="'Show in payslip'"
+                                          checked/>
+                    </div>
                 </div>
             </div>
         </x-form>

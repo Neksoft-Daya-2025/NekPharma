@@ -24,4 +24,18 @@ class PayrollSalaryComponentVisibilityTest extends TestCase
             'Total Hours' => 0,
         ], $components);
     }
+
+    public function test_unchecked_salary_components_are_hidden_from_payslip(): void
+    {
+        $components = PayrollController::visibleSalaryComponents([
+            'HRA' => 10500,
+            'ESIC' => 250,
+            'PF' => 1800,
+        ], ['ESIC']);
+
+        $this->assertSame([
+            'HRA' => 10500,
+            'PF' => 1800,
+        ], $components);
+    }
 }

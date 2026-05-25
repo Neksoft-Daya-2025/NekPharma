@@ -16,8 +16,10 @@ use App\Models\ProjectTimeLog;
 use App\Models\EmployeeDetails;
 use App\Models\ExpensesCategory;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Modules\Payroll\Entities\SalaryTds;
 use Modules\Payroll\Entities\SalarySlip;
+use Modules\Payroll\Entities\SalaryComponent;
 use Modules\Payroll\Entities\PayrollCycle;
 use Modules\Payroll\Entities\PayrollSetting;
 use App\Http\Controllers\AccountBaseController;
@@ -39,15 +41,32 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class PayrollController extends AccountBaseController
 {
-    public static function visibleSalaryComponents(array $components): array
+    public static function visibleSalaryComponents(array $components, array $hiddenComponentNames = []): array
     {
-        return array_filter($components, function ($value, $key) {
+        $hiddenComponentNames = array_flip($hiddenComponentNames);
+
+        return array_filter($components, function ($value, $key) use ($hiddenComponentNames) {
             if ($key === 'Total Hours') {
                 return true;
             }
 
+            if (isset($hiddenComponentNames[$key])) {
+                return false;
+            }
+
             return trim((string) $value) !== '' && (float) $value != 0.0;
         }, ARRAY_FILTER_USE_BOTH);
+    }
+
+    public static function hiddenPayslipComponentNames(): array
+    {
+        if (!Schema::hasColumn('salary_components', 'show_in_payslip')) {
+            return [];
+        }
+
+        return SalaryComponent::where('show_in_payslip', false)
+            ->pluck('component_name')
+            ->all();
     }
 
 
@@ -191,8 +210,9 @@ class PayrollController extends AccountBaseController
         ));
 
         $salaryJson = json_decode($this->salarySlip->salary_json, true);
-        $this->earnings = self::visibleSalaryComponents($salaryJson['earnings']);
-        $this->deductions = self::visibleSalaryComponents($salaryJson['deductions']);
+        $hiddenPayslipComponents = self::hiddenPayslipComponentNames();
+        $this->earnings = self::visibleSalaryComponents($salaryJson['earnings'], $hiddenPayslipComponents);
+        $this->deductions = self::visibleSalaryComponents($salaryJson['deductions'], $hiddenPayslipComponents);
         $extraJson = json_decode($this->salarySlip->extra_json, true);
         $additionalEarnings = json_decode($this->salarySlip->additional_earning_json, true);
 
@@ -229,8 +249,8 @@ class PayrollController extends AccountBaseController
 
         if (!is_null($extraJson)) {
 
-            $this->earningsExtra = self::visibleSalaryComponents($extraJson['earnings']);
-            $this->deductionsExtra = self::visibleSalaryComponents($extraJson['deductions']);
+            $this->earningsExtra = self::visibleSalaryComponents($extraJson['earnings'], $hiddenPayslipComponents);
+            $this->deductionsExtra = self::visibleSalaryComponents($extraJson['deductions'], $hiddenPayslipComponents);
         }
         else {
             $this->earningsExtra = '';
@@ -238,7 +258,7 @@ class PayrollController extends AccountBaseController
         }
 
         if (!is_null($additionalEarnings)) {
-            $this->earningsAdditional = self::visibleSalaryComponents($additionalEarnings['earnings']);
+            $this->earningsAdditional = self::visibleSalaryComponents($additionalEarnings['earnings'], $hiddenPayslipComponents);
         }
         else {
             $this->earningsAdditional = '';
@@ -1316,8 +1336,9 @@ class PayrollController extends AccountBaseController
         $this->company = $this->salarySlip->company;
 
         $salaryJson = json_decode($this->salarySlip->salary_json, true);
-        $this->earnings = self::visibleSalaryComponents($salaryJson['earnings']);
-        $this->deductions = self::visibleSalaryComponents($salaryJson['deductions']);
+        $hiddenPayslipComponents = self::hiddenPayslipComponentNames();
+        $this->earnings = self::visibleSalaryComponents($salaryJson['earnings'], $hiddenPayslipComponents);
+        $this->deductions = self::visibleSalaryComponents($salaryJson['deductions'], $hiddenPayslipComponents);
         $extraJson = json_decode($this->salarySlip->extra_json, true);
         $additionalEarnings = json_decode($this->salarySlip->additional_earning_json, true);
 
@@ -1336,8 +1357,8 @@ class PayrollController extends AccountBaseController
         }
 
         if (!is_null($extraJson)) {
-            $this->earningsExtra = self::visibleSalaryComponents($extraJson['earnings']);
-            $this->deductionsExtra = self::visibleSalaryComponents($extraJson['deductions']);
+            $this->earningsExtra = self::visibleSalaryComponents($extraJson['earnings'], $hiddenPayslipComponents);
+            $this->deductionsExtra = self::visibleSalaryComponents($extraJson['deductions'], $hiddenPayslipComponents);
         }
         else {
             $this->earningsExtra = '';
@@ -1345,7 +1366,7 @@ class PayrollController extends AccountBaseController
         }
 
         if (!is_null($additionalEarnings)) {
-            $this->earningsAdditional = self::visibleSalaryComponents($additionalEarnings['earnings']);
+            $this->earningsAdditional = self::visibleSalaryComponents($additionalEarnings['earnings'], $hiddenPayslipComponents);
         }
         else {
             $this->earningsAdditional = '';

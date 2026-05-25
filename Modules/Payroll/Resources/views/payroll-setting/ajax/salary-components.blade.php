@@ -6,6 +6,7 @@
                 <th>@lang('payroll::modules.payroll.componentType')</th>
                 <th>@lang('payroll::modules.payroll.componentValue')</th>
                 <th>@lang('payroll::modules.payroll.valueType')</th>
+                <th>Show in Payslip</th>
                 <th class="text-right">@lang('app.action')</th>
             </x-slot>
 
@@ -26,6 +27,13 @@
                         @endif
                     </td>
                     <td> {{ (__('payroll::modules.payroll.' . $salaryComponent->value_type)) }}</td>
+                    <td>
+                        @if($salaryComponent->show_in_payslip ?? true)
+                            <x-status :value="__('app.yes')" color="green"/>
+                        @else
+                            <x-status :value="__('app.no')" color="red"/>
+                        @endif
+                    </td>
                     <td class="text-right">
                         <div class="task_view">
                             <a href="javascript:;" data-salary-components-id="{{ $salaryComponent->id }}"
@@ -43,7 +51,7 @@
                 </tr>
             @empty
                 <tr>
-                    <td colspan="5">
+                    <td colspan="6">
                         <x-cards.no-record icon="list" :message="__('payroll::messages.noSalaryComponentsAdded')"/>
                     </td>
                 </tr>

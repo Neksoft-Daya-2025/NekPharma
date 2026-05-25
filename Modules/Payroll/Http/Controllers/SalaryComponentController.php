@@ -56,7 +56,7 @@ class SalaryComponentController extends AccountBaseController
         $this->salaryComponentPermission = user()->permission('manage_salary_component');
         abort_403($this->salaryComponentPermission !== 'all');
 
-        SalaryComponent::create($request->all());
+        SalaryComponent::create($this->componentPayload($request));
 
         return Reply::success(__('messages.recordSaved'));
     }
@@ -97,6 +97,7 @@ class SalaryComponentController extends AccountBaseController
             'biweekly_value' => $request->biweekly_value,
             'semimonthly_value' => $request->semimonthly_value,
             'value_type' => $request->value_type,
+            'show_in_payslip' => $request->boolean('show_in_payslip'),
         ]);
 
         return Reply::success(__('messages.updateSuccess'));
@@ -116,5 +117,12 @@ class SalaryComponentController extends AccountBaseController
         SalaryComponent::destroy($id);
 
         return Reply::success(__('messages.deleteSuccess'));
+    }
+
+    private function componentPayload(StoreSalaryComponent $request): array
+    {
+        return array_merge($request->all(), [
+            'show_in_payslip' => $request->boolean('show_in_payslip'),
+        ]);
     }
 }
