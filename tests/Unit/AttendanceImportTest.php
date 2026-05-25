@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Imports\AttendanceImport;
 use App\Jobs\ImportAttendanceJob;
+use App\Http\Controllers\AttendanceController;
 use Tests\TestCase;
 
 class AttendanceImportTest extends TestCase
@@ -68,5 +69,16 @@ class AttendanceImportTest extends TestCase
         $this->assertSame('EL', ImportAttendanceJob::normalizeAttendanceImportStatus('el'));
         $this->assertSame('LWP', ImportAttendanceJob::normalizeAttendanceImportStatus('lwp'));
         $this->assertNull(ImportAttendanceJob::normalizeAttendanceImportStatus('late'));
+    }
+
+    public function test_attendance_template_starts_with_employee_id(): void
+    {
+        $this->assertSame([
+            'Employee ID',
+            'name (reference only)',
+            'designation (reference only)',
+            'department (reference only)',
+            'month',
+        ], AttendanceController::attendanceTemplateBaseColumns());
     }
 }

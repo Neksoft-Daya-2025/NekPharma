@@ -1400,8 +1400,13 @@ class AttendanceController extends AccountBaseController
         return view('attendances.create', $this->data);
     }
 
+    public static function attendanceTemplateBaseColumns(): array
+    {
+        return ['Employee ID', 'name (reference only)', 'designation (reference only)', 'department (reference only)', 'month'];
+    }
+
     /**
-     * Generate a live CSV template pre-filled with all active employees.
+     * Generate a live Excel template pre-filled with all active employees.
      * Always reflects the current employee list — new hires appear automatically.
      */
     public function downloadAttendanceTemplate()
@@ -1426,7 +1431,7 @@ class AttendanceController extends AccountBaseController
 
         $month = now()->format('Y-m');
 
-        $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'Employee ID', 'month'];
+        $header = self::attendanceTemplateBaseColumns();
 
         $monthDate = now()->startOfMonth();
 
@@ -1441,10 +1446,10 @@ class AttendanceController extends AccountBaseController
         $rowNumber = 2;
         foreach ($employees as $emp) {
             $row = [
+                $emp->employee_id,
                 $emp->name,
                 $emp->designation ?? '',
                 $emp->department ?? '',
-                $emp->employee_id,
                 $month,
             ];
 
