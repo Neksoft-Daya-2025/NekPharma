@@ -30,6 +30,32 @@ class AttendanceImport implements ToArray
         return $fields;
     }
 
+    public static function columnIdForHeading($heading): ?string
+    {
+        $heading = trim((string) $heading);
+        $normalized = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $heading)));
+
+        if ($normalized === 'email') {
+            return 'email';
+        }
+
+        if ($normalized === 'month') {
+            return 'month';
+        }
+
+        if (preg_match('/^\d{4}-\d{2}-(\d{2})$/', $heading, $matches)) {
+            $day = (int) $matches[1];
+
+            return $day >= 1 && $day <= 31 ? 'day_' . $day : null;
+        }
+
+        if (preg_match('/^(?:day)?0?([1-9]|[12][0-9]|3[01])$/', $normalized, $matches)) {
+            return 'day_' . (int) $matches[1];
+        }
+
+        return null;
+    }
+
     public function array(array $array): array
     {
         $this->processedData = $array;

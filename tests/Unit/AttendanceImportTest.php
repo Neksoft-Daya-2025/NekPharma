@@ -46,4 +46,13 @@ class AttendanceImportTest extends TestCase
             ['date' => '2026-05-04', 'status' => 'late'],
         ], $rows);
     }
+
+    public function test_full_date_headers_map_to_month_day_columns(): void
+    {
+        $this->assertSame('day_1', AttendanceImport::columnIdForHeading('2026-05-01'));
+        $this->assertSame('day_25', AttendanceImport::columnIdForHeading('2026-05-25'));
+        $this->assertSame('day_5', AttendanceImport::columnIdForHeading('05'));
+        $this->assertSame('month', AttendanceImport::columnIdForHeading('month'));
+        $this->assertNull(AttendanceImport::columnIdForHeading('2026-05-32'));
+    }
 }

@@ -67,6 +67,17 @@ trait ImportExcel
 
             // Create mapping array: column index => field id
             $columnMapping = array();
+            foreach ($this->heading as $index => $headingValue) {
+                if (method_exists($importClass, 'columnIdForHeading')) {
+                    $fieldId = $importClass::columnIdForHeading($headingValue);
+
+                    if ($fieldId !== null && !isset($columnMapping[$index])) {
+                        $columnMapping[$index] = $fieldId;
+                        continue;
+                    }
+                }
+            }
+
             foreach ($this->columns as $column) {
                 $columnId = $normalize($column['id']);
                 $columnName = $normalize($column['name']);
@@ -79,6 +90,10 @@ trait ImportExcel
                 }
 
                 foreach ($normalizedHeadings as $index => $normalizedHeading) {
+                    if (isset($columnMapping[$index])) {
+                        continue;
+                    }
+
                     $matched = false;
                     foreach ($matchStrings as $matchStr) {
                         if (
@@ -201,6 +216,15 @@ trait ImportExcel
                 // Create auto-mapping
                 foreach ($heading as $index => $headingValue) {
                     $normalizedHeading = $normalizedHeadings[$index];
+
+                    if (method_exists($importClass, 'columnIdForHeading')) {
+                        $fieldId = $importClass::columnIdForHeading($headingValue);
+
+                        if ($fieldId !== null) {
+                            $columns[$index] = $fieldId;
+                            continue;
+                        }
+                    }
 
                     foreach ($importColumns as $column) {
                         $columnId = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $column['id'])));

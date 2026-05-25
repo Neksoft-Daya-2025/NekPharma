@@ -1429,8 +1429,10 @@ class AttendanceController extends AccountBaseController
         $rows   = [];
         $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'month'];
 
-        for ($day = 1; $day <= 31; $day++) {
-            $header[] = (string) $day;
+        $monthDate = now()->startOfMonth();
+
+        for ($day = 1; $day <= $monthDate->daysInMonth; $day++) {
+            $header[] = $monthDate->copy()->day($day)->format('Y-m-d');
         }
 
         $rows[] = $this->csvRow($header);
@@ -1444,7 +1446,7 @@ class AttendanceController extends AccountBaseController
                 $month,
             ];
 
-            for ($day = 1; $day <= 31; $day++) {
+            for ($day = 1; $day <= $monthDate->daysInMonth; $day++) {
                 $row[] = '';
             }
 
