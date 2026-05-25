@@ -27,8 +27,8 @@ class AttendanceImportTest extends TestCase
                 '2026-05',
                 'present',
                 'absent',
-                'half_day',
-                'late',
+                'SL',
+                'LWP',
             ],
             [
                 0 => 'email',
@@ -41,9 +41,9 @@ class AttendanceImportTest extends TestCase
         );
 
         $this->assertSame([
-            ['date' => '2026-05-01', 'status' => 'present'],
-            ['date' => '2026-05-03', 'status' => 'half_day'],
-            ['date' => '2026-05-04', 'status' => 'late'],
+            ['date' => '2026-05-01', 'status' => 'Present'],
+            ['date' => '2026-05-03', 'status' => 'SL'],
+            ['date' => '2026-05-04', 'status' => 'LWP'],
         ], $rows);
     }
 
@@ -54,5 +54,16 @@ class AttendanceImportTest extends TestCase
         $this->assertSame('day_5', AttendanceImport::columnIdForHeading('05'));
         $this->assertSame('month', AttendanceImport::columnIdForHeading('month'));
         $this->assertNull(AttendanceImport::columnIdForHeading('2026-05-32'));
+    }
+
+    public function test_attendance_status_values_are_limited_to_dropdown_options(): void
+    {
+        $this->assertSame('Present', ImportAttendanceJob::normalizeAttendanceImportStatus('present'));
+        $this->assertSame('Absent', ImportAttendanceJob::normalizeAttendanceImportStatus(' Absent '));
+        $this->assertSame('SL', ImportAttendanceJob::normalizeAttendanceImportStatus('sl'));
+        $this->assertSame('CL', ImportAttendanceJob::normalizeAttendanceImportStatus('CL'));
+        $this->assertSame('EL', ImportAttendanceJob::normalizeAttendanceImportStatus('el'));
+        $this->assertSame('LWP', ImportAttendanceJob::normalizeAttendanceImportStatus('lwp'));
+        $this->assertNull(ImportAttendanceJob::normalizeAttendanceImportStatus('late'));
     }
 }

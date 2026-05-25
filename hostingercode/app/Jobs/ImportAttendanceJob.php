@@ -42,7 +42,7 @@ class ImportAttendanceJob implements ShouldQueue
     /**
      * Execute the job.
      *
-     * CSV format: email, month (YYYY-MM), day_1..day_31 statuses (present|absent|half_day|late)
+     * Excel format: email, month (YYYY-MM), date columns with statuses (SL|CL|EL|LWP|Present|Absent)
      * Clock-in / clock-out times are taken from AttendanceSetting (office_start_time / office_end_time).
      *
      * @return void
@@ -99,19 +99,15 @@ class ImportAttendanceJob implements ShouldQueue
                 $date = $attendanceRow['date'];
                 $status = $attendanceRow['status'];
 
+                if ($status !== 'Present') {
+                    continue;
+                }
+
                 $clockInDateTime  = Carbon::parse($date . ' ' . $officeStart, $timezone);
                 $clockOutDateTime = Carbon::parse($date . ' ' . $officeEnd, $timezone);
 
                 $late    = 'no';
                 $halfDay = 'no';
-
-                if ($status === 'late') {
-                    $clockInDateTime->addMinutes($lateMinutes);
-                    $late = 'yes';
-                } elseif ($status === 'half_day') {
-                    $clockOutDateTime = Carbon::parse($date . ' ' . $halfdayTime, $timezone);
-                    $halfDay = 'yes';
-                }
 
                 Attendance::create([
                     'company_id'     => $this->company?->id,
@@ -151,8 +147,6 @@ class ImportAttendanceJob implements ShouldQueue
         }
 
         $attendanceRows = [];
-        $allowedStatuses = ['present', 'absent', 'half_day', 'late'];
-
         for ($day = 1; $day <= 31; $day++) {
             $dayIndex = array_search('day_' . $day, $columns, true);
 
@@ -160,17 +154,17 @@ class ImportAttendanceJob implements ShouldQueue
                 continue;
             }
 
-            $status = strtolower(trim((string) $row[$dayIndex]));
+            $status = self::normalizeAttendanceImportStatus($row[$dayIndex]);
 
-            if (!in_array($status, $allowedStatuses, true)) {
-                throw new InvalidArgumentException('Invalid status "' . $status . '". Allowed: present, absent, half_day, late.');
+            if ($status === null) {
+                throw new InvalidArgumentException('Invalid status "' . trim((string) $row[$dayIndex]) . '". Allowed: SL, CL, EL, LWP, Present, Absent.');
             }
 
             if ($day > $month->daysInMonth) {
                 throw new InvalidArgumentException('Invalid day ' . $day . ' for month ' . $month->format('Y-m') . '.');
             }
 
-            if ($status === 'absent') {
+            if ($status === 'Absent') {
                 continue;
             }
 
@@ -181,6 +175,21 @@ class ImportAttendanceJob implements ShouldQueue
         }
 
         return $attendanceRows;
+    }
+
+    public static function normalizeAttendanceImportStatus($status): ?string
+    {
+        $value = strtoupper(trim((string) $status));
+
+        return match ($value) {
+            'PRESENT' => 'Present',
+            'ABSENT' => 'Absent',
+            'SL' => 'SL',
+            'CL' => 'CL',
+            'EL' => 'EL',
+            'LWP' => 'LWP',
+            default => null,
+        };
     }
 
 }

@@ -1426,7 +1426,6 @@ class AttendanceController extends AccountBaseController
 
         $month = now()->format('Y-m');
 
-        $rows   = [];
         $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'month'];
 
         $monthDate = now()->startOfMonth();
@@ -1435,8 +1434,11 @@ class AttendanceController extends AccountBaseController
             $header[] = $monthDate->copy()->day($day)->format('Y-m-d');
         }
 
-        $rows[] = $this->csvRow($header);
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->fromArray($header, null, 'A1');
 
+        $rowNumber = 2;
         foreach ($employees as $emp) {
             $row = [
                 $emp->name,
@@ -1450,15 +1452,48 @@ class AttendanceController extends AccountBaseController
                 $row[] = '';
             }
 
-            $rows[] = $this->csvRow($row);
+            $sheet->fromArray($row, null, 'A' . $rowNumber);
+            $rowNumber++;
         }
 
-        $csv      = implode("\n", $rows);
-        $filename = 'attendance-template-' . $month . '.csv';
+        $lastColumn = $sheet->getHighestColumn();
+        $lastRow = max($rowNumber - 1, 2);
+        $statusOptions = '"SL,CL,EL,LWP,Present,Absent"';
 
-        return response($csv, 200, [
-            'Content-Type'        => 'text/csv',
-            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        for ($column = 6; $column <= \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($lastColumn); $column++) {
+            $columnLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($column);
+
+            for ($row = 2; $row <= $lastRow; $row++) {
+                $validation = $sheet->getCell($columnLetter . $row)->getDataValidation();
+                $validation->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+                $validation->setErrorStyle(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::STYLE_STOP);
+                $validation->setAllowBlank(true);
+                $validation->setShowDropDown(true);
+                $validation->setShowErrorMessage(true);
+                $validation->setErrorTitle('Invalid attendance status');
+                $validation->setError('Please select SL, CL, EL, LWP, Present, or Absent.');
+                $validation->setFormula1($statusOptions);
+            }
+        }
+
+        $sheet->freezePane('F2');
+        $sheet->getStyle('A1:' . $lastColumn . '1')->getFont()->setBold(true);
+
+        foreach (range('A', 'E') as $column) {
+            $sheet->getColumnDimension($column)->setAutoSize(true);
+        }
+
+        for ($column = 6; $column <= \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($lastColumn); $column++) {
+            $sheet->getColumnDimension(\PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($column))->setWidth(12);
+        }
+
+        $filename = 'attendance-template-' . $month . '.xlsx';
+
+        return response()->streamDownload(function () use ($spreadsheet) {
+            $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+            $writer->save('php://output');
+        }, $filename, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         ]);
     }
 
