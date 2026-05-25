@@ -42,7 +42,7 @@ class ImportAttendanceJob implements ShouldQueue
     /**
      * Execute the job.
      *
-     * Excel format: email, month (YYYY-MM), date columns with statuses (SL|CL|EL|LWP|Present|Absent)
+     * Excel format: employee_id, month (YYYY-MM), date columns with statuses (SL|CL|EL|LWP|Present|Absent)
      * Clock-in / clock-out times are taken from AttendanceSetting (office_start_time / office_end_time).
      *
      * @return void
@@ -50,20 +50,20 @@ class ImportAttendanceJob implements ShouldQueue
     public function handle()
     {
         // Validate required columns
-        if (!$this->isColumnExists('email') || !$this->isColumnExists('month')) {
+        if (!$this->isColumnExists('employee_id') || !$this->isColumnExists('month')) {
             $this->failJob(__('messages.invalidData'));
             return;
         }
 
-        $email = $this->getColumnValue('email');
+        $employeeId = trim((string) $this->getColumnValue('employee_id'));
 
-        if (!$this->isEmailValid($email)) {
+        if ($employeeId === '') {
             $this->failJob(__('messages.invalidData'));
             return;
         }
 
         // Find employee
-        $user = User::where('email', $email)
+        $user = User::whereHas('employeeDetail', fn($q) => $q->where('employee_id', $employeeId))
             ->whereHas('roles', fn($q) => $q->where('name', 'employee'))
             ->first();
 

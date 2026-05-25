@@ -12,10 +12,11 @@ class AttendanceImportTest extends TestCase
     {
         $fields = collect(AttendanceImport::fields())->pluck('id')->all();
 
-        $this->assertContains('email', $fields);
+        $this->assertContains('employee_id', $fields);
         $this->assertContains('month', $fields);
         $this->assertContains('day_1', $fields);
         $this->assertContains('day_31', $fields);
+        $this->assertNotContains('email', $fields);
         $this->assertNotContains('date', $fields);
     }
 
@@ -23,7 +24,7 @@ class AttendanceImportTest extends TestCase
     {
         $rows = ImportAttendanceJob::monthlyAttendanceRows(
             [
-                'employee@example.com',
+                'RVB001',
                 '2026-05',
                 'present',
                 'absent',
@@ -31,7 +32,7 @@ class AttendanceImportTest extends TestCase
                 'LWP',
             ],
             [
-                0 => 'email',
+                0 => 'employee_id',
                 1 => 'month',
                 2 => 'day_1',
                 3 => 'day_2',
@@ -52,6 +53,8 @@ class AttendanceImportTest extends TestCase
         $this->assertSame('day_1', AttendanceImport::columnIdForHeading('2026-05-01'));
         $this->assertSame('day_25', AttendanceImport::columnIdForHeading('2026-05-25'));
         $this->assertSame('day_5', AttendanceImport::columnIdForHeading('05'));
+        $this->assertSame('employee_id', AttendanceImport::columnIdForHeading('Employee ID'));
+        $this->assertSame('employee_id', AttendanceImport::columnIdForHeading('employee_id'));
         $this->assertSame('month', AttendanceImport::columnIdForHeading('month'));
         $this->assertNull(AttendanceImport::columnIdForHeading('2026-05-32'));
     }

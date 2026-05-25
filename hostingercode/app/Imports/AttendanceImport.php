@@ -11,7 +11,7 @@ class AttendanceImport implements ToArray
     public static function fields(): array
     {
         $fields = [
-            ['id' => 'email', 'name' => __('app.email'), 'required' => 'Yes'],
+            ['id' => 'employee_id', 'name' => __('app.employeeId'), 'required' => 'Yes'],
             ['id' => 'month', 'name' => 'Month (YYYY-MM)', 'required' => 'Yes'],
         ];
 
@@ -33,10 +33,10 @@ class AttendanceImport implements ToArray
     public static function columnIdForHeading($heading): ?string
     {
         $heading = trim((string) $heading);
-        $normalized = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $heading)));
+        $normalized = preg_replace('/[^a-z0-9]/', '', strtolower($heading));
 
-        if ($normalized === 'email') {
-            return 'email';
+        if ($normalized === 'employeeid') {
+            return 'employee_id';
         }
 
         if ($normalized === 'month') {

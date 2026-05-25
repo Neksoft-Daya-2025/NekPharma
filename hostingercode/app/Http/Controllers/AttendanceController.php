@@ -1418,7 +1418,7 @@ class AttendanceController extends AccountBaseController
             ->orderBy('users.name')
             ->select(
                 'users.name',
-                'users.email',
+                'employee_details.employee_id',
                 'designations.name as designation',
                 'teams.team_name as department'
             )
@@ -1426,7 +1426,7 @@ class AttendanceController extends AccountBaseController
 
         $month = now()->format('Y-m');
 
-        $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'month'];
+        $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'Employee ID', 'month'];
 
         $monthDate = now()->startOfMonth();
 
@@ -1444,7 +1444,7 @@ class AttendanceController extends AccountBaseController
                 $emp->name,
                 $emp->designation ?? '',
                 $emp->department ?? '',
-                $emp->email,
+                $emp->employee_id,
                 $month,
             ];
 
