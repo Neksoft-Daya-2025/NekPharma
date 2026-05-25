@@ -10,35 +10,40 @@
                 <div class="s-b-n-header" id="tabs">
                     <nav class="tabs px-4 border-bottom-grey">
                         <div class="nav" id="nav-tab" role="tablist">
-                            <a class="nav-item nav-link f-15 active salary-components"
+                            <a class="nav-item nav-link f-15 active quick-setup"
                                href="{{ route('payroll.payroll_settings') }}" role="tab"
+                               aria-controls="nav-quickSetup" aria-selected="true"
+                               ajax="false">Quick Setup
+                            </a>
+                            <a class="nav-item nav-link f-15 payroll-currency-setting"
+                               href="{{ route('payroll.payroll_settings') }}?tab=payroll-currency-setting"
+                               role="tab" aria-controls="nav-payrollCurrency" aria-selected="true">
+                                Currency
+                            </a>
+                            <a class="nav-item nav-link f-15 salary-setting"
+                               href="{{ route('payroll.payroll_settings') }}?tab=salary-setting"
+                               role="tab" aria-controls="nav-salarySetting" aria-selected="true">
+                                Payslip Fields
+                            </a>
+                            <a class="nav-item nav-link f-15 salary-components"
+                               href="{{ route('payroll.payroll_settings') }}?tab=salary-components" role="tab"
                                aria-controls="nav-salaryComponents" aria-selected="true"
-                               ajax="false">@lang('payroll::app.menu.salaryComponents')
+                               ajax="false">Components
                             </a>
                             <a class="nav-item nav-link f-15 salary-groups"
                                href="{{ route('payroll.payroll_settings') }}?tab=salary-groups" role="tab"
                                aria-controls="nav-salaryGroups" aria-selected="true"
-                               ajax="false">@lang('payroll::app.menu.salaryGroup')
+                               ajax="false">Groups
                             </a>
                             <a class="nav-item nav-link f-15 salary-tds"
                                href="{{ route('payroll.payroll_settings') }}?tab=salary-tds" role="tab"
                                aria-controls="nav-salaryTds" aria-selected="true"
-                               ajax="false">@lang('payroll::app.menu.salaryTds')
+                               ajax="false">Tax / TDS
                             </a>
                             <a class="nav-item nav-link f-15 payment-methods"
                                href="{{ route('payroll.payroll_settings') }}?tab=payment-methods"
                                role="tab" aria-controls="nav-paymentMethods" aria-selected="true">
-                                @lang('payroll::modules.payroll.salaryPaymentMethod')
-                            </a>
-                            <a class="nav-item nav-link f-15 salary-setting"
-                               href="{{ route('payroll.payroll_settings') }}?tab=salary-setting"
-                               role="tab" aria-controls="nav-paymentMethods" aria-selected="true">
-                                @lang('payroll::modules.payroll.salarySlipData')
-                            </a>
-                            <a class="nav-item nav-link f-15 payroll-currency-setting"
-                               href="{{ route('payroll.payroll_settings') }}?tab=payroll-currency-setting"
-                               role="tab" aria-controls="nav-paymentMethods" aria-selected="true">
-                                @lang('payroll::modules.payroll.payrollCurrencySetting')
+                                Payment Methods
                             </a>
                              
                         </div>

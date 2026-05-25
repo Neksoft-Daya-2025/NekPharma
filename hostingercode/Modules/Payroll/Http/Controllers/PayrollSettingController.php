@@ -37,6 +37,10 @@ class PayrollSettingController extends AccountBaseController
         $this->payrollCurrency = ($payrollCurrency) ? $payrollCurrency : company()->currency_id;
 
         switch ($tab) {
+        case 'quick-setup':
+            $this->view = 'payroll::payroll-setting.ajax.quick-setup';
+            break;
+
         case 'salary-components':
             $this->salaryComponentPermission = user()->permission('manage_salary_component');
             abort_403($this->salaryComponentPermission !== 'all');
@@ -94,16 +98,12 @@ class PayrollSettingController extends AccountBaseController
             break;
 
         default:
-            $this->salaryComponentPermission = user()->permission('manage_salary_component');
-            abort_403($this->salaryComponentPermission !== 'all');
-
-            $this->salaryComponents = SalaryComponent::all();
-            $this->view = 'payroll::payroll-setting.ajax.salary-components';
+            $this->view = 'payroll::payroll-setting.ajax.quick-setup';
             break;
 
         }
 
-        $this->activeTab = $tab ?: 'salary-components';
+        $this->activeTab = $tab ?: 'quick-setup';
 
         if (request()->ajax()) {
             $html = view($this->view, $this->data)->render();
