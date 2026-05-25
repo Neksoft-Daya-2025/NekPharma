@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Traits\ExcelImportable;
 use Carbon\Exceptions\InvalidFormatException;
 use Exception;
+use InvalidArgumentException;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -41,48 +42,145 @@ class ImportAttendanceJob implements ShouldQueue
     /**
      * Execute the job.
      *
+     * CSV format: email, month (YYYY-MM), day_1..day_31 statuses (present|absent|half_day|late)
+     * Clock-in / clock-out times are taken from AttendanceSetting (office_start_time / office_end_time).
+     *
      * @return void
      */
     public function handle()
     {
-        if ($this->isColumnExists('clock_in_time') && $this->isColumnExists('email') && $this->isEmailValid($this->getColumnValue('email'))) {
-
-            // user that have employee role
-            $user = User::where('email', $this->getColumnValue('email'))->whereHas('roles', function ($q) {
-                $q->where('name', 'employee');
-            })->first();
-
-            if (!$user) {
-                $this->failJobWithMessage(__('messages.employeeNotFound'));
-            }
-            else {
-                DB::beginTransaction();
-                try {
-                    Attendance::create([
-                        'company_id' => $this->company?->id,
-                        'user_id' => $user->id,
-                        'clock_in_time' => Carbon::createFromFormat('Y-m-d H:i:s', $this->getColumnValue('clock_in_time'), $this->company?->timezone)->timezone('UTC')->format('Y-m-d H:i:s'),
-                        'clock_in_ip' => $this->isColumnExists('clock_in_ip') ? $this->getColumnValue('clock_in_ip') : '127.0.0.1',
-                        'clock_out_time' => $this->isColumnExists('clock_out_time') ? Carbon::createFromFormat('Y-m-d H:i:s', $this->getColumnValue('clock_out_time'), $this->company?->timezone)->timezone('UTC')->format('Y-m-d H:i:s') : null,
-                        'clock_out_ip' => $this->isColumnExists('clock_out_ip') ? $this->getColumnValue('clock_out_ip') : null,
-                        'working_from' => $this->isColumnExists('working_from') ? $this->getColumnValue('working_from') : 'office',
-                        'late' => $this->isColumnExists('late') && str($this->getColumnValue('late'))->lower() == 'yes' ? 'yes' : 'no',
-                        'half_day' => $this->isColumnExists('half_day') && str($this->getColumnValue('half_day'))->lower() == 'yes' ? 'yes' : 'no',
-                    ]);
-
-                    DB::commit();
-                } catch (InvalidFormatException $e) {
-                    DB::rollBack();
-                    $this->failJob(__('messages.invalidDate'));
-                } catch (Exception $e) {
-                    DB::rollBack();
-                    $this->failJobWithMessage($e->getMessage());
-                }
-            }
-        }
-        else {
+        // Validate required columns
+        if (!$this->isColumnExists('email') || !$this->isColumnExists('month')) {
             $this->failJob(__('messages.invalidData'));
+            return;
         }
+
+        $email = $this->getColumnValue('email');
+
+        if (!$this->isEmailValid($email)) {
+            $this->failJob(__('messages.invalidData'));
+            return;
+        }
+
+        // Find employee
+        $user = User::where('email', $email)
+            ->whereHas('roles', fn($q) => $q->where('name', 'employee'))
+            ->first();
+
+        if (!$user) {
+            $this->failJobWithMessage(__('messages.employeeNotFound'));
+            return;
+        }
+
+        try {
+            $attendanceRows = self::monthlyAttendanceRows($this->row, $this->columns);
+        } catch (InvalidArgumentException $e) {
+            $this->failJobWithMessage($e->getMessage());
+            return;
+        }
+
+        if (empty($attendanceRows)) {
+            return;
+        }
+
+        // Load office hours from AttendanceSetting (company-scoped)
+        $setting = \App\Models\AttendanceSetting::where('company_id', $this->company?->id)->first();
+
+        // Defaults if settings are missing
+        $officeStart = $setting?->office_start_time ?? '09:00:00';
+        $officeEnd   = $setting?->office_end_time   ?? '18:00:00';
+        $halfdayTime = $setting?->halfday_mark_time  ?? '13:00:00';
+        $lateMinutes = (int) ($setting?->late_mark_duration ?? 30);
+        $timezone    = $this->company?->timezone ?? 'UTC';
+
+        DB::beginTransaction();
+        try {
+            foreach ($attendanceRows as $attendanceRow) {
+                $date = $attendanceRow['date'];
+                $status = $attendanceRow['status'];
+
+                $clockInDateTime  = Carbon::parse($date . ' ' . $officeStart, $timezone);
+                $clockOutDateTime = Carbon::parse($date . ' ' . $officeEnd, $timezone);
+
+                $late    = 'no';
+                $halfDay = 'no';
+
+                if ($status === 'late') {
+                    $clockInDateTime->addMinutes($lateMinutes);
+                    $late = 'yes';
+                } elseif ($status === 'half_day') {
+                    $clockOutDateTime = Carbon::parse($date . ' ' . $halfdayTime, $timezone);
+                    $halfDay = 'yes';
+                }
+
+                Attendance::create([
+                    'company_id'     => $this->company?->id,
+                    'user_id'        => $user->id,
+                    'clock_in_time'  => $clockInDateTime->utc()->format('Y-m-d H:i:s'),
+                    'clock_in_ip'    => '127.0.0.1',
+                    'clock_out_time' => $clockOutDateTime->utc()->format('Y-m-d H:i:s'),
+                    'clock_out_ip'   => '127.0.0.1',
+                    'working_from'   => 'office',
+                    'late'           => $late,
+                    'half_day'       => $halfDay,
+                ]);
+            }
+
+            DB::commit();
+        } catch (InvalidFormatException $e) {
+            DB::rollBack();
+            $this->failJob(__('messages.invalidDate'));
+        } catch (Exception $e) {
+            DB::rollBack();
+            $this->failJobWithMessage($e->getMessage());
+        }
+    }
+
+    public static function monthlyAttendanceRows(array $row, array $columns): array
+    {
+        $monthIndex = array_search('month', $columns, true);
+
+        if ($monthIndex === false || empty($row[$monthIndex])) {
+            throw new InvalidArgumentException('Invalid month format. Expected YYYY-MM.');
+        }
+
+        try {
+            $month = Carbon::createFromFormat('!Y-m', trim((string) $row[$monthIndex]));
+        } catch (Exception $e) {
+            throw new InvalidArgumentException('Invalid month format. Expected YYYY-MM, got: ' . $row[$monthIndex]);
+        }
+
+        $attendanceRows = [];
+        $allowedStatuses = ['present', 'absent', 'half_day', 'late'];
+
+        for ($day = 1; $day <= 31; $day++) {
+            $dayIndex = array_search('day_' . $day, $columns, true);
+
+            if ($dayIndex === false || !isset($row[$dayIndex]) || trim((string) $row[$dayIndex]) === '') {
+                continue;
+            }
+
+            $status = strtolower(trim((string) $row[$dayIndex]));
+
+            if (!in_array($status, $allowedStatuses, true)) {
+                throw new InvalidArgumentException('Invalid status "' . $status . '". Allowed: present, absent, half_day, late.');
+            }
+
+            if ($day > $month->daysInMonth) {
+                throw new InvalidArgumentException('Invalid day ' . $day . ' for month ' . $month->format('Y-m') . '.');
+            }
+
+            if ($status === 'absent') {
+                continue;
+            }
+
+            $attendanceRows[] = [
+                'date' => $month->copy()->day($day)->format('Y-m-d'),
+                'status' => $status,
+            ];
+        }
+
+        return $attendanceRows;
     }
 
 }

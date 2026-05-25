@@ -118,6 +118,58 @@ trait ImportExcel
         $this->importSample = array_slice($excelData, 0, 5);
     }
 
+    /**
+     * Doctor import: preserve empty Excel columns + exact header map for the mapping UI.
+     */
+    public function importDoctorFileProcess($request, $importClass): string
+    {
+        $this->importClassName = (new ReflectionClass($importClass))->getShortName();
+        $this->file = Files::upload($request->import_file, Files::IMPORT_FOLDER);
+        $filePath = public_path(Files::UPLOAD_FOLDER . '/' . Files::IMPORT_FOLDER . '/' . $this->file);
+
+        if (!file_exists($filePath)) {
+            return 'abort';
+        }
+
+        $excelData = $this->readExcelPreserveColumnIndices($filePath);
+
+        if (!is_array($excelData) || empty($excelData)) {
+            return 'abort';
+        }
+
+        $hasHeading = $request->boolean('heading', true);
+        $headingRow = ($hasHeading && isset($excelData[0]) && is_array($excelData[0])) ? $excelData[0] : [];
+
+        if ($hasHeading) {
+            array_shift($excelData);
+        }
+
+        $isDataNull = true;
+
+        foreach ($excelData as $rowitem) {
+            if (is_array($rowitem) && array_filter($rowitem)) {
+                $isDataNull = false;
+                break;
+            }
+        }
+
+        if ($isDataNull || empty($excelData)) {
+            return 'abort';
+        }
+
+        $this->hasHeading = $hasHeading;
+        $this->fileHeading = $headingRow;
+        $this->columns = $importClass::fields();
+        $this->heading = method_exists($importClass, 'buildColumnIndexMap')
+            ? $importClass::buildColumnIndexMap($hasHeading ? $headingRow : [])
+            : [];
+        $this->matchedColumns = array_values($this->heading);
+        $this->importMatchedColumns = $this->heading;
+        $this->importSample = array_slice($excelData, 0, 5);
+
+        return 'ok';
+    }
+
     public function importJobProcess($request, $importClass, $importJobClass)
     {
         // get class name from $importClass
@@ -153,17 +205,25 @@ trait ImportExcel
                     foreach ($importColumns as $column) {
                         $columnId = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $column['id'])));
                         $columnName = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $column['name'])));
+                        $matchStrings = array_unique(array_filter([$columnId, $columnName]));
 
-                        if (
-                            $normalizedHeading === $columnId ||
-                            $normalizedHeading === $columnName ||
-                            strpos($normalizedHeading, $columnId) !== false ||
-                            strpos($normalizedHeading, $columnName) !== false ||
-                            strpos($columnId, $normalizedHeading) !== false ||
-                            strpos($columnName, $normalizedHeading) !== false
-                        ) {
-                            $columns[$index] = $column['id'];
-                            break;
+                        if (!empty($column['aliases']) && is_array($column['aliases'])) {
+                            foreach ($column['aliases'] as $alias) {
+                                $matchStrings[] = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $alias)));
+                            }
+
+                            $matchStrings = array_unique(array_filter($matchStrings));
+                        }
+
+                        foreach ($matchStrings as $matchString) {
+                            if (
+                                $normalizedHeading === $matchString ||
+                                strpos($normalizedHeading, $matchString) !== false ||
+                                strpos($matchString, $normalizedHeading) !== false
+                            ) {
+                                $columns[$index] = $column['id'];
+                                break 2;
+                            }
                         }
                     }
                 }
@@ -316,6 +376,35 @@ trait ImportExcel
         }
 
         return $batch;
+    }
+
+    /**
+     * Read all sheet rows with fixed column indices (empty cells stay in place).
+     * Maatwebsite ToArray collapses sparse rows and misaligns headers when middle columns are blank.
+     */
+    protected function readExcelPreserveColumnIndices(string $filePath): array
+    {
+        $spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($filePath);
+        $worksheet = $spreadsheet->getActiveSheet();
+        $highestRow = (int) $worksheet->getHighestRow();
+
+        if ($highestRow < 1) {
+            return [];
+        }
+
+        $highestColumn = $worksheet->getHighestColumn();
+        $range = 'A1:' . $highestColumn . $highestRow;
+        $raw = $worksheet->rangeToArray($range, null, true, true, false);
+
+        return array_map(function (array $row) {
+            return array_map(function ($cell) {
+                if ($cell === null || $cell === '') {
+                    return '';
+                }
+
+                return is_scalar($cell) ? trim((string) $cell) : trim((string) $cell);
+            }, $row);
+        }, $raw);
     }
 
 }

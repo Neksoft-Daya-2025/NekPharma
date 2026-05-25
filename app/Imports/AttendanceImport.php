@@ -10,11 +10,24 @@ class AttendanceImport implements ToArray
 
     public static function fields(): array
     {
-        return array(
-            array('id' => 'email',  'name' => __('app.email'), 'required' => 'Yes'),
-            array('id' => 'date',   'name' => __('app.date') . ' (YYYY-MM-DD)', 'required' => 'Yes'),
-            array('id' => 'status', 'name' => 'Status (present / absent / half_day / late)', 'required' => 'Yes'),
-        );
+        $fields = [
+            ['id' => 'email', 'name' => __('app.email'), 'required' => 'Yes'],
+            ['id' => 'month', 'name' => 'Month (YYYY-MM)', 'required' => 'Yes'],
+        ];
+
+        for ($day = 1; $day <= 31; $day++) {
+            $fields[] = [
+                'id' => 'day_' . $day,
+                'name' => 'Day ' . $day,
+                'required' => 'No',
+                'aliases' => [
+                    (string) $day,
+                    str_pad((string) $day, 2, '0', STR_PAD_LEFT),
+                ],
+            ];
+        }
+
+        return $fields;
     }
 
     public function array(array $array): array
@@ -30,4 +43,3 @@ class AttendanceImport implements ToArray
     }
 
 }
-

@@ -1400,6 +1400,77 @@ class AttendanceController extends AccountBaseController
         return view('attendances.create', $this->data);
     }
 
+    /**
+     * Generate a live CSV template pre-filled with all active employees.
+     * Always reflects the current employee list — new hires appear automatically.
+     */
+    public function downloadAttendanceTemplate()
+    {
+        $addPermission = user()->permission('add_attendance');
+        abort_403(!($addPermission == 'all' || $addPermission == 'added'));
+
+        $employees = User::join('employee_details', 'employee_details.user_id', '=', 'users.id')
+            ->leftJoin('designations', 'employee_details.designation_id', '=', 'designations.id')
+            ->leftJoin('teams', 'employee_details.department_id', '=', 'teams.id')
+            ->whereHas('roles', fn($q) => $q->where('name', 'employee'))
+            ->where('users.status', 'active')
+            ->where('users.company_id', company()->id)
+            ->orderBy('users.name')
+            ->select(
+                'users.name',
+                'users.email',
+                'designations.name as designation',
+                'teams.team_name as department'
+            )
+            ->get();
+
+        $month = now()->format('Y-m');
+
+        $rows   = [];
+        $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'month'];
+
+        for ($day = 1; $day <= 31; $day++) {
+            $header[] = (string) $day;
+        }
+
+        $rows[] = $this->csvRow($header);
+
+        foreach ($employees as $emp) {
+            $row = [
+                $emp->name,
+                $emp->designation ?? '',
+                $emp->department ?? '',
+                $emp->email,
+                $month,
+            ];
+
+            for ($day = 1; $day <= 31; $day++) {
+                $row[] = '';
+            }
+
+            $rows[] = $this->csvRow($row);
+        }
+
+        $csv      = implode("\n", $rows);
+        $filename = 'attendance-template-' . $month . '.csv';
+
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ]);
+    }
+
+    private function csvRow(array $values): string
+    {
+        $handle = fopen('php://temp', 'r+');
+        fputcsv($handle, $values);
+        rewind($handle);
+        $csv = rtrim(stream_get_contents($handle), "\r\n");
+        fclose($handle);
+
+        return $csv;
+    }
+
     public function importStore(ImportRequest $request)
     {
         $rvalue = $this->importFileProcess($request, AttendanceImport::class);

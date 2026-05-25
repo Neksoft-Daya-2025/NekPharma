@@ -205,17 +205,25 @@ trait ImportExcel
                     foreach ($importColumns as $column) {
                         $columnId = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $column['id'])));
                         $columnName = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $column['name'])));
+                        $matchStrings = array_unique(array_filter([$columnId, $columnName]));
 
-                        if (
-                            $normalizedHeading === $columnId ||
-                            $normalizedHeading === $columnName ||
-                            strpos($normalizedHeading, $columnId) !== false ||
-                            strpos($normalizedHeading, $columnName) !== false ||
-                            strpos($columnId, $normalizedHeading) !== false ||
-                            strpos($columnName, $normalizedHeading) !== false
-                        ) {
-                            $columns[$index] = $column['id'];
-                            break;
+                        if (!empty($column['aliases']) && is_array($column['aliases'])) {
+                            foreach ($column['aliases'] as $alias) {
+                                $matchStrings[] = strtolower(trim(preg_replace('/[^a-z0-9]/', '', $alias)));
+                            }
+
+                            $matchStrings = array_unique(array_filter($matchStrings));
+                        }
+
+                        foreach ($matchStrings as $matchString) {
+                            if (
+                                $normalizedHeading === $matchString ||
+                                strpos($normalizedHeading, $matchString) !== false ||
+                                strpos($matchString, $normalizedHeading) !== false
+                            ) {
+                                $columns[$index] = $column['id'];
+                                break 2;
+                            }
                         }
                     }
                 }

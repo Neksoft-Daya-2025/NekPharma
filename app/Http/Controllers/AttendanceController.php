@@ -1424,30 +1424,51 @@ class AttendanceController extends AccountBaseController
             )
             ->get();
 
-        $today = now()->format('Y-m-d');
+        $month = now()->format('Y-m');
 
         $rows   = [];
-        // Header row — "name" and "designation"/"department" are helper columns, read-only context
-        $rows[] = implode(',', ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'date', 'status']);
+        $header = ['name (reference only)', 'designation (reference only)', 'department (reference only)', 'email', 'month'];
+
+        for ($day = 1; $day <= 31; $day++) {
+            $header[] = (string) $day;
+        }
+
+        $rows[] = $this->csvRow($header);
 
         foreach ($employees as $emp) {
-            $rows[] = implode(',', [
-                '"' . str_replace('"', '""', $emp->name)        . '"',
-                '"' . str_replace('"', '""', $emp->designation ?? '') . '"',
-                '"' . str_replace('"', '""', $emp->department   ?? '') . '"',
+            $row = [
+                $emp->name,
+                $emp->designation ?? '',
+                $emp->department ?? '',
                 $emp->email,
-                $today,
-                'present',
-            ]);
+                $month,
+            ];
+
+            for ($day = 1; $day <= 31; $day++) {
+                $row[] = '';
+            }
+
+            $rows[] = $this->csvRow($row);
         }
 
         $csv      = implode("\n", $rows);
-        $filename = 'attendance-template-' . $today . '.csv';
+        $filename = 'attendance-template-' . $month . '.csv';
 
         return response($csv, 200, [
             'Content-Type'        => 'text/csv',
             'Content-Disposition' => 'attachment; filename="' . $filename . '"',
         ]);
+    }
+
+    private function csvRow(array $values): string
+    {
+        $handle = fopen('php://temp', 'r+');
+        fputcsv($handle, $values);
+        rewind($handle);
+        $csv = rtrim(stream_get_contents($handle), "\r\n");
+        fclose($handle);
+
+        return $csv;
     }
 
     public function importStore(ImportRequest $request)

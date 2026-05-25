@@ -6,25 +6,40 @@ use Maatwebsite\Excel\Concerns\ToArray;
 
 class AttendanceImport implements ToArray
 {
+    private $processedData = [];
 
     public static function fields(): array
     {
-        return array(
-            array('id' => 'email', 'name' => __('app.email'), 'required' => 'Yes'),
-            array('id' => 'clock_in_time', 'name' => __('modules.attendance.clock_in'), 'required' => 'Yes'),
-            array('id' => 'clock_out_time', 'name' => __('modules.attendance.clock_out'), 'required' => 'No'),
-            array('id' => 'clock_in_ip', 'name' => __('modules.attendance.clock_in_ip'), 'required' => 'No'),
-            array('id' => 'clock_out_ip', 'name' => __('modules.attendance.clock_out_ip'), 'required' => 'No'),
-            array('id' => 'working_from', 'name' => __('modules.attendance.working_from'), 'required' => 'No'),
-            array('id' => 'late', 'name' => __('modules.attendance.late'), 'required' => 'No'),
-            array('id' => 'half_day', 'name' => __('modules.attendance.halfDay'), 'required' => 'No'),
-        );
+        $fields = [
+            ['id' => 'email', 'name' => __('app.email'), 'required' => 'Yes'],
+            ['id' => 'month', 'name' => 'Month (YYYY-MM)', 'required' => 'Yes'],
+        ];
+
+        for ($day = 1; $day <= 31; $day++) {
+            $fields[] = [
+                'id' => 'day_' . $day,
+                'name' => 'Day ' . $day,
+                'required' => 'No',
+                'aliases' => [
+                    (string) $day,
+                    str_pad((string) $day, 2, '0', STR_PAD_LEFT),
+                ],
+            ];
+        }
+
+        return $fields;
     }
 
     public function array(array $array): array
     {
+        $this->processedData = $array;
+
         return $array;
     }
 
-}
+    public function getProcessedData()
+    {
+        return $this->processedData;
+    }
 
+}

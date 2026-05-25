@@ -11,7 +11,19 @@
                 </div>
                 <div class="row py-20">
                     <div class="col-md-12">
-                        <x-forms.link-secondary :link="asset('sample-import/attendance-sample.csv')" icon="download">@lang('app.downloadSampleImport')</x-forms.link-secondary>
+                        {{-- Dynamic template: always includes all current employees --}}
+                        <a href="{{ route('attendances.import.template') }}" class="btn btn-secondary rounded f-14 p-2 mb-3">
+                            <i class="fa fa-download mr-1"></i> @lang('app.downloadSampleImport')
+                            <span class="badge badge-light ml-1 f-11">Live — all employees</span>
+                        </a>
+
+                        <div class="alert alert-info f-13 py-2 px-3 mb-3" role="alert">
+                            <strong>How to fill the template:</strong><br>
+                            The first 3 columns (<em>name, designation, department</em>) are for reference only — <strong>do not change them</strong>.<br>
+                            Fill the <strong>month</strong> column (format: <code>YYYY-MM</code>) and enter one status under each day column (<code>1</code> to <code>31</code>):<br>
+                            <code>present</code> &nbsp;|&nbsp; <code>absent</code> &nbsp;|&nbsp; <code>half_day</code> &nbsp;|&nbsp; <code>late</code><br>
+                            Leave days outside the selected month blank.
+                        </div>
 
                         <x-forms.file :fieldLabel="__('modules.import.file')" fieldName="import_file"
                                       fieldId="attendance_import"/>
