@@ -81,4 +81,22 @@ class AttendanceImportTest extends TestCase
             'month',
         ], AttendanceController::attendanceTemplateBaseColumns());
     }
+
+    public function test_new_template_header_order_maps_to_import_columns(): void
+    {
+        $headings = array_merge(
+            AttendanceController::attendanceTemplateBaseColumns(),
+            ['2026-05-01', '2026-05-02']
+        );
+
+        $columns = array_map(
+            fn ($heading) => AttendanceImport::columnIdForHeading($heading),
+            $headings
+        );
+
+        $this->assertSame('employee_id', $columns[0]);
+        $this->assertSame('month', $columns[4]);
+        $this->assertSame('day_1', $columns[5]);
+        $this->assertSame('day_2', $columns[6]);
+    }
 }
