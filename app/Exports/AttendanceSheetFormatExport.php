@@ -4,6 +4,7 @@ namespace App\Exports;
 
 use App\Models\Attendance;
 use App\Models\EmployeeShift;
+use App\Models\EmployeeShiftSchedule;
 use App\Models\Holiday;
 use App\Models\Leave;
 use App\Models\User;
@@ -29,8 +30,6 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
 
     protected CarbonPeriod $period;
 
-    protected array $holidayDates = [];
-
     protected array $officeOpenDays = [];
 
     public function __construct(string $startDate, string $endDate, string $employeeId = 'all', string $department = 'all', string $designation = 'all')
@@ -41,13 +40,6 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
         $this->department = $department;
         $this->designation = $designation;
         $this->period = CarbonPeriod::create($this->startDate, $this->endDate);
-
-        $this->holidayDates = Holiday::where('company_id', company()->id)
-            ->whereBetween(DB::raw('DATE(date)'), [$this->startDate->toDateString(), $this->endDate->toDateString()])
-            ->pluck('date')
-            ->map(fn ($d) => Carbon::parse($d)->toDateString())
-            ->flip()
-            ->toArray();
 
         $shift = attendance_setting()->shift ?? EmployeeShift::where('company_id', company()->id)->first();
         if ($shift && $shift->office_open_days) {
@@ -142,11 +134,24 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
                 return $a->clock_in_time->timezone(company()->timezone)->toDateString();
             });
 
+        $holidayDates = Holiday::getHolidayByDates($this->startDate, $this->endDate, $user->id)
+            ->pluck('holiday_date')
+            ->flip()
+            ->toArray();
+
+        $scheduledDayOffDates = EmployeeShiftSchedule::with('shift')
+            ->where('user_id', $user->id)
+            ->whereBetween('date', [$this->startDate->toDateString(), $this->endDate->toDateString()])
+            ->get()
+            ->filter(fn ($schedule) => $schedule->shift && $schedule->shift->shift_name === 'Day Off')
+            ->mapWithKeys(fn ($schedule) => [$schedule->date->toDateString() => true])
+            ->toArray();
+
         foreach ($this->period as $date) {
             $dateStr = $date->toDateString();
             $dayOfWeek = (int) $date->format('w'); // 0=Sun, 1=Mon, ..., 6=Sat
-            $isWeekOff = !in_array($dayOfWeek, $this->officeOpenDays);
-            $isHoliday = isset($this->holidayDates[$dateStr]);
+            $isWeekOff = isset($scheduledDayOffDates[$dateStr]) || !in_array($dayOfWeek, $this->officeOpenDays);
+            $isHoliday = isset($holidayDates[$dateStr]);
             $attendanceOnDate = $attendanceByDate->get($dateStr);
             $leaveOnDate = $leaveByDate->get($dateStr);
             $daySummary = self::summarizeDayForExport(
