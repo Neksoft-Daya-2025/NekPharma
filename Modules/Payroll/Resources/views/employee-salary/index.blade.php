@@ -164,6 +164,49 @@
             $.ajaxModal(MODAL_LG, url);
         });
 
+        $('body').on('click', '.delete-employee-salary', function () {
+            const userId = $(this).data('user-id');
+
+            Swal.fire({
+                title: "@lang('messages.sweetAlertTitle')",
+                text: "@lang('messages.recoverRecord')",
+                icon: 'warning',
+                showCancelButton: true,
+                focusConfirm: false,
+                confirmButtonText: "@lang('messages.confirmDelete')",
+                cancelButtonText: "@lang('app.cancel')",
+                customClass: {
+                    confirmButton: 'btn btn-primary mr-3',
+                    cancelButton: 'btn btn-secondary'
+                },
+                showClass: {
+                    popup: 'swal2-noanimation',
+                    backdrop: 'swal2-noanimation'
+                },
+                buttonsStyling: false
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    let url = '{{ route("employee-salary.destroy-employee-salary", ":id") }}';
+                    url = url.replace(':id', userId);
+
+                    $.easyAjax({
+                        type: 'POST',
+                        url: url,
+                        blockUI: true,
+                        data: {
+                            '_token': "{{ csrf_token() }}",
+                            '_method': 'DELETE'
+                        },
+                        success: function (response) {
+                            if (response.status === "success") {
+                                showTable();
+                            }
+                        }
+                    });
+                }
+            });
+        });
+
         $('body').on('change', '.salary-cycle', function () {
             const id = $(this).data('user-id');
             const cycle = $(this).val();

@@ -3,6 +3,8 @@
     if (!isset($sidebarUserPermissions) || !is_array($sidebarUserPermissions)) {
         $sidebarUserPermissions = [];
     }
+
+    $currentRouteName = $currentRouteName ?? request()->route()?->getName();
 @endphp
 <ul>
     <!-- NAV ITEM - DASHBOARD COLLAPSE MENU-->
@@ -413,8 +415,13 @@
                 <x-sub-menu-item :link="route('stock-statements.target-vs-achievement')" text="Target vs Achievement" />
                 @php
                     $salesPlanLevel = \App\Helper\RoleHierarchy::userHierarchyLevel(user());
-                    $showSalesPlan = user()->hasAdminLikeAccess();
+                    $showSalesPlan = user()->hasAdminLikeAccess() || ($salesPlanLevel !== null && $salesPlanLevel >= 2);
+                    $employeeHqId = optional(user()->employeeDetail)->headquarter_id ?? optional(user()->employeeDetails)->headquarter_id;
+                    $showTargetPlan = user()->hasAdminLikeAccess() || $showSalesPlan || $employeeHqId;
                 @endphp
+                @if ($showTargetPlan && \Illuminate\Support\Facades\Route::has('target-plan.index'))
+                    <x-sub-menu-item :link="route('target-plan.index')" text="Target Plan" />
+                @endif
                 @if ($showSalesPlan)
                     <x-sub-menu-item :link="route('sales-plan.index')" :text="__('app.salesPlan')" />
                 @endif

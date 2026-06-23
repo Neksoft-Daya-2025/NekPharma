@@ -29,7 +29,7 @@
                                     </x-slot>
 
                                     <input type="number" class="form-control height-35 f-14" name="annual_salary"
-                                           onkeyup="changeClc()"
+                                           readonly
                                            id="annual_salary" value="">
                                 </x-forms.input-group>
 
@@ -75,12 +75,12 @@
                                     <div class="col-md-3">
 
                                         <x-forms.input-group>
-                                            <input type="number" value="50" onmouseout="changeClc()" name="basic_salary" id="basic_value"
+                                            <input type="number" value="" onmouseout="changeClc()" name="basic_salary" id="basic_value"
                                                 class="form-control height-35 f-15" style="width:30%">
 
                                         <select name="basic_value" id="basic-type" onchange="selectType(this.value)" class="form-control select-picker" data-size="8">
                                             <option value="ctc_percent">@lang('payroll::modules.payroll.percentOfCTC')</option>
-                                            <option value="fixed">@lang('payroll::modules.payroll.fixed')</option>
+                                            <option selected value="fixed">@lang('payroll::modules.payroll.fixed')</option>
                                         </select>
                                         </x-forms.input-group>
 
@@ -117,34 +117,36 @@
                                 </div>
                             </div>
 
-                            @if (!is_null($salaryGroup))
-                                @foreach ($salaryGroup->salary_group->components as $component)
+                            @if ($salaryComponents->count() > 0)
+                                @foreach ($salaryComponents as $salaryComponent)
                                     <div class="col-md-12 mt-1">
                                         <div class="row">
-                                            @if ($component->component->component_type == 'earning')
+                                            @if ($salaryComponent->component_type == 'earning')
                                                 <div class="col-md-3">
                                                     <x-forms.label fieldId=""
-                                                    :fieldLabel="$component->component->component_name" />
+                                                    :fieldLabel="$salaryComponent->component_name" />
                                                 </div>
                                                 <div class="col-md-3">
-                                                    @if ($component->component->value_type == 'basic_percent')
+                                                    @if ($salaryComponent->value_type == 'basic_percent')
                                                     <x-forms.label fieldId=""
-                                                        :fieldLabel="($component->component->component_value.' '.__('payroll::modules.payroll.percentOfBasic'))" />
+                                                        :fieldLabel="($salaryComponent->component_value.' '.__('payroll::modules.payroll.percentOfBasic'))" />
                                                     @else
                                                     <x-forms.label fieldId=""
-                                                        :fieldLabel="$component->component->value_type ?? '--'" />
+                                                        :fieldLabel="$salaryComponent->value_type ?? '--'" />
                                                     @endif
                                                 </div>
                                                 <div class="col-md-3">
-                                                    @if ($component->component->value_type == 'variable')
+                                                    @if ($salaryComponent->value_type == 'variable')
                                                         <x-forms.input-group>
                                                             <x-slot name="prepend" id="currency">
                                                             <span
                                                                 class="input-group-text f-14 bg-white-shade">{{ ($currency->currency ? $currency->currency->currency_symbol : company()->currency->currency_symbol ) }}</span>
                                                             </x-slot>
-                                                            <input type="text" class="form-control height-35 f-14"
-                                                                 id=""
-                                                                value="{{ $payrollController->currencyFormatterCustom(0) }}">
+                                                            <input type="text" class="form-control height-35 f-14 variable"
+                                                                 name="earning_variable[{{ $salaryComponent->id }}]"
+                                                                 data-type-id="{{ $salaryComponent->id }}"
+                                                                 id="variable-{{ $salaryComponent->id }}"
+                                                                 value="{{ $payrollController->currencyFormatterCustom(0) }}">
                                                         </x-forms.input-group>
 
                                                     @else
@@ -204,6 +206,57 @@
                                         <x-forms.label fieldId="" :fieldLabel="currency_format(0, ($currency->currency ? $currency->currency->id : company()->currency->id ))" />
                                     </div>
                                 </div>
+                            </div>
+                            <div class="col-md-12 mt-2 rounded">
+                                @if ($salaryComponents->where('component_type', 'deduction')->count() > 0)
+                                    <div class="col-md-12">
+                                        <h3 class="heading-h3 mb-0">
+                                            @lang('payroll::modules.payroll.deduction')</h3>
+                                    </div>
+                                @endif
+                                @foreach ($salaryComponents as $salaryComponent)
+                                    <div class="col-md-12 mt-1">
+                                        <div class="row">
+                                            @if ($salaryComponent->component_type == 'deduction')
+                                                <div class="col-md-3">
+                                                    <x-forms.label fieldId="" :fieldLabel="$salaryComponent->component_name" />
+                                                </div>
+                                                <div class="col-md-3">
+                                                    @if ($salaryComponent->value_type == 'basic_percent')
+                                                        <x-forms.label fieldId="" :fieldLabel="($salaryComponent->component_value.' '.__('payroll::modules.payroll.percentOfBasic'))" />
+                                                    @else
+                                                        <x-forms.label fieldId="" :fieldLabel="$salaryComponent->value_type ?? '--'" />
+                                                    @endif
+                                                </div>
+                                                <div class="col-md-3">
+                                                    @if ($salaryComponent->value_type == 'variable')
+                                                        <x-forms.input-group>
+                                                            <x-slot name="prepend" id="currency">
+                                                                <span class="input-group-text f-14 bg-white-shade">{{ ($currency->currency ? $currency->currency->currency_symbol : company()->currency->currency_symbol ) }}</span>
+                                                            </x-slot>
+                                                            <input type="text" class="form-control height-35 f-14 variable" data-type="deduction" data-type-id="{{ $salaryComponent->id }}" name="deduction_variable[{{ $salaryComponent->id }}]" id="deductionVariable{{ $salaryComponent->id }}" value="{{ $payrollController->currencyFormatterCustom(0) }}">
+                                                        </x-forms.input-group>
+                                                    @else
+                                                        <x-forms.input-group>
+                                                            <x-slot name="prepend" id="currency">
+                                                                <span class="input-group-text f-14 bg-white-shade">{{ ($currency->currency ? $currency->currency->currency_symbol : company()->currency->currency_symbol ) }}</span>
+                                                            </x-slot>
+                                                            <input type="text" class="form-control height-35 f-14" value="{{ $payrollController->currencyFormatterCustom(0) }}" readonly>
+                                                        </x-forms.input-group>
+                                                    @endif
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <x-forms.input-group>
+                                                        <x-slot name="prepend" id="currency">
+                                                            <span class="input-group-text f-14 bg-white-shade">{{ ($currency->currency ? $currency->currency->currency_symbol : company()->currency->currency_symbol ) }}</span>
+                                                        </x-slot>
+                                                        <input type="text" class="form-control height-35 f-14" id="variableAnuallyDeduction{{ $salaryComponent->id }}" value="{{ $payrollController->currencyFormatterCustom(0) }}" readonly>
+                                                    </x-forms.input-group>
+                                                </div>
+                                            @endif
+                                        </div>
+                                    </div>
+                                @endforeach
                             </div>
                             {{-- </div> --}}
 
@@ -279,7 +332,8 @@
                 basicType: basicType,
                 basicValue: basicValue,
                 annualSalary: annualSalary,
-                userId: userId
+                userId: userId,
+                blankSalaryComponentValues: true
             },
             success: function (response) {
                 $('#components').html(response.component)
@@ -368,5 +422,7 @@
         lastValue = $(e.target).val();
         lastValue = lastValue.replace(/[,]/g, '');
     });
+
+    getBasicCalculations();
 
 </script>

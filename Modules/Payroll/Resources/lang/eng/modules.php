@@ -84,7 +84,7 @@ return array(
         'fixedAllowance' => 'Special Allowance',
         'totalSalary' => 'Gross Salary',
         'totalMonthlyIncrement' => 'Gross Monthly Increment',
-        'extraPay' => '(Annual CTC - Sum of all other components)',
+        'extraPay' => '(Manual component)',
         'payrollCurrencySetting' => 'Payroll Currency Setting',
         'choosePayrollCurrency' => 'Choose Payroll Currency',
         'basic_percent' => 'Basic Percent',

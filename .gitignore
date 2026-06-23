@@ -42,8 +42,12 @@ public/css/theme-custom.css
 # Local dev server logs
 /serve_err.log
 /serve_out.log
+/serve_*.log
 /hostingercode/serve_err.log
 /hostingercode/serve_out.log
+
+# Local deployment bundles
+/deploy-*/
 
 # Local DB dumps / exports (do not commit)
 127_0_0_1.sql

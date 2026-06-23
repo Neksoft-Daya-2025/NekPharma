@@ -47,13 +47,13 @@
                         <i class="fa fa-download"></i> Sample CSV
                     </a>
                     <label class="btn btn-sm btn-secondary mr-2 mb-2 mb-md-0 mb-0" for="stock-statement-import-file">
-                        <i class="fa fa-file-upload"></i> Import CSV
+                        <i class="fa fa-file-upload"></i> Import File
                     </label>
-                    <input type="file" id="stock-statement-import-file" accept=".csv,text/csv" class="d-none">
+                    <input type="file" id="stock-statement-import-file" accept=".csv,.xls,.xlsx,text/csv" class="d-none">
                     <button type="button" class="btn btn-sm btn-primary mb-2 mb-md-0" id="add-statement-line"><i class="fa fa-plus"></i> Add line</button>
                 </div>
             </div>
-            <p class="text-muted small mb-2">Select period and CFA stockist first, then import CSV or add lines manually. Closing = Opening + Primary − Secondary unless Closing Qty is provided in the file.</p>
+            <p class="text-muted small mb-2">Select period and CFA stockist first, then import CSV/Excel or add lines manually. Closing = Opening + Primary − Secondary unless Closing Qty is provided in the file.</p>
             <div class="table-responsive">
                 <table class="table table-bordered" id="statement-lines-table">
                     <thead>
@@ -287,7 +287,7 @@ $(function() {
         var periodYear = $('#period_year').val();
 
         if (!cfaStockistId || !periodMonth || !periodYear) {
-            alert('Please select Period Month, Period Year, and CFA Stockist before importing CSV.');
+            alert('Please select Period Month, Period Year, and CFA Stockist before importing.');
             fileInput.value = '';
             return;
         }
@@ -318,14 +318,14 @@ $(function() {
                 reindexRows();
 
                 var skippedCount = (res.skipped || []).length;
-                var message = res.imported + ' line(s) imported from CSV.';
+                var message = res.imported + ' line(s) imported.';
                 if (skippedCount > 0) {
                     message += ' ' + skippedCount + ' row(s) skipped.';
                 }
                 alert(message);
             },
             error: function(xhr) {
-                var message = (xhr.responseJSON && xhr.responseJSON.message) ? xhr.responseJSON.message : 'CSV import failed.';
+                var message = (xhr.responseJSON && xhr.responseJSON.message) ? xhr.responseJSON.message : 'Import failed.';
                 alert(message);
             },
             complete: function() {

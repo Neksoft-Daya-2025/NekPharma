@@ -263,18 +263,28 @@ $addExpenseCategoryPermission = user()->permission('manage_expense_category');
                                 <x-forms.label class="mt-3" fieldId="pharma_headquarter_id" :fieldLabel="__('Head Quarter')">
                                 </x-forms.label>
                                 <x-forms.input-group>
-                                    <select class="form-control select-picker" name="pharma_headquarter_id" id="pharma_headquarter_id"
-                                        data-live-search="true" data-size="8" required data-html="true">
-                                        <option value="">-- Select HeadQuarter --</option>
-                                        @foreach ($headquarters as $hq)
-                                            <option value="{{ $hq->id }}" @selected($hq->id == $currentUserHeadquarter)>
-                                                {{ $hq->name }}
-                                                @if($hq->area) ({{ $hq->area->name }}) @endif
-                                            </option>
-                                        @endforeach
-                                    </select>
+                                    @if(($lockExpenseHeadquarterForZonalManager ?? false) && $currentUserHeadquarter)
+                                        <input type="hidden" name="pharma_headquarter_id" id="pharma_headquarter_id" value="{{ $currentUserHeadquarter }}">
+                                        <div class="form-control height-35 f-14 bg-light" style="display: flex; align-items: center;">
+                                            <span class="badge badge-success mr-2">
+                                                <i class="fa fa-lock"></i>
+                                            </span>
+                                            {{ $currentUserHeadquarterName ?? '--' }}
+                                        </div>
+                                    @else
+                                        <select class="form-control select-picker" name="pharma_headquarter_id" id="pharma_headquarter_id"
+                                            data-live-search="true" data-size="8" required data-html="true">
+                                            <option value="">-- Select HeadQuarter --</option>
+                                            @foreach ($headquarters as $hq)
+                                                <option value="{{ $hq->id }}" @selected($hq->id == $currentUserHeadquarter)>
+                                                    {{ $hq->name }}
+                                                    @if($hq->area) ({{ $hq->area->name }}) @endif
+                                                </option>
+                                            @endforeach
+                                        </select>
+                                    @endif
                                 </x-forms.input-group>
-                                <small class="form-text text-muted">Select HQ to load stations</small>
+                                <small class="form-text text-muted">{{ ($lockExpenseHeadquarterForZonalManager ?? false) ? 'Your assigned headquarter' : 'Select HQ to load stations' }}</small>
                             </div>
                         @else
                             {{-- Employee - show readonly fields with their details (like Tour Plan) --}}
@@ -305,7 +315,16 @@ $addExpenseCategoryPermission = user()->permission('manage_expense_category');
                                 <x-forms.label class="mt-3" fieldId="pharma_headquarter_id" :fieldLabel="__('Head Quarter')">
                                 </x-forms.label>
                                 <x-forms.input-group>
-                                    @if(isset($headquarters) && $headquarters->isNotEmpty() && ($headquarters->count() > 1 || ($showHqDropdownForPharmaRoles ?? false)))
+                                    @if(($lockExpenseHeadquarterForZonalManager ?? false) && $currentUserHeadquarter)
+                                        <input type="hidden" name="pharma_headquarter_id" id="pharma_headquarter_id" value="{{ $currentUserHeadquarter }}">
+                                        <div class="form-control height-35 f-14 bg-light" style="display: flex; align-items: center;">
+                                            <span class="badge badge-success mr-2">
+                                                <i class="fa fa-lock"></i>
+                                            </span>
+                                            {{ $currentUserHeadquarterName ?? '--' }}
+                                        </div>
+                                        <small class="form-text text-muted">Your assigned headquarter</small>
+                                    @elseif(isset($headquarters) && $headquarters->isNotEmpty() && ($headquarters->count() > 1 || ($showHqDropdownForPharmaRoles ?? false)))
                                         {{-- ABM/RBM/ZM with multiple mapped HQs: show dropdown to select which HQ --}}
                                         <select class="form-control select-picker" name="pharma_headquarter_id" id="pharma_headquarter_id"
                                             data-live-search="true" data-size="8" required data-html="true">
@@ -319,7 +338,7 @@ $addExpenseCategoryPermission = user()->permission('manage_expense_category');
                                         </select>
                                         <small class="form-text text-muted">Select HQ (your mapped headquarters)</small>
                                     @elseif($currentUserHeadquarter)
-                                        <input type="hidden" name="pharma_headquarter_id" value="{{ $currentUserHeadquarter }}">
+                                        <input type="hidden" name="pharma_headquarter_id" id="pharma_headquarter_id" value="{{ $currentUserHeadquarter }}">
                                         <div class="form-control height-35 f-14 bg-light" style="display: flex; align-items: center;">
                                             <span class="badge badge-success mr-2">
                                                 <i class="fa fa-lock"></i>
@@ -1553,4 +1572,3 @@ $addExpenseCategoryPermission = user()->permission('manage_expense_category');
         });
     });
 </script>
-

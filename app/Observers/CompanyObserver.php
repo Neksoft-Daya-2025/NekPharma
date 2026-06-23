@@ -627,8 +627,8 @@ class CompanyObserver
         $pharmaRoles = [
             ['name' => 'medical-representative', 'display_name' => 'Medical Representative', 'hierarchy_level' => 1],
             ['name' => 'area-business-manager', 'display_name' => 'Area Business Manager (ABM)', 'hierarchy_level' => 2],
-            ['name' => 'regional-manager', 'display_name' => 'Regional Manager (RM)', 'hierarchy_level' => 3],
-            ['name' => 'zonal-manager', 'display_name' => 'Zonal Manager (ZM)', 'hierarchy_level' => 4],
+            ['name' => 'regional-business-manager', 'display_name' => 'Regional Business Manager (RBM)', 'hierarchy_level' => 3],
+            ['name' => 'zonal-business-manager', 'display_name' => 'Zonal Business Manager (ZBM)', 'hierarchy_level' => 4],
             ['name' => 'sales-manager', 'display_name' => 'Sales Manager', 'hierarchy_level' => 5],
             ['name' => 'pmt', 'display_name' => 'PMT', 'hierarchy_level' => 6],
             ['name' => 'hr', 'display_name' => 'HR', 'hierarchy_level' => 7],

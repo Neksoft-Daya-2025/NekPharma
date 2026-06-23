@@ -1,6 +1,6 @@
 <div class="bg-white rounded b-shadow-4 create-inv">
     <div class="px-lg-4 px-md-4 px-3 py-3">
-        <h4 class="mb-0 f-21 font-weight-normal">@lang('app.add') Product HQ Target</h4>
+        <h4 class="mb-0 f-21 font-weight-normal">@lang('app.add') @lang('app.salesPlan')</h4>
     </div>
     <hr class="m-0 border-top-grey">
 
@@ -26,11 +26,20 @@
                     </select>
                 </div>
             </div>
-            <input type="hidden" name="plan_level" value="headquarter">
             <div class="col-md-6">
                 <div class="form-group">
+                    <label class="f-14 text-dark-grey mb-12">Plan Level <span class="text-danger">*</span></label>
+                    <select name="plan_level" id="plan_level" class="form-control" required>
+                        <option value="headquarter">HQ-wise</option>
+                        <option value="area">Area-wise</option>
+                        <option value="region">Region-wise</option>
+                    </select>
+                </div>
+            </div>
+            <div class="col-md-6 plan-scope-headquarter">
+                <div class="form-group">
                     <label class="f-14 text-dark-grey mb-12">Headquarter <span class="text-danger">*</span></label>
-                    <select name="headquarter_id" id="headquarter_id" class="form-control select-picker" data-live-search="true" required>
+                    <select name="headquarter_id" id="headquarter_id" class="form-control select-picker" data-live-search="true">
                         <option value="">Select HQ</option>
                         @foreach($headquarters as $h)
                             <option value="{{ $h->id }}">{{ $h->name }}</option>
@@ -38,47 +47,43 @@
                     </select>
                 </div>
             </div>
+            <div class="col-md-6 plan-scope-area d-none">
+                <div class="form-group">
+                    <label class="f-14 text-dark-grey mb-12">Area <span class="text-danger">*</span></label>
+                    <select name="area_id" id="area_id" class="form-control select-picker" data-live-search="true">
+                        <option value="">Select Area</option>
+                        @foreach($areas as $a)
+                            <option value="{{ $a->id }}">{{ $a->name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+            <div class="col-md-6 plan-scope-region d-none">
+                <div class="form-group">
+                    <label class="f-14 text-dark-grey mb-12">Region <span class="text-danger">*</span></label>
+                    <select name="region_id" id="region_id" class="form-control select-picker" data-live-search="true">
+                        <option value="">Select Region</option>
+                        @foreach($regions as $r)
+                            <option value="{{ $r->id }}">{{ $r->name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
             <div class="col-md-6">
                 <div class="form-group">
-                    <label class="f-14 text-dark-grey mb-12">Products <span class="text-danger">*</span></label>
-                    <select id="product_ids" class="form-control select-picker" data-live-search="true" multiple
-                            data-actions-box="true" data-selected-text-format="count > 2" title="Select Products">
+                    <label class="f-14 text-dark-grey mb-12">Target Amount <span class="text-danger">*</span></label>
+                    <input type="number" step="0.01" min="0" name="target_amount" id="target_amount" class="form-control" required value="0">
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="form-group">
+                    <label class="f-14 text-dark-grey mb-12">Product (optional)</label>
+                    <select name="product_id" id="product_id" class="form-control select-picker" data-live-search="true">
+                        <option value="">All Products</option>
                         @foreach($products as $p)
                             <option value="{{ $p->id }}">{{ $p->name }}</option>
                         @endforeach
                     </select>
-                    <small class="text-muted">Select one or more products to enter product-wise monthly targets.</small>
-                </div>
-            </div>
-            <div class="col-md-12">
-                <div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
-                    <label class="f-14 text-dark-grey mb-0">Product Targets <span class="text-danger">*</span></label>
-                    <div>
-                        <a href="{{ route('sales-plan.import.sample') }}" class="btn btn-sm btn-secondary mr-2 mb-2 mb-md-0">
-                            <i class="fa fa-download"></i> Sample CSV
-                        </a>
-                        <label class="btn btn-sm btn-secondary mb-2 mb-md-0 mb-0" for="sales-plan-import-file">
-                            <i class="fa fa-file-upload"></i> Import CSV
-                        </label>
-                        <input type="file" id="sales-plan-import-file" accept=".csv,text/csv" class="d-none">
-                    </div>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-bordered mb-2" id="product-targets-table">
-                        <thead>
-                            <tr>
-                                <th>Product</th>
-                                <th class="text-right" style="width: 180px;">Target Qty</th>
-                                <th class="text-right" style="width: 180px;">Target Amount</th>
-                                <th style="width: 60px;"></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr class="empty-product-target-row">
-                                <td colspan="4" class="text-center text-muted">Select products to generate target rows.</td>
-                            </tr>
-                        </tbody>
-                    </table>
                 </div>
             </div>
             <div class="col-md-12">
@@ -99,139 +104,26 @@
 @push('scripts')
 <script>
 $(function() {
-    var $productSelect = $('#product_ids');
-    var $targetTableBody = $('#product-targets-table tbody');
-    var importTargetsUrl = "{{ route('sales-plan.import.targets') }}";
-    var importCsrf = "{{ csrf_token() }}";
-    var importedTargetValues = {};
-
-    function productName(productId) {
-        return $productSelect.find('option[value="' + productId + '"]').text();
+    function togglePlanScope() {
+        var level = $('#plan_level').val();
+        $('.plan-scope-headquarter, .plan-scope-area, .plan-scope-region').addClass('d-none');
+        $('#headquarter_id, #area_id, #region_id').removeAttr('required');
+        if (level === 'headquarter') {
+            $('.plan-scope-headquarter').removeClass('d-none');
+            $('#headquarter_id').attr('required', 'required');
+        } else if (level === 'area') {
+            $('.plan-scope-area').removeClass('d-none');
+            $('#area_id').attr('required', 'required');
+        } else if (level === 'region') {
+            $('.plan-scope-region').removeClass('d-none');
+            $('#region_id').attr('required', 'required');
+        }
     }
-
-    function syncProductTargetRows() {
-        var selectedProductIds = $productSelect.val() || [];
-        var existingValues = {};
-
-        $targetTableBody.find('tr.product-target-row').each(function() {
-            var productId = String($(this).data('product-id'));
-            existingValues[productId] = {
-                qty: $(this).find('.target-qty-input').val(),
-                amount: $(this).find('.target-amount-input').val()
-            };
-        });
-
-        $targetTableBody.empty();
-
-        if (selectedProductIds.length === 0) {
-            $targetTableBody.append('<tr class="empty-product-target-row"><td colspan="4" class="text-center text-muted">Select products to generate target rows.</td></tr>');
-            return;
-        }
-
-        selectedProductIds.forEach(function(productId, index) {
-            var values = existingValues[productId] || importedTargetValues[productId] || { qty: '0', amount: '0' };
-            var row = [
-                '<tr class="product-target-row" data-product-id="' + productId + '">',
-                '<td>',
-                $('<div>').text(productName(productId)).html(),
-                '<input type="hidden" name="targets[' + index + '][product_id]" value="' + productId + '">',
-                '</td>',
-                '<td><input type="number" step="0.01" min="0" name="targets[' + index + '][target_qty]" class="form-control form-control-sm text-right target-qty-input" required value="' + values.qty + '"></td>',
-                '<td><input type="number" step="0.01" min="0" name="targets[' + index + '][target_amount]" class="form-control form-control-sm text-right target-amount-input" required value="' + values.amount + '"></td>',
-                '<td><button type="button" class="btn btn-sm btn-danger remove-product-target" data-product-id="' + productId + '"><i class="fa fa-trash"></i></button></td>',
-                '</tr>'
-            ].join('');
-            $targetTableBody.append(row);
-        });
-    }
-
-    $productSelect.on('changed.bs.select change', syncProductTargetRows);
-
-    $targetTableBody.on('click', '.remove-product-target', function() {
-        var productId = String($(this).data('product-id'));
-        var selectedProductIds = ($productSelect.val() || []).filter(function(id) {
-            return String(id) !== productId;
-        });
-        $productSelect.selectpicker('val', selectedProductIds);
-        syncProductTargetRows();
-    });
-
-    $('#sales-plan-import-file').on('change', function() {
-        var fileInput = this;
-        var file = fileInput.files && fileInput.files[0];
-        if (!file) {
-            return;
-        }
-
-        var periodMonth = $('#period_month').val();
-        var periodYear = $('#period_year').val();
-        var headquarterId = $('#headquarter_id').val();
-
-        if (!periodMonth || !periodYear || !headquarterId) {
-            alert('Please select Period Month, Period Year, and Headquarter before importing CSV.');
-            fileInput.value = '';
-            return;
-        }
-
-        var formData = new FormData();
-        formData.append('_token', importCsrf);
-        formData.append('import_file', file);
-        formData.append('period_month', periodMonth);
-        formData.append('period_year', periodYear);
-        formData.append('headquarter_id', headquarterId);
-
-        $.ajax({
-            url: importTargetsUrl,
-            type: 'POST',
-            data: formData,
-            processData: false,
-            contentType: false,
-            success: function(res) {
-                if (res.status !== 'success' || !res.lines || !res.lines.length) {
-                    alert(res.message || 'No valid rows were imported.');
-                    return;
-                }
-
-                var productIds = [];
-                importedTargetValues = {};
-                res.lines.forEach(function(line) {
-                    var productId = String(line.product_id);
-                    productIds.push(productId);
-                    importedTargetValues[productId] = {
-                        qty: parseFloat(line.target_qty || 0),
-                        amount: parseFloat(line.target_amount || 0)
-                    };
-                });
-
-                $productSelect.selectpicker('val', productIds);
-                syncProductTargetRows();
-
-                var skippedCount = (res.skipped || []).length;
-                var message = res.imported + ' target row(s) imported from CSV.';
-                if (skippedCount > 0) {
-                    message += ' ' + skippedCount + ' row(s) skipped.';
-                }
-                alert(message);
-            },
-            error: function(xhr) {
-                var message = (xhr.responseJSON && xhr.responseJSON.message) ? xhr.responseJSON.message : 'CSV import failed.';
-                alert(message);
-            },
-            complete: function() {
-                fileInput.value = '';
-            }
-        });
-    });
+    $('#plan_level').on('change', togglePlanScope);
+    togglePlanScope();
 
     $('#save-sales-plan-form').on('click', function() {
         var $form = $('#saveSalesPlanForm');
-        syncProductTargetRows();
-
-        if ($targetTableBody.find('tr.product-target-row').length === 0) {
-            alert('Please select at least one product and enter target values.');
-            return;
-        }
-
         if ($form[0].checkValidity && !$form[0].checkValidity()) {
             $form[0].reportValidity();
             return;

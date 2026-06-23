@@ -4,14 +4,17 @@ namespace Modules\Payroll\Http\Controllers;
 
 use App\Helper\Reply;
 use App\Http\Controllers\AccountBaseController;
+use App\Models\Designation;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
 use Modules\Payroll\Entities\EmployeeSalaryGroup;
 use Modules\Payroll\Entities\PayrollSetting;
 use Modules\Payroll\Entities\SalaryComponent;
 use Modules\Payroll\Entities\SalaryGroup;
 use Modules\Payroll\Entities\SalaryGroupComponent;
+use Modules\Payroll\Entities\SalaryGroupDesignation;
 use Modules\Payroll\Http\Requests\StoreEmployeeSalaryGroup;
 use Modules\Payroll\Http\Requests\StoreSalaryGroup;
 
@@ -48,6 +51,7 @@ class SalaryGroupController extends AccountBaseController
         abort_403($this->salaryGroupPermission !== 'all');
 
         $this->salaryComponents = SalaryComponent::all();
+        $this->designations = Designation::all();
 
         return view('payroll::payroll-setting.create-salary-group-modal', $this->data);
 
@@ -76,6 +80,8 @@ class SalaryGroupController extends AccountBaseController
             );
         }
 
+        $this->syncDesignations($salaryGroup->id, $request->designation_ids ?? []);
+
         return Reply::success(__('messages.recordSaved'));
     }
 
@@ -93,15 +99,12 @@ class SalaryGroupController extends AccountBaseController
         $this->salaryGroup = SalaryGroup::with('employee')->findOrFail($id);
         $this->selectedEmp = $this->salaryGroup->employee->pluck('user_id')->toArray();
 
-        $this->anotherUsers = EmployeeSalaryGroup::where('salary_group_id', '<>', $this->salaryGroup->id)->pluck('user_id')->toArray();
-
         $this->employees = User::join('role_user', 'role_user.user_id', '=', 'users.id')
             ->join('roles', 'roles.id', '=', 'role_user.role_id')
             ->leftJoin('employee_salary_groups', 'employee_salary_groups.user_id', '=', 'users.id')
             ->leftJoin('salary_groups', 'salary_groups.id', '=', 'employee_salary_groups.salary_group_id')
             ->select('users.id', 'users.name', 'users.email', 'salary_groups.group_name', 'users.image')
             ->where('roles.name', '<>', 'client')
-            ->whereNotIn('users.id', $this->anotherUsers)
             ->groupBy('users.id')
             ->orderBy('users.name')
             ->get();
@@ -117,8 +120,14 @@ class SalaryGroupController extends AccountBaseController
         abort_403($this->salaryGroupPermission !== 'all');
 
         EmployeeSalaryGroup::where('salary_group_id', $request->salary_group_id)->delete();
-        $salaryGroup = SalaryGroup::find($request->salary_group_id);
-        $salaryGroup->employees()->sync($request->user_id);
+        EmployeeSalaryGroup::whereIn('user_id', $request->user_id)->delete();
+
+        foreach ($request->user_id as $userId) {
+            EmployeeSalaryGroup::create([
+                'salary_group_id' => $request->salary_group_id,
+                'user_id' => $userId,
+            ]);
+        }
 
         return Reply::success(__('messages.recordSaved'));
     }
@@ -134,8 +143,10 @@ class SalaryGroupController extends AccountBaseController
         $this->salaryGroupPermission = user()->permission('manage_salary_group');
         abort_403($this->salaryGroupPermission !== 'all');
 
-        $this->salaryGroup = SalaryGroup::with('components')->find($id);
+        $this->salaryGroup = SalaryGroup::with('components', 'designationMappings')->find($id);
         $this->salaryComponents = SalaryComponent::all();
+        $this->designations = Designation::all();
+        $this->selectedDesignations = $this->salaryGroup->designationMappings->pluck('designation_id')->toArray();
 
         return view('payroll::payroll-setting.edit-salary-group-modal', $this->data);
     }
@@ -167,7 +178,44 @@ class SalaryGroupController extends AccountBaseController
             );
         }
 
+        $this->syncDesignations($id, $request->designation_ids ?? []);
+
         return Reply::success(__('messages.updateSuccess'));
+    }
+
+    public function assignMatchingDesignations($id)
+    {
+        $this->salaryGroupPermission = user()->permission('manage_salary_group');
+        abort_403($this->salaryGroupPermission !== 'all');
+
+        $salaryGroup = SalaryGroup::with('designationMappings')->findOrFail($id);
+        $designationIds = $salaryGroup->designationMappings->pluck('designation_id')->toArray();
+
+        if (empty($designationIds)) {
+            return Reply::error('No designations mapped to this salary group.');
+        }
+
+        $userIds = User::join('role_user', 'role_user.user_id', '=', 'users.id')
+            ->join('roles', 'roles.id', '=', 'role_user.role_id')
+            ->join('employee_details', 'employee_details.user_id', '=', 'users.id')
+            ->where('roles.name', '<>', 'client')
+            ->whereIn('employee_details.designation_id', $designationIds)
+            ->pluck('users.id')
+            ->unique()
+            ->values();
+
+        DB::transaction(function () use ($salaryGroup, $userIds) {
+            EmployeeSalaryGroup::whereIn('user_id', $userIds)->delete();
+
+            foreach ($userIds as $userId) {
+                EmployeeSalaryGroup::create([
+                    'salary_group_id' => $salaryGroup->id,
+                    'user_id' => $userId,
+                ]);
+            }
+        });
+
+        return Reply::success($userIds->count().' matching employees assigned to this salary group.');
     }
 
     /**
@@ -184,5 +232,17 @@ class SalaryGroupController extends AccountBaseController
         SalaryGroup::destroy($id);
 
         return Reply::success(__('messages.deleteSuccess'));
+    }
+
+    private function syncDesignations($salaryGroupId, array $designationIds): void
+    {
+        SalaryGroupDesignation::where('salary_group_id', $salaryGroupId)->delete();
+
+        foreach (array_filter($designationIds) as $designationId) {
+            SalaryGroupDesignation::create([
+                'salary_group_id' => $salaryGroupId,
+                'designation_id' => $designationId,
+            ]);
+        }
     }
 }

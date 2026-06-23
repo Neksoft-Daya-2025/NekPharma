@@ -107,14 +107,16 @@
      */
     #doctor-visits-container .bootstrap-select,
     #chemist-visits-container .bootstrap-select,
-    #stockist-visits-container .bootstrap-select {
+    #stockist-visits-container .bootstrap-select,
+    .dcr-visit-dropdown.bootstrap-select {
         position: relative !important;
         width: 100% !important;
         display: block !important;
     }
     #doctor-visits-container .bootstrap-select > .dropdown-menu,
     #chemist-visits-container .bootstrap-select > .dropdown-menu,
-    #stockist-visits-container .bootstrap-select > .dropdown-menu {
+    #stockist-visits-container .bootstrap-select > .dropdown-menu,
+    .dcr-visit-dropdown.bootstrap-select > .dropdown-menu {
         position: absolute !important;
         top: 100% !important;
         left: 0 !important;
@@ -126,6 +128,38 @@
         max-height: min(70vh, 400px) !important;
         overflow-y: auto !important;
         z-index: 1065 !important;
+    }
+
+    .dcr-visit-dropdown.bootstrap-select .dropdown-menu.inner,
+    .dcr-visit-dropdown .dropdown-menu.inner,
+    #doctor-visits-container .bootstrap-select .dropdown-menu.inner,
+    #chemist-visits-container .bootstrap-select .dropdown-menu.inner,
+    #stockist-visits-container .bootstrap-select .dropdown-menu.inner {
+        position: static !important;
+        top: auto !important;
+        left: auto !important;
+        right: auto !important;
+        transform: none !important;
+        float: none !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-height: 240px !important;
+        overflow-y: auto !important;
+    }
+
+    .dcr-visit-dropdown .bs-searchbox,
+    #doctor-visits-container .bootstrap-select .bs-searchbox,
+    #chemist-visits-container .bootstrap-select .bs-searchbox,
+    #stockist-visits-container .bootstrap-select .bs-searchbox {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #fff;
+        padding: 8px;
+    }
+
+    .dcr-visit-select-wrapper .bootstrap-select .dropdown-toggle {
+        min-height: 38px;
     }
     
     .chemist-visit-row {
@@ -266,6 +300,15 @@
                                 @endforeach
                             </select>
                             <small class="text-muted">Select HQ for this DCR report</small>
+                        @elseif(($lockStationForZonalManager ?? false) && $userHeadquarter)
+                            <input type="hidden" name="headquarter_id" id="headquarter_id" value="{{ $userHeadquarter }}">
+                            <div class="form-control bg-light" style="display: flex; align-items: center;">
+                                <span class="badge badge-success mr-2">
+                                    <i class="fa fa-lock"></i>
+                                </span>
+                                {{ $headquarters->find($userHeadquarter)->name ?? '' }}
+                            </div>
+                            <small class="text-muted">Your assigned headquarter</small>
                         @elseif(isset($headquarters) && $headquarters->isNotEmpty() && ($headquarters->count() > 1 || ($showHqDropdownForPharmaRoles ?? false)))
                             {{-- ABM/RBM/ZM with multiple mapped HQs: show dropdown --}}
                             <select class="form-control select-picker" name="headquarter_id" id="headquarter_id" data-live-search="true" required>
@@ -279,7 +322,7 @@
                             </select>
                             <small class="text-muted">Select HQ for this DCR report (your mapped headquarters)</small>
                         @elseif($userHeadquarter)
-                            <input type="hidden" name="headquarter_id" value="{{ $userHeadquarter }}">
+                            <input type="hidden" name="headquarter_id" id="headquarter_id" value="{{ $userHeadquarter }}">
                             <div class="form-control bg-light" style="display: flex; align-items: center;">
                                 <span class="badge badge-success mr-2">
                                     <i class="fa fa-lock"></i>
@@ -311,9 +354,11 @@
                 <div class="col-md-3">
                     <div class="form-group">
                         <label>Select Station</label>
-                        <select class="form-control select-picker" name="station" id="station" data-live-search="true">
+                        <select class="form-control select-picker" id="station" data-live-search="true"
+                                @if(!($lockStationForZonalManager ?? false)) name="station" @endif
+                                @if($lockStationForZonalManager ?? false) multiple data-actions-box="true" data-select-all-text="Select All" data-deselect-all-text="Deselect All" data-selected-text-format="count > 2" data-count-selected-text="{0} stations selected" @endif>
                             <option value="">Select station...</option>
-                            @if(!user()->hasAdminLikeAccess())
+                            @if(!user()->hasAdminLikeAccess() && empty($stationRequiresHeadquarterSelection))
                                 {{-- Non-admin (ABM/Employee): Show all accessible headquarters and their stations --}}
                                 @foreach($headquarters as $hq)
                                     <option value="{{ $hq->name }}" {{ !empty($editingDcr) && ($editingDcr->station ?? '') === $hq->name ? 'selected' : '' }}>{{ $hq->name }} (Headquarter)</option>
@@ -332,7 +377,7 @@
                                 {{-- Admin: Show stations only after selecting HQ (handled by JavaScript) --}}
                             @endif
                         </select>
-                        <small class="text-muted">Select station (includes HQ)</small>
+                        <small class="text-muted" id="station-help-text">Select station (includes HQ)</small>
                     </div>
                 </div>
                 
@@ -568,6 +613,9 @@
 @endphp
 <script>
 const isAdmin = {{ user()->hasAdminLikeAccess() ? 'true' : 'false' }};
+const stationRequiresHeadquarterSelection = @json($stationRequiresHeadquarterSelection ?? user()->hasAdminLikeAccess());
+const lockStationForZonalManager = @json($lockStationForZonalManager ?? false);
+const lockStationFromTourPlan = @json($lockStationFromTourPlan ?? false);
 const ALL_HEADQUARTERS = @json($headquarters);
 // Work types that enable Doctor/Chemist/Stockist (SRS 3.2.5: Working Day / Field Work / Working Days)
 const fieldWorkTypes = @json($fieldWorkTypesConfig);
@@ -603,12 +651,180 @@ function isFieldWorkSelected() {
     return fieldWorkTypes.includes(selectedStatus);
 }
 
-/** Append dropdown to body — avoids huge column height when .row uses flex stretch + long doctor lists */
-const dcrVisitSelectpickerOpts = { container: 'body' };
+/** Keep large visit customer lists searchable and compact inside the visit cards. */
+const dcrVisitSelectpickerOpts = {
+    liveSearch: true,
+    liveSearchNormalize: true,
+    size: 8,
+    dropupAuto: false,
+    noneResultsText: 'No matching record found',
+    width: '100%'
+};
+
+function initDcrVisitSelectpicker($select) {
+    if (!$select || !$select.length) {
+        return;
+    }
+
+    $select.attr({
+        'data-live-search': 'true',
+        'data-live-search-normalize': 'true',
+        'data-size': '8',
+        'data-dropup-auto': 'false',
+        'data-width': '100%'
+    });
+
+    $select.selectpicker(dcrVisitSelectpickerOpts);
+    $select.closest('.bootstrap-select').addClass('dcr-visit-dropdown');
+}
 
 function getHQById(hqId) {
     if (!hqId) return null;
     return ALL_HEADQUARTERS.find(h => Number(h.id) === Number(hqId)) || null;
+}
+
+function applyTourSubmitToManager(tour) {
+    if (!tour || !tour.submitted_to) return;
+
+    const $submittedTo = $('#submitted_to');
+    if ($submittedTo.find('option[value="' + tour.submitted_to + '"]').length === 0) {
+        const label = (tour.submitted_to_name || 'Tour Plan Manager') + (tour.submitted_to_designation ? ' (' + tour.submitted_to_designation + ')' : '');
+        $submittedTo.append($('<option>', { value: tour.submitted_to, text: label }));
+    }
+    $submittedTo.val(tour.submitted_to);
+    $submittedTo.selectpicker('refresh');
+}
+
+function dcrLockStationField(stationValue) {
+    if (!lockStationFromTourPlan) {
+        return;
+    }
+    if (lockStationForZonalManager) {
+        dcrPrepareZonalStationDropdown();
+        return;
+    }
+    if (!stationValue) return;
+
+    const $station = $('#station');
+    const stationValueString = String(stationValue);
+    $('#station_locked_value').remove();
+    $('#station_locked_display').remove();
+
+    if (!$station.attr('name')) {
+        $station.attr('name', 'station');
+    }
+
+    const hasStationOption = $station.find('option').filter(function () {
+        return $(this).val() === stationValueString;
+    }).length > 0;
+
+    if (!hasStationOption) {
+        $station.append($('<option>', {
+            value: stationValueString,
+            text: stationValueString
+        }));
+    }
+
+    $station.val(stationValueString);
+    $station.prop('disabled', false);
+    $station.closest('.bootstrap-select').show();
+    $station.selectpicker('refresh');
+    $('#station-help-text').html('<span class="text-success"><i class="fa fa-check-circle"></i> Station pre-selected from tour plan, editable</span>');
+}
+
+function dcrGetSelectedStationString() {
+    const val = $('#station').selectpicker ? $('#station').selectpicker('val') : $('#station').val();
+    if (Array.isArray(val)) {
+        return val.filter(Boolean).join(', ');
+    }
+    return val || '';
+}
+
+function dcrSyncZonalStationHidden() {
+    if (!lockStationForZonalManager) return;
+
+    let $hidden = $('#station_zonal_values');
+    if (!$hidden.length) {
+        $hidden = $('<input>', {
+            type: 'hidden',
+            id: 'station_zonal_values',
+            name: 'station'
+        }).appendTo('#dcr-form');
+    }
+    $hidden.val(dcrGetSelectedStationString());
+}
+
+function dcrPrepareZonalStationDropdown() {
+    if (!lockStationForZonalManager) return;
+
+    const $station = $('#station');
+
+    $station.prop('disabled', false);
+    $('#station_locked_display').remove();
+    $station.closest('.bootstrap-select').show();
+    $station.selectpicker('val', []);
+    $station.selectpicker('refresh');
+    dcrSyncZonalStationHidden();
+    $('#station-help-text').html('Select station (all accessible stations loaded)');
+}
+
+function dcrLockHeadquarterField(headquarterId) {
+    if (!lockStationForZonalManager || !headquarterId) return;
+
+    const $headquarter = $('#headquarter_id');
+    if (!$headquarter.length) return;
+
+    const hq = getHQById(headquarterId);
+    const selectedLabel = ($headquarter.is('select') ? ($headquarter.find('option:selected').text() || '') : '') || (hq ? hq.name : headquarterId);
+    let $hidden = $('#headquarter_locked_value');
+    if (!$hidden.length) {
+        $hidden = $('<input>', {
+            type: 'hidden',
+            id: 'headquarter_locked_value',
+            name: 'headquarter_id'
+        }).appendTo('#dcr-form');
+    }
+    $hidden.val(headquarterId);
+
+    $headquarter.removeAttr('name');
+    $headquarter.prop('disabled', true);
+    if ($headquarter.is('select')) {
+        $headquarter.selectpicker('refresh');
+        $headquarter.closest('.bootstrap-select').hide();
+        $('#headquarter_locked_display').remove();
+        $('<div>', {
+            id: 'headquarter_locked_display',
+            class: 'form-control bg-light',
+            html: '<span class="badge badge-success mr-2"><i class="fa fa-lock"></i></span>' + $('<span>').text(selectedLabel.trim()).html()
+        }).insertAfter($headquarter.closest('.bootstrap-select'));
+    }
+}
+
+function dcrUnlockHeadquarterField() {
+    $('#headquarter_locked_value').remove();
+    $('#headquarter_locked_display').remove();
+    const $headquarter = $('#headquarter_id');
+    if ($headquarter.length) {
+        if (!$headquarter.attr('name')) {
+            $headquarter.attr('name', 'headquarter_id');
+        }
+        $headquarter.prop('disabled', false);
+        if ($headquarter.is('select')) {
+            $headquarter.closest('.bootstrap-select').show();
+            $headquarter.selectpicker('refresh');
+        }
+    }
+}
+
+function dcrUnlockStationField() {
+    const $station = $('#station');
+    $('#station_locked_value').remove();
+    $('#station_zonal_values').remove();
+    $station.prop('disabled', false);
+    $station.selectpicker('refresh');
+    $('#station_locked_display').remove();
+    $station.closest('.bootstrap-select').show();
+    $('#station-help-text').text('Select station (includes HQ)');
 }
 
 /** Merge approved tour HQ (and ex/out stations) so MRs can pick that territory even when it is outside their profile HQ. */
@@ -629,15 +845,9 @@ function dcrMergeTourHeadquarterBundle(bundle) {
 $(document).ready(function() {
     $('#dcr-save-draft-btn').on('click', function () {
         const $form = $('#dcr-form');
-        const reportDate = $('#report_date').val();
-        let headquarterId = $('#headquarter_id').val();
-        if ($('#headquarter_id').length && $('#headquarter_id').is('select') && $('#headquarter_id').selectpicker) {
-            headquarterId = $('#headquarter_id').selectpicker('val') || headquarterId;
-        }
-        const workStatus = $('#work_status').selectpicker ? $('#work_status').selectpicker('val') : $('#work_status').val();
-        const submittedTo = $('#submitted_to').selectpicker ? $('#submitted_to').selectpicker('val') : $('#submitted_to').val();
-        if (!reportDate || !headquarterId || !workStatus || !submittedTo) {
-            Swal.fire({ icon: 'warning', text: 'Please fill Report Date, Headquarter, Work Type and Submit To before saving draft.' });
+        const missingHeaderFields = getMissingDcrHeaderFields(getDcrHeaderForAutoSave());
+        if (missingHeaderFields.length) {
+            Swal.fire({ icon: 'warning', text: 'Please fill ' + missingHeaderFields.join(', ') + ' before saving draft.' });
             return;
         }
         $.easyAjax({
@@ -662,7 +872,7 @@ $(document).ready(function() {
     // ======================================= sonu ==========================================================
     // Function to populate all accessible stations for non-admin users
     function populateAllAccessibleStations() {
-        if (isAdmin) return; // Admin selects HQ first, then stations
+        if (isAdmin || (stationRequiresHeadquarterSelection && !lockStationForZonalManager)) return; // Full-access non-ZM users select HQ first, then stations
         
         const $station = $('#station');
         $station.find('option:not(:first)').remove();
@@ -685,11 +895,15 @@ $(document).ready(function() {
         });
         
         $station.selectpicker('refresh');
+        dcrPrepareZonalStationDropdown();
     }
     
     // Initialize stations based on user role
-    if (isAdmin) {
-        // Admin: populate stations when HQ is selected
+    if (lockStationForZonalManager) {
+        // ZM: show every station from the accessible HQ/region scope without auto-selecting.
+        populateAllAccessibleStations();
+    } else if (isAdmin || stationRequiresHeadquarterSelection) {
+        // Admin/ZM full access: populate stations when HQ is selected
         const initialHQ = $('#headquarter_id').val();
         if (initialHQ) {
             populateStationsByHQ(initialHQ);
@@ -701,10 +915,12 @@ $(document).ready(function() {
 
     let selectedStationType = null;
     let selectedStationId = null;
+    let selectedStationHeadquarterId = null;
 
     function clearStationCustomerLists() {
         selectedStationType = null;
         selectedStationId = null;
+        selectedStationHeadquarterId = null;
         window.filteredDoctors = [];
         window.filteredChemists = [];
         window.filteredStockists = [];
@@ -713,7 +929,50 @@ $(document).ready(function() {
         refreshStockistDropdowns();
     }
 
+    function dcrResolveSelectedStation(rawVal, selectedText) {
+        const selectedValues = Array.isArray(rawVal) ? rawVal.filter(Boolean) : (rawVal ? [rawVal] : []);
+        if (!selectedValues.length) return null;
+
+        const selectedValue = selectedValues[0];
+        const $selectedOption = $('#station option:selected').filter(function () {
+            return $(this).val() === selectedValue;
+        }).first();
+        const label = (($selectedOption.text() || selectedText || '') + '').trim();
+        if (!label) return null;
+
+        const hqId = $('#headquarter_id').val() || $('[name="headquarter_id"]').val() || '{{ $userHeadquarter }}';
+        const searchAllAccessibleStations = lockStationForZonalManager || (!isAdmin && !stationRequiresHeadquarterSelection);
+        const headquartersToSearch = searchAllAccessibleStations
+            ? ALL_HEADQUARTERS
+            : [getHQById(hqId)].filter(Boolean);
+
+        if (label.includes('(Headquarter)')) {
+            const name = label.replace('(Headquarter)', '').trim();
+            const hq = headquartersToSearch.find(item => item && item.name === name);
+            return hq ? { type: 'headquarter', id: hq.id, headquarterId: hq.id } : null;
+        }
+
+        if (label.includes('(Ex-Station)')) {
+            const name = label.replace('(Ex-Station)', '').trim();
+            for (const hq of headquartersToSearch) {
+                const station = ((hq && hq.exstations) || []).find(item => item.name === name);
+                if (station) return { type: 'exstation', id: station.id, headquarterId: hq.id };
+            }
+        }
+
+        if (label.includes('(Out-Station)')) {
+            const name = label.replace('(Out-Station)', '').trim();
+            for (const hq of headquartersToSearch) {
+                const station = ((hq && hq.outstations) || []).find(item => item.name === name);
+                if (station) return { type: 'outstation', id: station.id, headquarterId: hq.id };
+            }
+        }
+
+        return null;
+    }
+
     $('#station').on('changed.bs.select', function () {
+        dcrSyncZonalStationHidden();
         const rawVal = $(this).val();
         const selectedText = $(this).find(':selected').text().trim();
 
@@ -722,43 +981,16 @@ $(document).ready(function() {
             return;
         }
 
-        const hqId = $('#headquarter_id').val() || '{{ $userHeadquarter }}';
-        const hq = getHQById(hqId);
-        if (!hq) {
+        const resolvedStation = dcrResolveSelectedStation(rawVal, selectedText);
+        if (!resolvedStation) {
             clearStationCustomerLists();
-            console.warn('HQ not found');
+            console.warn('Station not found in accessible headquarters');
             return;
         }
 
-        let matched = false;
-
-        if (selectedText.includes('(Headquarter)')) {
-            selectedStationType = 'headquarter';
-            selectedStationId = hq.id;
-            matched = true;
-        } else if (selectedText.includes('(Ex-Station)')) {
-            const name = selectedText.replace('(Ex-Station)', '').trim();
-            const ex = (hq.exstations || []).find(s => s.name === name);
-            if (ex) {
-                selectedStationType = 'exstation';
-                selectedStationId = ex.id;
-                matched = true;
-            }
-        } else if (selectedText.includes('(Out-Station)')) {
-            const name = selectedText.replace('(Out-Station)', '').trim();
-            const out = (hq.outstations || []).find(s => s.name === name);
-            if (out) {
-                selectedStationType = 'outstation';
-                selectedStationId = out.id;
-                matched = true;
-            }
-        }
-
-        if (!matched) {
-            clearStationCustomerLists();
-            return;
-        }
-
+        selectedStationType = resolvedStation.type;
+        selectedStationId = resolvedStation.id;
+        selectedStationHeadquarterId = resolvedStation.headquarterId || null;
         console.log('Station Selected:', selectedStationType, selectedStationId);
         fetchFilteredLists();
     });
@@ -937,7 +1169,7 @@ function refreshDoctorDropdowns() {
         }
 
         $select.html(options);
-        $select.selectpicker(dcrVisitSelectpickerOpts);
+        initDcrVisitSelectpicker($select);
 
         const visitRow = $select.closest('.doctor-visit-row');
         if (prevStr && idSet.has(prevStr)) {
@@ -993,7 +1225,7 @@ function refreshChemistDropdowns() {
         });
 
         $select.html(options);
-        $select.selectpicker(dcrVisitSelectpickerOpts);
+        initDcrVisitSelectpicker($select);
 
         const visitRow = $select.closest('.chemist-visit-row');
         const prevStr = String(prevVal);
@@ -1040,7 +1272,7 @@ function refreshStockistDropdowns() {
         });
 
         $select.html(options);
-        $select.selectpicker(dcrVisitSelectpickerOpts);
+        initDcrVisitSelectpicker($select);
 
         const visitRow = $select.closest('.stockist-visit-row');
         const prevStr = String(prevVal);
@@ -1223,7 +1455,7 @@ function refreshStockistDropdowns() {
                     '<div class="col-md-6">' +
                         '<div class="form-group">' +
                             '<label class="font-weight-bold">Dr. <span class="text-danger">*</span></label>' +
-                            '<select class="form-control select-picker doctor-select" name="doctors[' + visitId + '][doctor_id]" data-visit-id="' + visitId + '" data-container="body" data-live-search="true" required>' +
+                            '<select class="form-control select-picker doctor-select" name="doctors[' + visitId + '][doctor_id]" data-visit-id="' + visitId + '" data-live-search="true" data-size="8" data-width="100%" required>' +
                                 doctorOptions +
                             '</select>' +
                         '</div>' +
@@ -1294,7 +1526,7 @@ function refreshStockistDropdowns() {
         '</div>';
         
         $('#doctor-visits-container').append(doctorHtml);
-        $('.doctor-select[data-visit-id="' + visitId + '"]').selectpicker(dcrVisitSelectpickerOpts);
+        initDcrVisitSelectpicker($('.doctor-select[data-visit-id="' + visitId + '"]'));
         if (draftRow && draftRow.id && window.dcrDraftPayload) {
             const $card = $('#doctor-visits-container .doctor-visit-row[data-visit-id="' + visitId + '"]');
             $card.attr('data-server-visit-id', String(draftRow.id));
@@ -1400,6 +1632,9 @@ function refreshStockistDropdowns() {
     });
 
     function dcrGetHeadquarterIdForAjax() {
+        if (selectedStationHeadquarterId) {
+            return selectedStationHeadquarterId;
+        }
         let hqId = $('#headquarter_id').val();
         if ($('#headquarter_id').selectpicker) {
             try {
@@ -1488,15 +1723,23 @@ function refreshStockistDropdowns() {
     function getDcrHeaderForAutoSave() {
         const reportDate = $('#report_date').val();
         let headquarterId = $('#headquarter_id').val();
-        if (!headquarterId && $('#headquarter_id').length && $('#headquarter_id').is('input')) {
-            headquarterId = $('#headquarter_id').val();
+        if (!headquarterId) {
+            headquarterId = $('[name="headquarter_id"]').val();
         }
         if (!headquarterId) headquarterId = '{{ $userHeadquarter ?? "" }}';
         const workStatus = $('#work_status').selectpicker ? $('#work_status').selectpicker('val') : $('#work_status').val();
-        const station = $('#station').val() || '';
+        const station = lockStationForZonalManager ? dcrGetSelectedStationString() : ($('#station').val() || '');
         const workWith = $('#work_with').selectpicker ? $('#work_with').selectpicker('val') : $('#work_with').val();
         const submittedTo = $('#submitted_to').selectpicker ? $('#submitted_to').selectpicker('val') : $('#submitted_to').val();
         return { report_date: reportDate, headquarter_id: headquarterId, work_status: workStatus, station: station, work_with: Array.isArray(workWith) ? workWith : (workWith ? [workWith] : []), submitted_to: submittedTo };
+    }
+    function getMissingDcrHeaderFields(header) {
+        const missing = [];
+        if (!header.report_date) missing.push('Report Date');
+        if (!header.headquarter_id) missing.push('Headquarter');
+        if (!header.work_status) missing.push('Work Type');
+        if (!header.submitted_to) missing.push('Submit To');
+        return missing;
     }
     function collectVisitDataFromCard($card, prefix) {
         const visitId = $card.data('visit-id');
@@ -1514,8 +1757,9 @@ function refreshStockistDropdowns() {
     }
     function autoSaveDcrVisit($card, visitType, visitData, btnEl) {
         const header = getDcrHeaderForAutoSave();
-        if (!header.report_date || !header.headquarter_id || !header.work_status || !header.submitted_to) {
-            Swal.fire({ icon: 'warning', text: 'Please fill Report Date, Headquarter, Work Type and Submit To first.', toast: true, position: 'top-end', timer: 3000 });
+        const missingHeaderFields = getMissingDcrHeaderFields(header);
+        if (missingHeaderFields.length) {
+            Swal.fire({ icon: 'warning', text: 'Please fill ' + missingHeaderFields.join(', ') + ' first.', toast: true, position: 'top-end', timer: 3000 });
             return;
         }
         const payload = {
@@ -1701,7 +1945,7 @@ function refreshStockistDropdowns() {
                     '<div class="col-md-8">' +
                         '<div class="form-group">' +
                             '<label class="font-weight-bold">Chemist <span class="text-danger">*</span></label>' +
-                            '<select class="form-control select-picker chemist-select" name="chemists[' + visitId + '][chemist_id]" data-visit-id="' + visitId + '" data-container="body" data-live-search="true" required>' +
+                            '<select class="form-control select-picker chemist-select" name="chemists[' + visitId + '][chemist_id]" data-visit-id="' + visitId + '" data-live-search="true" data-size="8" data-width="100%" required>' +
                                 chemistOptions +
                             '</select>' +
                         '</div>' +
@@ -1759,7 +2003,7 @@ function refreshStockistDropdowns() {
         '</div>';
         
         $('#chemist-visits-container').append(chemistHtml);
-        $('.chemist-select[data-visit-id="' + visitId + '"]').selectpicker(dcrVisitSelectpickerOpts);
+        initDcrVisitSelectpicker($('.chemist-select[data-visit-id="' + visitId + '"]'));
         
         // Auto-fill when chemist is selected
         $('.chemist-select[data-visit-id="' + visitId + '"]').on('changed.bs.select', function() {
@@ -1856,7 +2100,7 @@ function refreshStockistDropdowns() {
                     '<div class="col-md-8">' +
                         '<div class="form-group">' +
                             '<label class="font-weight-bold">Stockist <span class="text-danger">*</span></label>' +
-                            '<select class="form-control select-picker stockist-select" name="stockists[' + visitId + '][stockist_id]" data-visit-id="' + visitId + '" data-container="body" data-live-search="true" required>' +
+                            '<select class="form-control select-picker stockist-select" name="stockists[' + visitId + '][stockist_id]" data-visit-id="' + visitId + '" data-live-search="true" data-size="8" data-width="100%" required>' +
                                 stockistOptions +
                             '</select>' +
                         '</div>' +
@@ -1928,7 +2172,7 @@ function refreshStockistDropdowns() {
         '</div>';
         
         $('#stockist-visits-container').append(stockistHtml);
-        $('.stockist-select[data-visit-id="' + visitId + '"]').selectpicker(dcrVisitSelectpickerOpts);
+        initDcrVisitSelectpicker($('.stockist-select[data-visit-id="' + visitId + '"]'));
         
         // Auto-fill when stockist is selected
         $('.stockist-select[data-visit-id="' + visitId + '"]').on('changed.bs.select', function() {
@@ -1969,9 +2213,10 @@ function refreshStockistDropdowns() {
     });
     
     
-    // Populate stations when HQ changes (for admin only)
+    // Populate stations when HQ changes (admin and full-access ZM)
     $('#headquarter_id').on('changed.bs.select', function() {
-        if (!isAdmin) return; // Non-admin users already have all accessible stations loaded
+        if (!isAdmin && !stationRequiresHeadquarterSelection) return; // Scoped users already have accessible stations loaded
+        dcrUnlockStationField();
         
         const hqId = $(this).val();
         if (hqId) {
@@ -2034,6 +2279,8 @@ function refreshStockistDropdowns() {
             type: "POST",
             data: data,
             success: function(response) {
+                dcrUnlockHeadquarterField();
+                dcrUnlockStationField();
                 if (window.dcrDraftLoaded && window.dcrDraftPayload) {
                     if (response.status == 'success' && response.tour) {
                         const tour = response.tour;
@@ -2041,6 +2288,15 @@ function refreshStockistDropdowns() {
                         const stationDisplay = tour.station || tour.headquarter;
                         $('#tour-alert-text').html(`Tour plan (reference): <strong>${workTypeDisplay}</strong> at <strong>${stationDisplay}</strong> — your saved draft is shown below.`);
                         $('#tour-alert').slideDown();
+                        applyTourSubmitToManager(tour);
+                        const draftHeadquarterValue = tour.headquarter_id || $('#headquarter_id').val() || (window.dcrDraftPayload.headquarter_id || '');
+                        if (draftHeadquarterValue) {
+                            dcrLockHeadquarterField(draftHeadquarterValue);
+                        }
+                        const draftStationValue = (window.dcrDraftPayload.station || '').trim();
+                        if (draftStationValue && lockStationFromTourPlan) {
+                            dcrLockStationField(draftStationValue);
+                        }
                     }
                     return;
                 }
@@ -2085,10 +2341,12 @@ function refreshStockistDropdowns() {
                             if (typeof populateStationsByHQ === 'function') {
                                 populateStationsByHQ(tour.headquarter_id);
                             }
+                            dcrLockHeadquarterField(tour.headquarter_id);
                         } else {
                             // It's a hidden input (non-admin), ensure it's set
                             headquarterSelect.val(tour.headquarter_id);
                             console.log('Hidden headquarter set to:', headquarterSelect.val());
+                            dcrLockHeadquarterField(tour.headquarter_id);
                         }
                     } else {
                         console.warn('Tour plan does not have headquarter_id:', tour);
@@ -2104,14 +2362,20 @@ function refreshStockistDropdowns() {
                         toggleSectionsByWorkStatus();
                     }
                     
-                    // Pre-fill station if available (single select now, take first value)
-                    if (tour.station) {
+                    // Pre-fill station if available (single select now, take first value).
+                    // ZM profile sees all accessible stations instead of the tour station only.
+                    if (lockStationForZonalManager) {
+                        dcrPrepareZonalStationDropdown();
+                    } else if (tour.station) {
                         const stationValue = tour.station.split(',')[0].trim();
                     
                         $('#station')
                             .val(stationValue)
                             .selectpicker('refresh')
                             .trigger('changed.bs.select'); // 🔥 FORCE LOAD CUSTOMERS
+                        if (lockStationFromTourPlan) {
+                            dcrLockStationField(stationValue);
+                        }
                     }
 
                     
@@ -2121,6 +2385,8 @@ function refreshStockistDropdowns() {
                         $('#work_with').val(workWithIds);
                         $('#work_with').selectpicker('refresh');
                     }
+
+                    applyTourSubmitToManager(tour);
                 } else {
                     $('#tour-alert').slideUp();
                     $('#work_status').val('');
@@ -2146,7 +2412,7 @@ function refreshStockistDropdowns() {
         $('#work_status').selectpicker('refresh');
         toggleSectionsByWorkStatus();
     } else if (window.dcrDraftLoaded && window.dcrDraftPayload) {
-        if (isAdmin && $('#headquarter_id').length && $('#headquarter_id').is('select')) {
+        if ((isAdmin || stationRequiresHeadquarterSelection) && $('#headquarter_id').length && $('#headquarter_id').is('select')) {
             const hqIdDraft = $('#headquarter_id').val();
             if (hqIdDraft && typeof populateStationsByHQ === 'function') {
                 populateStationsByHQ(hqIdDraft);
@@ -2156,8 +2422,17 @@ function refreshStockistDropdowns() {
         $('#submitted_to').selectpicker('refresh');
         toggleSectionsByWorkStatus();
         const stDraft = (window.dcrDraftPayload.station || '').trim();
-        if (stDraft) {
+        const hqDraft = $('#headquarter_id').val() || (window.dcrDraftPayload.headquarter_id || '');
+        if (hqDraft) {
+            dcrLockHeadquarterField(hqDraft);
+        }
+        if (lockStationForZonalManager) {
+            dcrPrepareZonalStationDropdown();
+        } else if (stDraft) {
             $('#station').val(stDraft).selectpicker('refresh').trigger('changed.bs.select');
+            if (lockStationFromTourPlan) {
+                dcrLockStationField(stDraft);
+            }
         } else {
             // Draft has no station string — still restore saved visit cards (do not rely on fetchFilteredLists)
             if (window.dcrPendingDraftHydration && typeof isFieldWorkSelected === 'function' && isFieldWorkSelected()) {
@@ -2406,6 +2681,10 @@ function refreshStockistDropdowns() {
 </script>
 <script>
     function populateStationsByHQ(hqId) {
+    if (lockStationForZonalManager) {
+        populateAllAccessibleStations();
+        return;
+    }
 
     const $station = $('#station');
     $station.find('option:not(:first)').remove();
@@ -2424,8 +2703,8 @@ function refreshStockistDropdowns() {
     });
 
     $station.selectpicker('refresh');
+    dcrPrepareZonalStationDropdown();
 }
 
 </script>
 @endpush
-

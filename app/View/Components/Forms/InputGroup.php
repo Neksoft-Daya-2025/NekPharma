@@ -11,17 +11,19 @@ class InputGroup extends Component
     public $append;
     public $preappend;
     public $prepend;
+    public $id;
 
     /**
      * Create a new component instance.
      *
      * @return void
      */
-    public function __construct($prepend = false, $append = false, $preappend = false)
+    public function __construct($prepend = false, $append = false, $preappend = false, $id = null)
     {
         $this->prepend = $prepend;
         $this->append = $append;
         $this->preappend = $preappend;
+        $this->id = $id;
     }
 
     /**

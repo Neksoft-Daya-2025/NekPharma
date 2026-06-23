@@ -70,7 +70,7 @@ class PayrollSettingController extends AccountBaseController
             $this->salaryGroupPermission = user()->permission('manage_salary_group');
             abort_403($this->salaryGroupPermission !== 'all');
 
-            $this->salaryGroups = SalaryGroup::with('components', 'components.component')->withCount('employee')->get();
+            $this->salaryGroups = SalaryGroup::with('components', 'components.component', 'designations')->withCount('employee')->get();
             $this->view = 'payroll::payroll-setting.ajax.salary-groups';
             break;
 

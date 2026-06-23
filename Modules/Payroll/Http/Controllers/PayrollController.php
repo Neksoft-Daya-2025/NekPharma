@@ -241,11 +241,7 @@ class PayrollController extends AccountBaseController
 
         $earn = array_sum($earn);
 
-        $this->fixedAllowance = $this->salarySlip->gross_salary - ($this->basicSalary + $earn);
-
-        if ($this->fixedAllowance < 0){
-            $this->fixedAllowance = 0;
-        }
+        $this->fixedAllowance = ($this->salarySlip->fixed_allowance > 0) ? $this->salarySlip->fixed_allowance : 0;
 
         if (!is_null($extraJson)) {
 
@@ -395,12 +391,7 @@ class PayrollController extends AccountBaseController
 
             $extraEarn = array_sum($extraEarn);
 
-            $this->fixedAllowance = $this->salarySlip->gross_salary - ((float)$this->basicSalary + (float)$earn + (float)$extraEarn);
-
-        if($this->fixedAllowance < 0 )
-            {
-            $this->fixedAllowance = 0;
-        }
+            $this->fixedAllowance = ($this->salarySlip->fixed_allowance > 0) ? $this->salarySlip->fixed_allowance : 0;
 
             $this->currency = PayrollSetting::with('currency')->first();
             $this->salaryPaymentMethods = SalaryPaymentMethod::all();
@@ -684,7 +675,6 @@ class PayrollController extends AccountBaseController
 
                 $basicSalary = $payableSalary;
 
-                $salaryGroup = EmployeeSalaryGroup::with('salary_group.components', 'salary_group.components.component')->where('user_id', $userId)->first();
                 $totalBasicSalary = [];
                 $employeeBasicSalary = EmployeeMonthlySalary::where('user_id', $userId)->where('type', 'initial')->first();
 
@@ -701,21 +691,38 @@ class PayrollController extends AccountBaseController
                 $deductions = array();
                 $deductionsTotal = 0;
 
-                if (!is_null($salaryGroup)) {
-                    $earnings = [];
-                    $deductions = [];
+                $payRatio = ($curMonthDays > 0) ? ($payDays / $curMonthDays) : 1;
+                $totalBasicSalary = round($totalBasicSalary * $payRatio, 2);
+                $fixedAllowance = round(max(0, (float)$employeeBasicSalary->fixed_allowance) * $payRatio, 2);
 
-                    foreach ($salaryGroup->salary_group->components as $key => $components) {
-                        $componentValueAmount = ($payrollCycleData->cycle != 'monthly') ? $components->component->{$payrollCycleData->cycle . '_value'} : $components->component->component_value;
+                $manualComponents = EmployeeVariableComponent::with('component')
+                    ->where('monthly_salary_id', $employeeBasicSalary->id)
+                    ->get();
 
-                        $componentCalculation = $this->componentCalculation($components, $basicSalary, $componentValueAmount, $payableSalary, $totalBasicSalary, $earningsTotal, $deductionsTotal, $earnings, $deductions, $user->salary_id);
-                        $earningsTotal = $componentCalculation['earningsTotal'];
-                        $deductionsTotal = $componentCalculation['deductionsTotal'];
-                        $earnings = $componentCalculation['earnings'];
-                        $deductions = $componentCalculation['deductions'];
+                $employerContributionTotal = 0;
 
+                foreach ($manualComponents as $manualComponent) {
+                    if (is_null($manualComponent->component)) {
+                        continue;
+                    }
+
+                    $componentAmount = round((float)$manualComponent->variable_value * $payRatio, 2);
+
+                    if ($manualComponent->component->component_type == 'earning') {
+                        $earnings[$manualComponent->component->component_name] = $componentAmount;
+                        $earningsTotal = $earningsTotal + $componentAmount;
+                    }
+                    else {
+                        $deductions[$manualComponent->component->component_name] = $componentAmount;
+                        $deductionsTotal = $deductionsTotal + $componentAmount;
+
+                        if (str_starts_with(strtolower($manualComponent->component->component_name), 'employer')) {
+                            $employerContributionTotal = $employerContributionTotal + $componentAmount;
+                        }
                     }
                 }
+
+                $payableSalary = $totalBasicSalary + $earningsTotal + $fixedAllowance + $employerContributionTotal;
 
                 $salaryTdsTotal = 0;
                 $payrollSetting = PayrollSetting::first();
@@ -845,10 +852,10 @@ class PayrollController extends AccountBaseController
                     foreach ($uploadedDeductions[$userId] as $uploadedDeduction) {
                         $deductionName = $uploadedDeduction['name'];
                         $deductionAmount = round((float)$uploadedDeduction['amount'], 2);
-                        
+
                         // Add to deductions array
-                        $deductions[$deductionName] = $deductionAmount;
-                        
+                        $deductions[$deductionName] = ($deductions[$deductionName] ?? 0) + $deductionAmount;
+
                         // Add to total deductions
                         $deductionsTotal = $deductionsTotal + $deductionAmount;
                     }
@@ -864,12 +871,13 @@ class PayrollController extends AccountBaseController
                 $data = [
                     'user_id' => $userId,
                     'currency_id' => $payrollSetting->currency_id,
-                    'salary_group_id' => (($salaryGroup) ? $salaryGroup->salary_group_id : null),
+                    'salary_group_id' => null,
                     'basic_salary' => round(($totalBasicSalary), 2),
                     'monthly_salary' => round($monthlySalary['netSalary'], 2),
                     'net_salary' => (round(($payableSalary - $deductionsTotal), 2) < 0) ? 0.00 : round(($payableSalary - $deductionsTotal)),
                     'gross_salary' => round((($payableSalary - $expenseTotal) + $unpaidDaysAmount), 2),
                     'total_deductions' => round(($deductionsTotal), 2),
+                    'fixed_allowance' => round($fixedAllowance, 2),
                     'month' => $startDate->month,
                     'payroll_cycle_id' => $payrollCycle,
                     'salary_from' => $startDate->format('Y-m-d'),
@@ -1189,13 +1197,31 @@ class PayrollController extends AccountBaseController
         ];
         $sheet->getStyle('A1:F1')->applyFromArray($headerStyle);
 
-        // Add sample data rows
-        $sampleData = [
-            ['RVB / 101', 'john@example.com', 'John Doe', 'Sales', 'Provident Fund', '5000'],
-            ['RVB / 102', 'jane@example.com', 'Jane Smith', 'Marketing', 'Income Tax', '8000'],
-            ['RVB / 103', 'mike@example.com', 'Mike Johnson', 'IT', 'Loan Deduction', '3000'],
-        ];
-        $sheet->fromArray($sampleData, NULL, 'A2');
+        // Add current employees so HR can fill only deduction details before upload.
+        $employees = User::leftJoin('employee_details', 'employee_details.user_id', '=', 'users.id')
+            ->leftJoin('teams', 'employee_details.department_id', '=', 'teams.id')
+            ->join('role_user', 'role_user.user_id', '=', 'users.id')
+            ->join('roles', 'roles.id', '=', 'role_user.role_id')
+            ->where('roles.name', '<>', 'client')
+            ->distinct()
+            ->select('employee_details.employee_id', 'users.email', 'users.name', 'teams.team_name as department_name')
+            ->orderBy('users.name')
+            ->get();
+
+        $employeeRows = $employees->map(function ($employee) {
+            return [
+                $employee->employee_id,
+                $employee->email,
+                $employee->name,
+                $employee->department_name,
+                '',
+                '',
+            ];
+        })->toArray();
+
+        if (!empty($employeeRows)) {
+            $sheet->fromArray($employeeRows, NULL, 'A2');
+        }
 
         // Auto-size columns
         foreach(range('A', 'F') as $col) {
@@ -1214,20 +1240,22 @@ class PayrollController extends AccountBaseController
             ['Employee Name', 'Employee full name (for reference only, not used for matching)'],
             ['Department', 'Employee department (for reference only, not used for matching)'],
             ['Deduction Name', 'Name of the deduction (e.g., Provident Fund, Income Tax, Loan, Advance)'],
-            ['Deduction Amount', 'Amount to be deducted (numbers only, no currency symbols)'],
+            ['Deduction Amount', 'Amount to be deducted. Plain numbers, comma-formatted values, and currency-formatted values are accepted.'],
             [''],
             ['Important Notes:'],
-            ['1. Either Employee ID or Employee Email is REQUIRED (system will match employees by these)'],
-            ['2. Employee Name and Department are optional - for your reference only'],
+            ['1. The first sheet is auto-filled with current employees when this template is downloaded.'],
+            ['2. Employee ID spacing is flexible. For example, RVB / 101 and RVB/101 both match the same employee ID.'],
             ['3. Deduction Name can be any text describing the deduction'],
-            ['4. Deduction Amount must be a positive number'],
-            ['5. You can add multiple deductions for the same employee in separate rows'],
-            ['6. Delete the sample data rows before uploading your actual data'],
+            ['4. Deduction Amount must be a positive number. Examples: 5000, 5,000, ₹5,000'],
+            ['5. You can add multiple deductions for the same employee in separate rows. If the same deduction name repeats, the amounts are added.'],
+            ['6. Fill Deduction Name and Deduction Amount only for employees who need deductions. Leave other rows blank.'],
+            ['7. Either Employee ID or Employee Email is REQUIRED if you add new rows manually.'],
+            ['8. Employee Name and Department are optional - for your reference only'],
             [''],
             ['Example - Multiple Deductions for One Employee:'],
-            ['RVB / 101', 'john@example.com', 'John Doe', 'Sales', 'Provident Fund', '2000'],
+            ['RVB / 101', 'john@example.com', 'John Doe', 'Sales', 'Provident Fund', '2,000'],
             ['RVB / 101', 'john@example.com', 'John Doe', 'Sales', 'Income Tax', '3000'],
-            ['RVB / 101', 'john@example.com', 'John Doe', 'Sales', 'Loan EMI', '1500'],
+            ['RVB / 101', 'john@example.com', 'John Doe', 'Sales', 'Loan EMI', '₹1,500'],
         ];
         $instructionSheet->fromArray($instructions, NULL, 'A1');
         $instructionSheet->getColumnDimension('A')->setWidth(20);
@@ -1274,10 +1302,11 @@ class PayrollController extends AccountBaseController
                 // Column 4: Deduction Name
                 // Column 5: Deduction Amount
                 
-                $employeeId = trim($row[0] ?? '');
-                $employeeEmail = trim($row[1] ?? '');
-                $deductionName = trim($row[4] ?? 'Deduction');
-                $deductionAmount = (float)($row[5] ?? 0);
+                $employeeId = preg_replace('/\s+/', ' ', trim((string) ($row[0] ?? '')));
+                $employeeEmail = trim((string) ($row[1] ?? ''));
+                $deductionName = trim((string) ($row[4] ?? ''));
+                $deductionName = $deductionName !== '' ? $deductionName : 'Deduction';
+                $deductionAmount = $this->parseDeductionAmount($row[5] ?? 0);
 
                 if ($deductionAmount <= 0) {
                     $skippedCount++;
@@ -1290,8 +1319,12 @@ class PayrollController extends AccountBaseController
                 
                 // Try to find by Employee ID first
                 if (!empty($employeeId)) {
+                    $employeeIdWithoutSpaces = str_replace(' ', '', $employeeId);
                     $employee = User::join('employee_details', 'employee_details.user_id', '=', 'users.id')
-                        ->where('employee_details.employee_id', $employeeId)
+                        ->where(function ($query) use ($employeeId, $employeeIdWithoutSpaces) {
+                            $query->where('employee_details.employee_id', $employeeId)
+                                ->orWhereRaw("REPLACE(employee_details.employee_id, ' ', '') = ?", [$employeeIdWithoutSpaces]);
+                        })
                         ->select('users.id', 'users.name', 'users.email')
                         ->first();
                 }
@@ -1326,6 +1359,18 @@ class PayrollController extends AccountBaseController
             \Log::error('Deductions file processing error: ' . $e->getMessage());
             return [];
         }
+    }
+
+    private function parseDeductionAmount($amount)
+    {
+        if (is_numeric($amount)) {
+            return (float) $amount;
+        }
+
+        $amount = preg_replace('/[^\d,.\-]/', '', (string) $amount);
+        $amount = str_replace(',', '', $amount);
+
+        return is_numeric($amount) ? (float) $amount : 0;
     }
 
     public function domPdfObjectForDownload($id)
@@ -1409,9 +1454,7 @@ class PayrollController extends AccountBaseController
             $this->basicSalary = 0.0;
         }
 
-        $this->fixedAllowance = $this->salarySlip->gross_salary - ($this->basicSalary + $earn + $extraEarn);
-
-        $this->fixedAllowance = ($this->fixedAllowance < 0) ? 0 : round(floatval($this->fixedAllowance), 2);
+        $this->fixedAllowance = ($this->salarySlip->fixed_allowance > 0) ? round(floatval($this->salarySlip->fixed_allowance), 2) : 0;
 
         $this->payrollSetting = PayrollSetting::first();
 

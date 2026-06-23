@@ -144,7 +144,7 @@
                                         @endphp
                                         <input type="hidden" min="0" step=".01" id="fixed_allowance_input"
                                                name="fixed_allowance_input" value="{{ $fixedAllow }}">
-                                        <input type="number" min="0" step=".01" disabled
+                                        <input type="number" min="0" step=".01"
                                                class="form-control text-right height-35 f-14 my-2 fixedAllowance"
                                                name="fixed" id="fixed" value="{{ $fixedAllow }}">
                                     </td>
@@ -393,16 +393,11 @@
             let salary = $('#net-salary').data('value');
             let totalDeductions = 0;
             let totalExtraEarning = 0;
+            let employerContributionTotal = 0;
             let reimbursement = $('#expense_claims').val();
 
             if(reimbursement == '' || reimbursement === undefined){
                 reimbursement = 0;
-            }
-
-            let fixedAllowence = $('#fixed').text();
-
-            if(fixedAllowence == '' || fixedAllowence === undefined){
-                fixedAllowence = 0;
             }
 
             // Reimbursement
@@ -420,10 +415,15 @@
             // getting Deductions
             $("input[name='deductions[]']").map(function () {
                 let deductions = $(this).val();
+                let deductionName = $(this).siblings("input[name='deductions_name[]']").val();
                 if(deductions == '' || deductions === undefined){
                     deductions = 0;
                 }
                 totalDeductions = parseFloat(totalDeductions) + parseFloat(deductions);
+
+                if ((deductionName || '').toLowerCase().indexOf('employer') === 0) {
+                    employerContributionTotal = parseFloat(employerContributionTotal) + parseFloat(deductions);
+                }
             }).get();
 
             // Getting Extra Earning
@@ -446,32 +446,25 @@
 
             }).get();
 
-            grossSalary = parseFloat(inputGrossSalary) - parseFloat(OldAdditionalEarning);
-            grossSalary = parseFloat(grossSalary) + parseFloat(totalExtraEarning);
-
             OldAdditionalEarning = totalExtraEarning;
 
             $("input[name='extra_deductions[]']").map(function () {
                 let deductions = $(this).val();
+                let deductionName = $(this).closest('tr').find("input[name='extra_deductions_name[]']").val();
                 if(deductions == '' || deductions === undefined){
                     deductions = 0;
                 }
                 totalDeductions = parseFloat(totalDeductions) + parseFloat(deductions);
+
+                if ((deductionName || '').toLowerCase().indexOf('employer') === 0) {
+                    employerContributionTotal = parseFloat(employerContributionTotal) + parseFloat(deductions);
+                }
             }).get();
 
-            let fixed = 0;
+            let fixed = parseFloat($('#fixed').val());
 
-            if(elementID != 'fixed'){
-
-                grossSalary = parseFloat(grossSalary) - parseFloat(totalExtraEarning);
-
-                fixed = (grossSalary - grossEarning);
-
-                grossSalary = parseFloat(grossSalary) + parseFloat(totalExtraEarning);
-
-            }
-            else{
-                fixed = (salary - grossEarning + reimbursement );
+            if(fixed == '' || fixed === undefined || isNaN(fixed)){
+                fixed = 0;
             }
 
             let netSalary = (grossEarning - totalDeductions + reimbursement + totalExtraEarning);
@@ -481,7 +474,8 @@
             }
 
             let netFixed = (fixed.toFixed(2));
-            let netSalaryFixed = (netSalary + fixed);
+            let netSalaryFixed = (netSalary + fixed + employerContributionTotal);
+            grossSalary = grossEarning + totalExtraEarning + fixed + employerContributionTotal;
             let formatedSalary = number_format(netSalaryFixed.toFixed(2));
 
             targetValue = 0;

@@ -7,6 +7,26 @@
     transform: none !important;
 }
 
+.dcr-pagination {
+    border-top: 1px solid #e8eef3;
+    gap: 8px;
+}
+
+.dcr-pagination .btn {
+    min-width: 34px;
+}
+
+.dcr-table-scroll-box {
+    max-height: 420px;
+    overflow: auto;
+    border: 1px solid #e8eef3;
+    border-radius: 6px;
+}
+
+.dcr-table-scroll-box table {
+    margin-bottom: 0;
+}
+
 </style>
 @section('content')
     <div class="content-wrapper">
@@ -53,6 +73,22 @@
                         </div>
                         @endif
                     @endif
+
+                    @if(isset($employees) && count($employees) > 0)
+                        <div class="employee-wrapper">
+                            <select name="employee_id" id="employee-select" class="select-picker" data-live-search="true" title="Select Employee" style="min-width: 200px;">
+                                <option value="">-- All Employees --</option>
+                                @foreach($employees as $employee)
+                                    <option value="{{ $employee['id'] }}" {{ (isset($selectedEmployeeId) && $selectedEmployeeId == $employee['id']) ? 'selected' : '' }}>
+                                        {{ $employee['name'] }}
+                                        @if(!empty($employee['designation']))
+                                            ({{ $employee['designation'] }})
+                                        @endif
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                    @endif
                     
                     <div class="date-filter-wrapper" style="display: flex; gap: 10px; align-items: center;">
                         <label class="mb-0" style="font-weight: 500;">From Date:</label>
@@ -82,7 +118,7 @@
                         <i class="fa fa-file-export"></i> Export
                     </a>
                     
-                    @if($selectedHQ || !empty($selectedArea) || !empty($selectedRegion) || $fromDate || $toDate)
+                    @if($selectedHQ || !empty($selectedArea) || !empty($selectedRegion) || (!empty($selectedEmployeeId) && $selectedEmployeeId != 'all') || $fromDate || $toDate)
                         <a href="{{ route('dcr-management.index') }}" class="btn btn-secondary btn-sm">
                             <i class="fa fa-times"></i> Clear
                         </a>
@@ -108,6 +144,17 @@
             @endif
         </div>
 
+        @php
+            $otherWorkReports = $reports->filter(function ($report) {
+                return ! $report->doctor_id
+                    && ! $report->chemist_id
+                    && ! $report->stockist_id
+                    && $report->doctorVisits->count() === 0
+                    && $report->chemistVisits->count() === 0
+                    && $report->stockistVisits->count() === 0;
+            });
+        @endphp
+
         <div class="d-flex flex-column w-tables rounded mt-3 bg-white">
             <!-- Tabs -->
             <ul class="nav nav-tabs px-3 pt-3" role="tablist">
@@ -120,7 +167,37 @@
                 <li class="nav-item">
                     <a class="nav-link" data-toggle="tab" href="#stockists-tab">Stockist Visits</a>
                 </li>
+                <li class="nav-item">
+                    <a class="nav-link" data-toggle="tab" href="#other-work-tab">Other Work</a>
+                </li>
             </ul>
+
+            @php
+                $formatVisitTime = function ($record) {
+                    return $record && $record->created_at
+                        ? $record->created_at->timezone(company()->timezone)->format('h:i A')
+                        : '-';
+                };
+
+                $formatVisitLocation = function ($record) {
+                    if (
+                        ! $record
+                        || $record->latitude === null
+                        || $record->longitude === null
+                        || $record->latitude === ''
+                        || $record->longitude === ''
+                    ) {
+                        return null;
+                    }
+
+                    $label = $record->latitude . ', ' . $record->longitude;
+
+                    return [
+                        'label' => $label,
+                        'url' => 'https://www.google.com/maps/search/?api=1&query=' . urlencode($label),
+                    ];
+                };
+            @endphp
 
             <div class="tab-content p-3">
                 <!-- Doctors Tab -->
@@ -128,10 +205,15 @@
                     <x-table class="table-hover border-0" headType="thead-light">
                         <x-slot name="thead">
                             <th>@lang('app.date')</th>
+                            @if($showVisitEmployeeColumn ?? false)
+                                <th>Submitted By</th>
+                            @endif
                             <th>Doctor</th>
                             <th>Speciality</th>
                             <th>HQ</th>
                             <th>Station</th>
+                            <th>Time</th>
+                            <th>Location</th>
                             <th>Products</th>
                             <th>Samples Unit</th>
                             <th>POB</th>
@@ -144,10 +226,23 @@
                                 @foreach($report->doctorVisits as $visit)
                                     <tr id="row-{{ $report->id }}-visit-{{ $visit->id }}">
                                         <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                        @if($showVisitEmployeeColumn ?? false)
+                                            <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                        @endif
                                         <td>{{ $visit->doctor->fullname ?? $visit->doctor_name ?? '-' }}</td>
                                         <td>{{ $visit->speciality ?? '-' }}</td>
                                         <td>{{ $report->headquarter }}</td>
                                         <td>{{ $report->station }}</td>
+                                        <td>{{ $formatVisitTime($visit) }}</td>
+                                        @php($visitLocation = $formatVisitLocation($visit))
+                                        <td>
+                                            @if($visitLocation)
+                                                <a href="{{ $visitLocation['url'] }}" target="_blank" rel="noopener">View map</a>
+                                                <div><small class="text-muted">{{ $visitLocation['label'] }}</small></div>
+                                            @else
+                                                -
+                                            @endif
+                                        </td>
                                         <td>
                                             <small>
                                                 @if($visit->product1) {{ $visit->product1 }}<br>@endif
@@ -174,10 +269,15 @@
                                 {{-- Show old single-entry format for backward compatibility --}}
                                 <tr id="row-{{ $report->id }}">
                                     <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                    @if($showVisitEmployeeColumn ?? false)
+                                        <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                    @endif
                                     <td>{{ $report->doctor->fullname ?? '-' }}</td>
                                     <td>{{ $report->speciality }}</td>
                                     <td>{{ $report->headquarter }}</td>
                                     <td>{{ $report->station }}</td>
+                                    <td>{{ $formatVisitTime($report) }}</td>
+                                    <td>-</td>
                                     <td>
                                         <small>
                                             @if($report->product1) {{ $report->product1 }}<br>@endif
@@ -209,8 +309,13 @@
                     <x-table class="table-hover border-0" headType="thead-light">
                         <x-slot name="thead">
                             <th>@lang('app.date')</th>
+                            @if($showVisitEmployeeColumn ?? false)
+                                <th>Submitted By</th>
+                            @endif
                             <th>Chemist</th>
                             <th>Station</th>
+                            <th>Time</th>
+                            <th>Location</th>
                             <th>RCPA Products</th>
                             <th>@lang('app.action')</th>
                         </x-slot>
@@ -221,8 +326,21 @@
                                 @foreach($report->chemistVisits as $visit)
                                     <tr>
                                         <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                        @if($showVisitEmployeeColumn ?? false)
+                                            <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                        @endif
                                         <td>{{ $visit->chemist->shopname ?? $visit->chemist_name ?? '-' }}</td>
                                         <td>{{ $visit->station ?? '-' }}</td>
+                                        <td>{{ $formatVisitTime($visit) }}</td>
+                                        @php($visitLocation = $formatVisitLocation($visit))
+                                        <td>
+                                            @if($visitLocation)
+                                                <a href="{{ $visitLocation['url'] }}" target="_blank" rel="noopener">View map</a>
+                                                <div><small class="text-muted">{{ $visitLocation['label'] }}</small></div>
+                                            @else
+                                                -
+                                            @endif
+                                        </td>
                                         <td>
                                             <small>
                                                 {{ $visit->rcpa1 }}, {{ $visit->rcpa2 }}, {{ $visit->rcpa3 }}, {{ $visit->rcpa4 }}
@@ -239,8 +357,13 @@
                                 {{-- Show old single-entry format for backward compatibility --}}
                                 <tr>
                                     <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                    @if($showVisitEmployeeColumn ?? false)
+                                        <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                    @endif
                                     <td>{{ $report->chemist->shopname ?? '-' }}</td>
                                     <td>{{ $report->chemist_station }}</td>
+                                    <td>{{ $formatVisitTime($report) }}</td>
+                                    <td>-</td>
                                     <td>
                                         <small>
                                             {{ $report->rcpa1 }}, {{ $report->rcpa2 }}, {{ $report->rcpa3 }}, {{ $report->rcpa4 }}
@@ -262,8 +385,13 @@
                     <x-table class="table-hover border-0" headType="thead-light">
                         <x-slot name="thead">
                             <th>@lang('app.date')</th>
+                            @if($showVisitEmployeeColumn ?? false)
+                                <th>Submitted By</th>
+                            @endif
                             <th>Stockist</th>
                             <th>Station</th>
+                            <th>Time</th>
+                            <th>Location</th>
                             <th>@lang('app.action')</th>
                         </x-slot>
 
@@ -273,8 +401,21 @@
                                 @foreach($report->stockistVisits as $visit)
                                     <tr>
                                         <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                        @if($showVisitEmployeeColumn ?? false)
+                                            <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                        @endif
                                         <td>{{ $visit->stockist->shopname ?? $visit->stockist_name ?? '-' }}</td>
                                         <td>{{ $visit->station ?? '-' }}</td>
+                                        <td>{{ $formatVisitTime($visit) }}</td>
+                                        @php($visitLocation = $formatVisitLocation($visit))
+                                        <td>
+                                            @if($visitLocation)
+                                                <a href="{{ $visitLocation['url'] }}" target="_blank" rel="noopener">View map</a>
+                                                <div><small class="text-muted">{{ $visitLocation['label'] }}</small></div>
+                                            @else
+                                                -
+                                            @endif
+                                        </td>
                                         <td>
                                             <a class="btn btn-sm btn-danger delete-report" data-id="{{ $report->id }}">
                                                 <i class="fa fa-trash"></i>
@@ -286,8 +427,13 @@
                                 {{-- Show old single-entry format for backward compatibility --}}
                                 <tr>
                                     <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                    @if($showVisitEmployeeColumn ?? false)
+                                        <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                    @endif
                                     <td>{{ $report->stockist->shopname ?? '-' }}</td>
                                     <td>{{ $report->stockist_station }}</td>
+                                    <td>{{ $formatVisitTime($report) }}</td>
+                                    <td>-</td>
                                     <td>
                                         <a class="btn btn-sm btn-danger delete-report" data-id="{{ $report->id }}">
                                             <i class="fa fa-trash"></i>
@@ -296,6 +442,65 @@
                                 </tr>
                             @endif
                         @endforeach
+                    </x-table>
+                </div>
+
+                <!-- Other Work Tab -->
+                <div id="other-work-tab" class="tab-pane fade">
+                    <x-table class="table-hover border-0" headType="thead-light">
+                        <x-slot name="thead">
+                            <th>@lang('app.date')</th>
+                            @if($showVisitEmployeeColumn ?? false)
+                                <th>Submitted By</th>
+                            @endif
+                            <th>Work Type</th>
+                            <th>HQ</th>
+                            <th>Station</th>
+                            <th>Work With</th>
+                            <th>Submit To</th>
+                            <th>Time</th>
+                            <th>Remark</th>
+                            <th>Status</th>
+                            <th>@lang('app.action')</th>
+                        </x-slot>
+
+                        @forelse($otherWorkReports as $report)
+                            <tr id="row-{{ $report->id }}">
+                                <td>{{ $report->report_date->format(company()->date_format) }}</td>
+                                @if($showVisitEmployeeColumn ?? false)
+                                    <td>{{ $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id) }}</td>
+                                @endif
+                                <td>{{ $report->work_status ?: '-' }}</td>
+                                <td>{{ $report->headquarter ?: '-' }}</td>
+                                <td>{{ $report->station ?: '-' }}</td>
+                                <td>{{ $report->work_with ?: '-' }}</td>
+                                <td>{{ optional($report->submittedTo)->name ?: '-' }}</td>
+                                <td>{{ $formatVisitTime($report) }}</td>
+                                <td>{{ $report->remark ?: '-' }}</td>
+                                <td>
+                                    @if($report->status === 'approved')
+                                        <span class="badge badge-success">Approved</span>
+                                    @elseif($report->status === 'rejected')
+                                        <span class="badge badge-danger">Rejected</span>
+                                    @elseif($report->status === 'draft')
+                                        <span class="badge badge-secondary">Draft</span>
+                                    @else
+                                        <span class="badge badge-warning">Pending</span>
+                                    @endif
+                                </td>
+                                <td>
+                                    <a class="btn btn-sm btn-danger delete-report" data-id="{{ $report->id }}">
+                                        <i class="fa fa-trash"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="{{ ($showVisitEmployeeColumn ?? false) ? 11 : 10 }}" class="text-center text-muted">
+                                    No other work DCR reports found
+                                </td>
+                            </tr>
+                        @endforelse
                     </x-table>
                 </div>
             </div>
@@ -325,6 +530,85 @@
             }
         });
     });
+
+    function setupDcrTablePagination() {
+        var rowsPerPage = 10;
+        var scrollBuffer = 120;
+
+        $('.tab-pane table').each(function(index) {
+            var table = $(this);
+            var scrollBox = table.closest('.dcr-table-scroll-box');
+            var bodyRows = table.find('tbody tr');
+            var dataRows = bodyRows.filter(function() {
+                return !$(this).find('td[colspan]').length;
+            });
+
+            if (!scrollBox.length) {
+                table.wrap('<div class="dcr-table-scroll-box"></div>');
+                scrollBox = table.closest('.dcr-table-scroll-box');
+            }
+
+            scrollBox.next('.dcr-pagination').remove();
+
+            if (dataRows.length <= rowsPerPage) {
+                bodyRows.show();
+                scrollBox.css('max-height', 'none');
+                return;
+            }
+
+            scrollBox.css('max-height', '');
+
+            var visibleRows = rowsPerPage;
+            var pager = $('<div class="dcr-pagination d-flex align-items-center justify-content-end flex-wrap px-3 py-2"></div>');
+            var summary = $('<small class="text-muted"></small>');
+
+            pager.append(summary);
+            scrollBox.after(pager);
+
+            function renderRows() {
+                var end = Math.min(visibleRows, dataRows.length);
+
+                dataRows.hide().slice(0, end).show();
+                summary.text('Showing 1-' + end + ' of ' + dataRows.length);
+            }
+
+            function revealMore() {
+                if (visibleRows >= dataRows.length) {
+                    return;
+                }
+
+                visibleRows = Math.min(visibleRows + rowsPerPage, dataRows.length);
+                renderRows();
+            }
+
+            function ensureScrollableRows() {
+                while (
+                    visibleRows < dataRows.length
+                    && scrollBox[0].scrollHeight <= scrollBox.outerHeight()
+                ) {
+                    visibleRows = Math.min(visibleRows + rowsPerPage, dataRows.length);
+                    renderRows();
+                }
+            }
+
+            scrollBox.off('scroll.dcrPagination').on('scroll.dcrPagination', function() {
+                if (visibleRows >= dataRows.length) {
+                    return;
+                }
+
+                var triggerPoint = scrollBox[0].scrollHeight - scrollBox.outerHeight() - scrollBuffer;
+
+                if (scrollBox.scrollTop() >= triggerPoint) {
+                    revealMore();
+                }
+            });
+
+            renderRows();
+            ensureScrollableRows();
+        });
+    }
+
+    setupDcrTablePagination();
     
 </script>
 <script>

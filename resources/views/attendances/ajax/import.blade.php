@@ -17,11 +17,48 @@
                             <span class="badge badge-light ml-1 f-11">Live — all employees</span>
                         </a>
 
-                        <div class="alert alert-info f-13 py-2 px-3 mb-3" role="alert">
-                            <strong>How to fill the template:</strong><br>
-                            The first 3 columns (<em>name, designation, department</em>) are for reference only — <strong>do not change them</strong>.<br>
-                            Fill the <strong>month</strong> column (format: <code>YYYY-MM</code>) and select one value under each date column:<br>
-                            <code>SL</code> &nbsp;|&nbsp; <code>CL</code> &nbsp;|&nbsp; <code>EL</code> &nbsp;|&nbsp; <code>LWP</code> &nbsp;|&nbsp; <code>Present</code> &nbsp;|&nbsp; <code>Absent</code>
+                        <div class="alert alert-info f-13 py-3 px-3 mb-3" role="alert">
+                            <strong>How to fill the attendance template</strong>
+                            <div class="mt-2">
+                                <strong>Allowed attendance values:</strong>
+                                <code>Present</code> full day present,
+                                <code>HF</code>, <code>WO</code> half day,
+                                <code>Absent</code> absent,
+                                <code>SL</code> sick leave,
+                                <code>CL</code> casual leave,
+                                <code>EL</code> earned leave,
+                                <code>LWP</code> leave without pay.
+                            </div>
+                            <div class="mt-2">
+                                Do not change the reference columns:
+                                <em>name</em>, <em>designation</em>, and <em>department</em>.
+                                Fill <strong>month</strong> as <code>YYYY-MM</code>, then enter one allowed value under each date column.
+                            </div>
+                            <div class="table-responsive mt-2">
+                                <table class="table table-sm table-bordered mb-1 bg-white">
+                                    <thead>
+                                    <tr>
+                                        <th>employee_id</th>
+                                        <th>month</th>
+                                        <th>2026-05-01</th>
+                                        <th>2026-05-02</th>
+                                        <th>2026-05-03</th>
+                                        <th>2026-05-04</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    <tr>
+                                        <td>RVB / 105</td>
+                                        <td>2026-05</td>
+                                        <td>Present</td>
+                                        <td>HF</td>
+                                        <td>Absent</td>
+                                        <td>SL</td>
+                                    </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <small><strong>Sample fill:</strong> Use <code>HF</code> when the employee worked Half Day.</small>
                         </div>
 
                         <x-forms.file :fieldLabel="__('modules.import.file')" fieldName="import_file"

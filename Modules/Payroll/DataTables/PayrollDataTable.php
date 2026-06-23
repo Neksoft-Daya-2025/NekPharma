@@ -106,6 +106,8 @@ class PayrollDataTable extends BaseDataTable
                         <div class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuLink-41" tabindex="0" x-placement="bottom-end" style="position: absolute; transform: translate3d(-137px, 26px, 0px); top: 0px; left: 0px; will-change: transform;">';
 
                 $actions .= '<a href="' . route('payroll.show', [$row->salary_slip_id]) . '" class="dropdown-item openRightModal"><i class="fa fa-eye mr-2"></i>' . __('app.view') . '</a>';
+                $actions .= '<a href="' . route('payroll.download_pdf', md5($row->salary_slip_id)) . '?view=1" target="_blank" class="dropdown-item"><i class="fa fa-print mr-2"></i>' . __('app.print') . ' ' . __('payroll::modules.payroll.salarySlip') . '</a>';
+                $actions .= '<a href="' . route('payroll.download_pdf', md5($row->salary_slip_id)) . '" class="dropdown-item"><i class="fa fa-download mr-2"></i>' . __('app.download') . ' ' . __('payroll::modules.payroll.salarySlip') . '</a>';
 
                 if ($this->editPayrollPermission == 'all' || ($this->editPayrollPermission == 'added' && user()->id == $row->added_by)) {
                     $actions .= '<a class="dropdown-item openRightModal" href="' . route('payroll.edit', [$row->salary_slip_id]) . '">

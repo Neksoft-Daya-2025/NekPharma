@@ -22,8 +22,8 @@ class PharmaRoleSeeder extends Seeder
         $pharmaRoleNames = [
             'medical-representative',
             'area-business-manager',
-            'regional-manager',
-            'zonal-manager',
+            'regional-business-manager',
+            'zonal-business-manager',
             'sales-manager',
             'pmt',
             'hr',
@@ -32,15 +32,35 @@ class PharmaRoleSeeder extends Seeder
         $pharmaRolesConfig = [
             ['name' => 'medical-representative', 'display_name' => 'Medical Representative', 'hierarchy_level' => 1],
             ['name' => 'area-business-manager', 'display_name' => 'Area Business Manager (ABM)', 'hierarchy_level' => 2],
-            ['name' => 'regional-manager', 'display_name' => 'Regional Manager (RM)', 'hierarchy_level' => 3],
-            ['name' => 'zonal-manager', 'display_name' => 'Zonal Manager (ZM)', 'hierarchy_level' => 4],
+            ['name' => 'regional-business-manager', 'display_name' => 'Regional Business Manager (RBM)', 'hierarchy_level' => 3],
+            ['name' => 'zonal-business-manager', 'display_name' => 'Zonal Business Manager (ZBM)', 'hierarchy_level' => 4],
             ['name' => 'sales-manager', 'display_name' => 'Sales Manager', 'hierarchy_level' => 5],
             ['name' => 'pmt', 'display_name' => 'PMT', 'hierarchy_level' => 6],
             ['name' => 'hr', 'display_name' => 'HR', 'hierarchy_level' => 7],
         ];
 
+        $roleLevelBackfill = [
+            'medical-representative' => 1,
+            'area-business-manager' => 2,
+            'regional-manager' => 3,
+            'regional-business-manager' => 3,
+            'zonal-manager' => 4,
+            'zonal-business-manager' => 4,
+            'sales-manager' => 5,
+            'pmt' => 6,
+            'hr' => 7,
+            'admin' => 8,
+            'senior-manager-pmt' => 8,
+        ];
+
         foreach (Company::all() as $company) {
             Role::where('company_id', $company->id)->where('name', 'admin')->update(['hierarchy_level' => 8]);
+
+            foreach ($roleLevelBackfill as $roleName => $level) {
+                Role::where('company_id', $company->id)
+                    ->where('name', $roleName)
+                    ->update(['hierarchy_level' => $level]);
+            }
 
             $existingPharma = Role::where('company_id', $company->id)->whereIn('name', $pharmaRoleNames)->pluck('name')->toArray();
             $employeeRole = Role::where('company_id', $company->id)->where('name', 'employee')->first();

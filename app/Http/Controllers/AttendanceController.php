@@ -17,6 +17,7 @@ use App\Traits\EmployeeDashboard;
 use Illuminate\Http\Request;
 use App\Models\CompanyAddress;
 use App\Exports\AttendanceExport;
+use App\Exports\AttendanceSheetFormatExport;
 use App\Imports\AttendanceImport;
 use App\Jobs\ImportAttendanceJob;
 use App\Models\AttendanceSetting;
@@ -1462,24 +1463,6 @@ class AttendanceController extends AccountBaseController
         }
 
         $lastColumn = $sheet->getHighestColumn();
-        $lastRow = max($rowNumber - 1, 2);
-        $statusOptions = '"SL,CL,EL,LWP,Present,Absent"';
-
-        for ($column = 6; $column <= \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($lastColumn); $column++) {
-            $columnLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($column);
-
-            for ($row = 2; $row <= $lastRow; $row++) {
-                $validation = $sheet->getCell($columnLetter . $row)->getDataValidation();
-                $validation->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
-                $validation->setErrorStyle(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::STYLE_STOP);
-                $validation->setAllowBlank(true);
-                $validation->setShowDropDown(true);
-                $validation->setShowErrorMessage(true);
-                $validation->setErrorTitle('Invalid attendance status');
-                $validation->setError('Please select SL, CL, EL, LWP, Present, or Absent.');
-                $validation->setFormula1($statusOptions);
-            }
-        }
 
         $sheet->freezePane('F2');
         $sheet->getStyle('A1:' . $lastColumn . '1')->getFont()->setBold(true);
@@ -1554,7 +1537,7 @@ class AttendanceController extends AccountBaseController
 
         $date = $endDate->lessThan(now()) ? $endDate : now();
 
-        return Excel::download(new AttendanceExport($year, $month, $id, $department, $designation, $startDate, $endDate), 'Attendance_From_' . $startDate->format('d-m-Y') . '_To_' . $date->format('d-m-Y') . '.xlsx');
+        return Excel::download(new AttendanceSheetFormatExport($startDate->format(company()->date_format), $endDate->format(company()->date_format), $id, $department, $designation), 'Attendance_From_' . $startDate->format('d-m-Y') . '_To_' . $date->format('d-m-Y') . '.xlsx');
     }
 
     public function byHour(Request $request)

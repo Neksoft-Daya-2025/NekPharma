@@ -1,9 +1,23 @@
 <div class="col-lg-12 col-md-12 ntfcn-tab-content-left w-100 p-4">
+    <div class="alert alert-info mb-3">
+        <h5 class="mb-2 f-15">How auto assignment works</h5>
+        <ol class="pl-3 mb-2">
+            <li>Create or edit a salary group.</li>
+            <li>Select the designations in <strong>Auto assign by designation</strong>.</li>
+            <li>Save the salary group.</li>
+            <li>Use <strong>Apply Matching Employees</strong> from the action menu.</li>
+        </ol>
+        <p class="mb-0 f-12">
+            Matching employees will be moved into this salary group. You can still change employees manually from Manage Employees.
+        </p>
+    </div>
+
     <div class="table-responsive">
         <x-table class="table-bordered">
             <x-slot name="thead">
                 <th>@lang('app.name')</th>
                 <th>@lang('payroll::modules.payroll.salaryComponents')</th>
+                <th>Auto Designations</th>
                 <th class="text-right">@lang('app.action')</th>
             </x-slot>
 
@@ -21,6 +35,13 @@
 
                         </ul>
                     </td>
+                    <td>
+                        @forelse ($salaryGroup->designations as $designation)
+                            <span class="badge badge-light border mb-1">{{ $designation->name }}</span>
+                        @empty
+                            <span class="text-lightest">--</span>
+                        @endforelse
+                    </td>
                     <td class="text-right">
                         <div class="task_view">
                             <div class="dropdown">
@@ -33,6 +54,10 @@
                                     <a href="javascript:;" data-salary-group-id="{{ $salaryGroup->id }}"
                                        class="dropdown-item manage-employee">
                                         <i class="fa fa-user icons mr-2"></i> @lang('payroll::modules.payroll.manageEmployees')
+                                    </a>
+                                    <a href="javascript:;" data-salary-group-id="{{ $salaryGroup->id }}"
+                                       class="dropdown-item assign-matching-designations">
+                                        <i class="fa fa-users-cog icons mr-2"></i> Apply Matching Employees
                                     </a>
                                     <a href="javascript:;" data-salary-group-id="{{ $salaryGroup->id }}"
                                        class="dropdown-item edit-salary-group">

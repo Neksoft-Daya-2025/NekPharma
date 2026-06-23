@@ -118,6 +118,7 @@ use App\Http\Controllers\DcrReportController;
 use App\Http\Controllers\DcrReportReportController;
 use App\Http\Controllers\StockStatementController;
 use App\Http\Controllers\SalesPlanController;
+use App\Http\Controllers\TargetPlanController;
 use App\Http\Controllers\EmergencyContactController;
 use App\Http\Controllers\EstimateTemplateController;
 use App\Http\Controllers\ProjectMilestoneController;
@@ -1189,6 +1190,10 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::get('stock-statements/target-vs-achievement', [StockStatementController::class, 'targetVsAchievement'])->name('stock-statements.target-vs-achievement');
     Route::resource('stock-statements', StockStatementController::class);
 
+    Route::get('target-plan/export', [TargetPlanController::class, 'export'])->name('target-plan.export');
+    Route::get('target-plan/import/sample', [TargetPlanController::class, 'downloadSample'])->name('target-plan.import.sample');
+    Route::post('target-plan/import/targets', [TargetPlanController::class, 'importTargets'])->name('target-plan.import.targets');
+    Route::resource('target-plan', TargetPlanController::class)->except(['show']);
     Route::get('sales-plan/export', [SalesPlanController::class, 'export'])->name('sales-plan.export');
     Route::get('sales-plan/import/sample', [SalesPlanController::class, 'downloadSample'])->name('sales-plan.import.sample');
     Route::post('sales-plan/import/targets', [SalesPlanController::class, 'importTargets'])->name('sales-plan.import.targets');

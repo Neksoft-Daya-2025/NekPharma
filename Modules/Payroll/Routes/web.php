@@ -55,6 +55,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
     Route::post('employee-salary/increment-store/{id?}', [EmployeeMonthlySalaryController::class, 'incrementStore'])->name('employee-salary.increment-store');
     Route::get('employee-salary/increment-edit', [EmployeeMonthlySalaryController::class, 'incrementEdit'])->name('employee-salary.increment_edit');
     Route::post('employee-salary/increment-update', [EmployeeMonthlySalaryController::class, 'incrementUpdate'])->name('employee-salary.increment_update');
+    Route::delete('employee-salary/delete-employee-salary/{id}', [EmployeeMonthlySalaryController::class, 'destroyEmployeeSalary'])->name('employee-salary.destroy-employee-salary');
     Route::resource('employee-salary', EmployeeMonthlySalaryController::class);
 
     Route::get('payroll-export-reports', [PayrollReportController::class, 'exportReport'])->name('payroll-reports.export-report');
@@ -74,6 +75,7 @@ Route::group(['middleware' => 'auth', 'prefix' => 'account'], function () {
         ['prefix' => 'payroll-settings'],
         function () {
             Route::post('salary-groups/manage-employee', [SalaryGroupController::class, 'manageEmployee'])->name('salary_groups.manage_employee');
+            Route::post('salary-groups/assign-matching-designations/{id}', [SalaryGroupController::class, 'assignMatchingDesignations'])->name('salary_groups.assign_matching_designations');
             Route::resource('salary-groups', SalaryGroupController::class);
 
             Route::get('salary-tds/get-status', [SalaryTdsController::class, 'getStatus'])->name('salary_tds.get_status');

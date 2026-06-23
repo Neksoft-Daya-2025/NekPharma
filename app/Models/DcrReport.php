@@ -13,6 +13,8 @@ class DcrReport extends BaseModel
     protected $fillable = [
         'company_id',
         'user_id',
+        'employee_name_snapshot',
+        'employee_designation_snapshot',
         'submitted_to',
         'approved',
         'approved_by',
@@ -21,7 +23,9 @@ class DcrReport extends BaseModel
         'report_date',
         // Common fields
         'headquarter',
+        'headquarter_id_snapshot',
         'station',
+        'station_type_snapshot',
         'work_status',
         'work_with',
         // Doctor visit

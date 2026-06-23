@@ -575,29 +575,61 @@
                 return $(this).data('user-id');
             }).get();
 
-            $.easyAjax({
+            var formData = new FormData();
+            formData.append('month', month);
+            formData.append('year', year);
+            formData.append('cycle', cycle);
+            formData.append('markLeavesPaid', markLeavesPaid);
+            formData.append('markAbsentUnpaid', markAbsentUnpaid);
+            formData.append('useAttendance', useAttendance);
+            formData.append('includeExpenseClaims', includeExpenseClaims);
+            formData.append('addTimelogs', addTimelogs);
+            formData.append('_token', token);
+
+            userIds.forEach(function(id) {
+                formData.append('userIds[]', id);
+            });
+
+            var deductionsFile = $('#deductions_file')[0].files[0];
+            if (deductionsFile) {
+                formData.append('deductions_file', deductionsFile);
+            }
+
+            var $btn = $('#generate-payslip');
+            $btn.prop('disabled', true);
+            $.blockUI({ message: '<div class="spinner-border text-primary" role="status"></div>' });
+
+            $.ajax({
                 url: '{{route('payroll.generate_pay_slip')}}',
-                container: '#genrate-payroll-form',
-                type: "POST",
-                disableButton: true,
-                blockUI: true,
-                buttonSelector: "#generate-payslip",
-                data: {
-                    month: month,
-                    year: year,
-                    cycle: cycle,
-                    markLeavesPaid: markLeavesPaid,
-                    markAbsentUnpaid: markAbsentUnpaid,
-                    useAttendance: useAttendance,
-                    includeExpenseClaims: includeExpenseClaims,
-                    addTimelogs: addTimelogs,
-                    userIds: userIds,
-                    _token: token
-                },
+                type: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
                 success: function (response) {
+                    $.unblockUI();
+                    $btn.prop('disabled', false);
+
                     if (response.status == "success") {
                         showTable();
                     }
+                },
+                error: function (xhr) {
+                    $.unblockUI();
+                    $btn.prop('disabled', false);
+
+                    var msg = 'Server error (' + xhr.status + ')';
+                    try {
+                        var json = JSON.parse(xhr.responseText);
+                        msg = json.message || msg;
+                    } catch(e) {}
+
+                    Swal.fire({
+                        icon: 'error',
+                        title: '@lang("app.error")',
+                        html: '<p class="mb-2">' + msg + '</p>',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#d33'
+                    });
                 }
             });
         }

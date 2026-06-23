@@ -30,6 +30,7 @@ use App\Models\PharmaHeadquarterAssign;
 use App\Models\PharmaArea;
 use App\Models\Project;
 use App\Traits\AccessibleHeadquarters;
+use App\Helpers\PharmaDesignationHelper;
 use App\Models\User;
 use App\Scopes\ActiveScope;
 use App\Traits\ImportExcel;
@@ -403,6 +404,7 @@ class ExpenseController extends AccountBaseController
         $this->data['currentUserHeadquarterName'] = $this->currentUserHeadquarterName;
         $this->data['userHeadquarter'] = $this->userHeadquarter;
         $this->data['showHqDropdownForPharmaRoles'] = $this->showHqDropdownForPharmaRoles ?? false;
+        $this->data['lockExpenseHeadquarterForZonalManager'] = $this->lockExpenseHeadquarterForZonalManager ?? false;
         $this->data['workedWithDesignations'] = $this->workedWithDesignations;
         $this->data['managers'] = $this->managers;
         $this->data['reportingManagerId'] = $this->reportingManagerId;
@@ -1757,6 +1759,8 @@ class ExpenseController extends AccountBaseController
 
         $this->currentUserHeadquarter = $this->userHeadquarter;
         $this->currentUserHeadquarterName = null;
+        $this->lockExpenseHeadquarterForZonalManager = user()->hasRole('zonal-manager')
+            || PharmaDesignationHelper::isZM(optional($emp)->designation);
 
         if ($this->userHeadquarter) {
             $hq = $this->headquarters->firstWhere('id', $this->userHeadquarter);

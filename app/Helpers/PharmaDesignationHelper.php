@@ -34,7 +34,11 @@ class PharmaDesignationHelper
         if ($name === null) {
             return false;
         }
-        return str_contains($name, 'Zonal Manager') || str_contains($name, 'ZM');
+        $normalized = strtolower($name);
+
+        return str_contains($normalized, 'zbm')
+            || str_contains($normalized, 'zm')
+            || (str_contains($normalized, 'zonal') && str_contains($normalized, 'manager'));
     }
 
     /**

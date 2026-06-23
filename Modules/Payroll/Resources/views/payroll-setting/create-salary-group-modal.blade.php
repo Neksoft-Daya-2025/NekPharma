@@ -24,6 +24,19 @@
                             @endforeach
                         </x-forms.select>
                     </div>
+                    <div class="col-lg-12">
+                        <x-forms.select fieldId="designation_ids"
+                                        fieldLabel="Auto assign by designation"
+                                        fieldName="designation_ids[]" search="true"
+                                        multiple="true">
+                            @foreach($designations as $designation)
+                                <option value="{{ $designation->id }}">{{ $designation->name }}</option>
+                            @endforeach
+                        </x-forms.select>
+                        <p class="text-lightest f-12 mt-1 mb-0">
+                            Existing employees are assigned only when you use Apply Matching Employees.
+                        </p>
+                    </div>
                 </div>
             </div>
         </x-form>

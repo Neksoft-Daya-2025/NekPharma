@@ -23,17 +23,23 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
 
     protected string $employeeId;
 
+    protected string $department;
+
+    protected string $designation;
+
     protected CarbonPeriod $period;
 
     protected array $holidayDates = [];
 
     protected array $officeOpenDays = [];
 
-    public function __construct(string $startDate, string $endDate, string $employeeId = 'all')
+    public function __construct(string $startDate, string $endDate, string $employeeId = 'all', string $department = 'all', string $designation = 'all')
     {
         $this->startDate = Carbon::createFromFormat(company()->date_format, $startDate)->startOfDay();
         $this->endDate = Carbon::createFromFormat(company()->date_format, $endDate)->endOfDay();
         $this->employeeId = $employeeId;
+        $this->department = $department;
+        $this->designation = $designation;
         $this->period = CarbonPeriod::create($this->startDate, $this->endDate);
 
         $this->holidayDates = Holiday::where('company_id', company()->id)
@@ -90,6 +96,14 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
             $model->where('users.id', $this->employeeId);
         }
 
+        if ($this->department !== 'all') {
+            $model->whereHas('employeeDetail', fn ($query) => $query->where('department_id', $this->department));
+        }
+
+        if ($this->designation !== 'all') {
+            $model->whereHas('employeeDetail', fn ($query) => $query->where('designation_id', $this->designation));
+        }
+
         return $model->orderBy('users.name')->get();
     }
 
@@ -110,6 +124,7 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
 
         $dayColumns = [];
         $woCount = 0;
+        $holidayCount = 0;
         $presentFull = 0;
         $halfDayCount = 0;
 
@@ -132,39 +147,22 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
             $dayOfWeek = (int) $date->format('w'); // 0=Sun, 1=Mon, ..., 6=Sat
             $isWeekOff = !in_array($dayOfWeek, $this->officeOpenDays);
             $isHoliday = isset($this->holidayDates[$dateStr]);
-
-            if ($isWeekOff && !$isHoliday) {
-                $dayColumns[] = 'WO';
-                $woCount++;
-                continue;
-            }
-
-            if ($isHoliday) {
-                $dayColumns[] = 'H';
-                continue;
-            }
-
             $attendanceOnDate = $attendanceByDate->get($dateStr);
             $leaveOnDate = $leaveByDate->get($dateStr);
+            $daySummary = self::summarizeDayForExport(
+                hasAttendance: $attendanceOnDate && $attendanceOnDate->isNotEmpty(),
+                hasHalfDayAttendance: $attendanceOnDate && $attendanceOnDate->contains('half_day', 'yes'),
+                isWeekOff: $isWeekOff,
+                isHoliday: $isHoliday,
+                hasLeave: $leaveOnDate && $leaveOnDate->isNotEmpty(),
+                leaveCode: $this->leaveCodeForExport($leaveOnDate)
+            );
 
-            if ($attendanceOnDate && $attendanceOnDate->isNotEmpty()) {
-                $hasHalfDay = $attendanceOnDate->contains('half_day', 'yes');
-                if ($hasHalfDay) {
-                    $dayColumns[] = 'HF';
-                    $halfDayCount++;
-                } else {
-                    $dayColumns[] = 'P';
-                    $presentFull++;
-                }
-                continue;
-            }
-
-            if ($leaveOnDate && $leaveOnDate->isNotEmpty()) {
-                $dayColumns[] = 'L';
-                continue;
-            }
-
-            $dayColumns[] = '';
+            $dayColumns[] = $daySummary['code'];
+            $woCount += $daySummary['week_offs'];
+            $holidayCount += $daySummary['holidays'];
+            $presentFull += $daySummary['present_full'];
+            $halfDayCount += $daySummary['half_days'];
         }
 
         $standardDays = 0;
@@ -176,7 +174,6 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
         }
 
         $workingDays = $presentFull + ($halfDayCount * 0.5);
-        $holidayCount = count($this->holidayDates);
 
         $leaveCounts = $this->getLeaveCountsByType($user->id);
         $sl = $leaveCounts['SL'];
@@ -207,6 +204,69 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
         );
 
         return $row;
+    }
+
+    public static function summarizeDayForExport(
+        bool $hasAttendance,
+        bool $hasHalfDayAttendance,
+        bool $isWeekOff,
+        bool $isHoliday,
+        bool $hasLeave,
+        ?string $leaveCode = null
+    ): array {
+        if ($hasAttendance) {
+            return [
+                'code' => $hasHalfDayAttendance ? 'HF' : 'P',
+                'working_days' => $hasHalfDayAttendance ? 0.5 : 1.0,
+                'present_full' => $hasHalfDayAttendance ? 0 : 1,
+                'half_days' => $hasHalfDayAttendance ? 1 : 0,
+                'week_offs' => 0,
+                'holidays' => 0,
+            ];
+        }
+
+        if ($isHoliday) {
+            return [
+                'code' => 'H',
+                'working_days' => 0.0,
+                'present_full' => 0,
+                'half_days' => 0,
+                'week_offs' => 0,
+                'holidays' => 1,
+            ];
+        }
+
+        if ($isWeekOff) {
+            return [
+                'code' => 'WO',
+                'working_days' => 0.0,
+                'present_full' => 0,
+                'half_days' => 0,
+                'week_offs' => 1,
+                'holidays' => 0,
+            ];
+        }
+
+        return [
+            'code' => $hasLeave ? ($leaveCode ?: 'L') : '',
+            'working_days' => 0.0,
+            'present_full' => 0,
+            'half_days' => 0,
+            'week_offs' => 0,
+            'holidays' => 0,
+        ];
+    }
+
+    protected function leaveCodeForExport($leaveOnDate): ?string
+    {
+        if (!$leaveOnDate || $leaveOnDate->isEmpty()) {
+            return null;
+        }
+
+        $leave = $leaveOnDate->first();
+        $isPaid = (isset($leave->paid) ? (bool) $leave->paid : ($leave->type && $leave->type->paid));
+
+        return $isPaid ? $this->mapLeaveTypeToColumn($leave->type ? $leave->type->type_name : '') : 'LWP';
     }
 
     protected function getLeaveCountsByType(int $userId): array

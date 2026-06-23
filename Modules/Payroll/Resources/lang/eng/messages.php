@@ -6,7 +6,7 @@ return [
     'noSalaryGroupAdded' => 'No salary group added.',
     'noSalaryTdsAdded' => 'No salary tds added.',
     'salaryDelete' => 'You will not be able to recover the deleted salary!',
-    'fixedAllowanceMessage' => 'Special allowance is a residual component of salary that is left after allocation are made for all other component.',
+    'fixedAllowanceMessage' => 'Special allowance is entered manually for the employee.',
     'useAttendance' => 'Salary is calculated on a pro rata basis. Employees will be paid for the days they are present, on approved paid leaves, or on holidays. Unpaid days (absent without leave) are deducted from salary.',
     'payrollEmployees' => 'Showing only that employees who have the same payroll cycle that selected above.',
     'confirmChangePolicy' => 'Confirm Change',

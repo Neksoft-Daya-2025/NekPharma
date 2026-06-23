@@ -294,10 +294,47 @@
             var salaryGroupId = $(this).data('salary-group-id');
             var url = "{{ route('salary-groups.show', ':id ') }}";
             url = url.replace(':id', salaryGroupId);
-            console.log(url);
 
             $(MODAL_LG + ' ' + MODAL_HEADING).html('...');
             $.ajaxModal(MODAL_LG, url);
+        });
+
+        $('body').on('click', '.assign-matching-designations', function () {
+            var salaryGroupId = $(this).data('salary-group-id');
+            var url = "{{ route('salary_groups.assign_matching_designations', ':id') }}";
+            url = url.replace(':id', salaryGroupId);
+            var token = "{{ csrf_token() }}";
+
+            Swal.fire({
+                title: "Apply matching employees?",
+                text: "Employees with mapped designations will move to this salary group.",
+                icon: 'question',
+                showCancelButton: true,
+                focusConfirm: false,
+                confirmButtonText: "@lang('app.apply')",
+                cancelButtonText: "@lang('app.cancel')",
+                customClass: {
+                    confirmButton: 'btn btn-primary mr-3',
+                    cancelButton: 'btn btn-secondary'
+                },
+                buttonsStyling: false
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    $.easyAjax({
+                        type: 'POST',
+                        url: url,
+                        blockUI: true,
+                        data: {
+                            '_token': token
+                        },
+                        success: function (response) {
+                            if (response.status == "success") {
+                                window.location.reload();
+                            }
+                        }
+                    });
+                }
+            });
         });
 
         /* delete salary group */

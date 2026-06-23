@@ -234,7 +234,7 @@ class StockStatementController extends AccountBaseController
         abort_403(!in_array($this->addPermission, ['all', 'added'], true));
 
         $request->validate([
-            'import_file' => 'required|file|mimes:csv,txt|max:5120',
+            'import_file' => 'required|file|mimes:csv,txt,xls,xlsx|max:5120',
             'cfa_stockist_id' => 'required|exists:cfa_stockists,id',
             'period_month' => 'required|integer|between:1,12',
             'period_year' => 'required|integer|min:2020|max:2100',
@@ -251,7 +251,7 @@ class StockStatementController extends AccountBaseController
 
         /** @var UploadedFile $file */
         $file = $request->file('import_file');
-        $parsed = $this->parseStockStatementCsv($file->getRealPath());
+        $parsed = $this->parseStockStatementFile($file);
 
         if ($parsed['errors']) {
             return Reply::error(implode(' ', $parsed['errors']));
@@ -328,13 +328,44 @@ class StockStatementController extends AccountBaseController
             return ['rows' => [], 'errors' => ['Could not read CSV file.']];
         }
 
+        $csvRows = [];
+
+        while (($data = fgetcsv($handle)) !== false) {
+            $csvRows[] = $data;
+        }
+
+        fclose($handle);
+
+        return $this->parseStockStatementRows($csvRows);
+    }
+
+    private function parseStockStatementFile(UploadedFile $file): array
+    {
+        $extension = strtolower((string) $file->getClientOriginalExtension());
+
+        if (in_array($extension, ['xls', 'xlsx'], true)) {
+            try {
+                $sheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($file->getRealPath())->getActiveSheet();
+            } catch (\Throwable $e) {
+                return ['rows' => [], 'errors' => ['Could not read Excel file. Please download the sample and try again.']];
+            }
+
+            return $this->parseStockStatementRows($sheet->toArray());
+        }
+
+        return $this->parseStockStatementCsv($file->getRealPath());
+    }
+
+    private function parseStockStatementRows(array $fileRows): array
+    {
         $headerMap = null;
         $rows = [];
         $errors = [];
         $lineNumber = 0;
 
-        while (($data = fgetcsv($handle)) !== false) {
+        foreach ($fileRows as $data) {
             $lineNumber++;
+            $data = is_array($data) ? array_values($data) : [];
 
             if ($this->csvRowIsEmpty($data)) {
                 continue;
@@ -343,9 +374,7 @@ class StockStatementController extends AccountBaseController
             if ($headerMap === null) {
                 $headerMap = $this->mapStockStatementCsvHeaders($data);
                 if ($headerMap === null) {
-                    fclose($handle);
-
-                    return ['rows' => [], 'errors' => ['Invalid CSV header. Expected columns: Product, Opening Qty, Primary Qty, Secondary Qty, Closing Qty.']];
+                    return ['rows' => [], 'errors' => ['Invalid file header. Expected columns: Product, Opening Qty, Primary Qty, Secondary Qty, Closing Qty.']];
                 }
                 continue;
             }
@@ -381,8 +410,6 @@ class StockStatementController extends AccountBaseController
                 'closing_qty' => $closing,
             ];
         }
-
-        fclose($handle);
 
         return ['rows' => $rows, 'errors' => $errors];
     }
@@ -799,6 +826,7 @@ class StockStatementController extends AccountBaseController
             ->where('period_month', $periodMonth)
             ->where('period_year', $periodYear)
             ->where('plan_level', 'headquarter')
+            ->where('plan_type', 'target_plan')
             ->whereNotNull('headquarter_id')
             ->whereNotNull('product_id');
 
@@ -884,6 +912,7 @@ class StockStatementController extends AccountBaseController
                     ->where('period_month', $periodMonth)
                     ->where('period_year', $periodYear)
                     ->where('plan_level', 'headquarter')
+                    ->where('plan_type', 'target_plan')
                     ->whereIn('headquarter_id', $hqIds);
                 });
         }

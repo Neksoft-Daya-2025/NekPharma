@@ -3,7 +3,9 @@
 namespace App\Traits;
 
 use App\Helpers\PharmaDesignationHelper;
+use App\Helper\RoleHierarchy;
 use Illuminate\Database\Eloquent\Builder;
+use App\Models\EmployeeDetails;
 use App\Models\PharmaArea;
 use App\Models\PharmaHeadquarter;
 use App\Models\PharmaAssignHeadquarter;
@@ -96,6 +98,16 @@ trait AccessibleHeadquarters
             $areaIds = $areaIds->merge($regionAreaIds)->unique();
         }
 
+        $descendantScope = ['headquarter_ids' => [], 'area_ids' => []];
+        if ($emp->designation && PharmaDesignationHelper::usesGeographyAllocation($emp->designation)) {
+            $descendantScope = $this->reportingDescendantTerritoryScope($user);
+            $directHeadquarterId = $emp->headquarter_id ?? $emp->pharma_headquarter_id ?? null;
+            if ($directHeadquarterId) {
+                $descendantScope['headquarter_ids'][] = (int) $directHeadquarterId;
+            }
+            $areaIds = $areaIds->merge($descendantScope['area_ids'])->unique()->values();
+        }
+
         // If user has areas assigned, return ALL headquarters in those areas
         // Area managers should see all headquarters in their allotted areas
         if ($areaIds->isNotEmpty()) {
@@ -121,7 +133,7 @@ trait AccessibleHeadquarters
             }
             
             // Return unique list of all headquarters (both in areas and specifically assigned)
-            $uniqueHqIds = array_unique($headquarterIds);
+            $uniqueHqIds = array_unique(array_merge($headquarterIds, $descendantScope['headquarter_ids']));
             if (config('app.debug')) {
                 \Log::info('AccessibleHeadquarters: Area-based access', [
                     'user_id' => $user->id,
@@ -131,6 +143,10 @@ trait AccessibleHeadquarters
                 ]);
             }
             return array_values($uniqueHqIds);
+        }
+
+        if (! empty($descendantScope['headquarter_ids'])) {
+            return array_values(array_unique($descendantScope['headquarter_ids']));
         }
 
         // Area Sales Manager: base HQ only in profile (no areas JSON) — all HQs in that pharma area
@@ -239,6 +255,11 @@ trait AccessibleHeadquarters
             $areaIds = $areaIds->merge($regionAreaIds)->unique();
         }
 
+        if ($emp->designation && PharmaDesignationHelper::usesGeographyAllocation($emp->designation)) {
+            $descendantScope = $this->reportingDescendantTerritoryScope($user);
+            $areaIds = $areaIds->merge($descendantScope['area_ids'])->unique()->values();
+        }
+
         // If user has direct headquarter assignment but no areas, get area from headquarter
         if ($areaIds->isEmpty()) {
             $directHeadquarterId = $emp->headquarter_id ?? $emp->pharma_headquarter_id ?? null;
@@ -252,6 +273,96 @@ trait AccessibleHeadquarters
         }
 
         return $areaIds->unique()->values()->toArray();
+    }
+
+    protected function reportingDescendantTerritoryScope($user): array
+    {
+        if (! $user || ! ($user->id ?? null)) {
+            return ['headquarter_ids' => [], 'area_ids' => []];
+        }
+
+        $companyId = $user->company_id ?? ((function_exists('company') && company()) ? company()->id : null);
+        if (! $companyId) {
+            return ['headquarter_ids' => [], 'area_ids' => []];
+        }
+
+        $descendantUserIds = RoleHierarchy::reportingDescendantUserIds((int) $user->id, (int) $companyId);
+        if (empty($descendantUserIds)) {
+            return ['headquarter_ids' => [], 'area_ids' => []];
+        }
+
+        $details = EmployeeDetails::where('company_id', $companyId)
+            ->whereIn('user_id', $descendantUserIds)
+            ->get();
+
+        if ($details->isEmpty()) {
+            return ['headquarter_ids' => [], 'area_ids' => []];
+        }
+
+        $headquarterIds = $details
+            ->flatMap(fn ($detail) => [$detail->headquarter_id ?? null, $detail->pharma_headquarter_id ?? null])
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $areaIds = $details
+            ->flatMap(fn ($detail) => $this->safeDecode($detail->areas ?? null))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $regionIds = $details
+            ->flatMap(fn ($detail) => $this->safeDecode($detail->regions ?? null))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $zoneIds = $details
+            ->flatMap(fn ($detail) => $this->safeDecode($detail->zones ?? null))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if ($zoneIds->isNotEmpty()) {
+            $regionIds = $regionIds
+                ->merge(PharmaRegion::whereIn('zone_id', $zoneIds)->pluck('id'))
+                ->unique()
+                ->values();
+        }
+
+        if ($regionIds->isNotEmpty()) {
+            $areaIds = $areaIds
+                ->merge(PharmaArea::whereIn('region_id', $regionIds)->pluck('id'))
+                ->unique()
+                ->values();
+        }
+
+        if ($headquarterIds->isNotEmpty()) {
+            $areaIds = $areaIds
+                ->merge(PharmaHeadquarter::whereIn('id', $headquarterIds)->pluck('area_id')->filter())
+                ->unique()
+                ->values();
+        }
+
+        if ($areaIds->isNotEmpty()) {
+            $headquarterIds = $headquarterIds
+                ->merge(
+                    PharmaHeadquarter::where('company_id', $companyId)
+                        ->whereIn('area_id', $areaIds)
+                        ->pluck('id')
+                )
+                ->unique()
+                ->values();
+        }
+
+        return [
+            'headquarter_ids' => $headquarterIds->toArray(),
+            'area_ids' => $areaIds->toArray(),
+        ];
     }
 
     /**
@@ -377,4 +488,3 @@ trait AccessibleHeadquarters
         ];
     }
 }
-

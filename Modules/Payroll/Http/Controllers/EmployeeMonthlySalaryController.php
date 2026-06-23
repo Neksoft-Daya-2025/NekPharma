@@ -19,6 +19,7 @@ use Modules\Payroll\Entities\PayrollCurrencySetting;
 use Modules\Payroll\DataTables\EmployeeSalaryDataTable;
 use Modules\Payroll\Entities\EmployeeVariableComponent;
 use Modules\Payroll\Entities\PayrollSetting;
+use Modules\Payroll\Entities\SalaryComponent;
 use Modules\Payroll\Http\Requests\StoreEmployyeMonthlySalary;
 
 class EmployeeMonthlySalaryController extends AccountBaseController
@@ -85,10 +86,13 @@ class EmployeeMonthlySalaryController extends AccountBaseController
                 $salary->basic_salary = $request->basic_salary;
                 $salary->basic_value_type = $request->basic_value;
                 $salary->fixed_allowance = $request->fixedAllowance;
+                $salary->effective_annual_salary = $request->annual_salary;
+                $salary->effective_monthly_salary = $request->annual_salary / 12;
                 $salary->amount = $request->annual_salary / 12;
                 $salary->type = $request->type;
                 $salary->date = now()->timezone($this->company->timezone)->toDateString();
                 $salary->save();
+                EmployeeVariableComponent::where('monthly_salary_id', $salary->id)->delete();
 
                 if (!is_null($request->deduction_variable)) {
                     foreach ($request->deduction_variable as $key => $value) {
@@ -317,6 +321,25 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         return Reply::success(__('messages.deleteSuccess'));
     }
 
+    public function destroyEmployeeSalary($id)
+    {
+        $viewPermission = user()->permission('manage_employee_salary');
+        abort_403(!in_array($viewPermission, ['all', 'added']));
+
+        $userRoles = collect(user_roles())->map(function ($role) {
+            return strtolower($role);
+        })->toArray();
+        abort_403(!in_array('admin', $userRoles) && !in_array('hr', $userRoles) && !in_array('hr-manager', $userRoles));
+
+        $salaryIds = EmployeeMonthlySalary::where('user_id', $id)->pluck('id');
+
+        EmployeeVariableComponent::whereIn('monthly_salary_id', $salaryIds)->delete();
+        EmployeeMonthlySalary::whereIn('id', $salaryIds)->delete();
+        EmployeeSalaryGroup::where('user_id', $id)->delete();
+
+        return Reply::success(__('messages.deleteSuccess'));
+    }
+
     public function employeePayrollCycle(Request $request)
     {
         $employeeCycle = EmployeePayrollCycle::where('user_id', $request->user_id)->first();
@@ -377,7 +400,7 @@ class EmployeeMonthlySalaryController extends AccountBaseController
 
         $this->user_id = $id;
         $this->employee = User::findOrFail($id);
-        $this->salaryGroup = EmployeeSalaryGroup::with('salary_group.components', 'salary_group.components.component')->where('user_id', $id)->first();
+        $this->setSalaryComponents();
         $this->payrollController = new EmployeeMonthlySalaryController();
         $this->currency = PayrollSetting::with('currency')->first();
 
@@ -395,6 +418,7 @@ class EmployeeMonthlySalaryController extends AccountBaseController
 
     public function getSalary(Request $request)
     {
+        $this->blankSalaryComponentValues = $request->boolean('blankSalaryComponentValues');
 
         if ($request->basicType == 'fixed') {
             $this->basicSalary = $request->basicValue;
@@ -405,7 +429,7 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         }
 
         $this->annualSalary = $request->annualSalary;
-        $this->salaryGroup = EmployeeSalaryGroup::with('salary_group.components', 'salary_group.components.component')->where('user_id', $request->userId)->first();
+        $this->setSalaryComponents();
 
         $this->currency = PayrollSetting::with('currency')->first();
 
@@ -416,45 +440,16 @@ class EmployeeMonthlySalaryController extends AccountBaseController
 
         $this->payrollController = new EmployeeMonthlySalaryController();
 
-        if (!is_null($this->salaryGroup)) {
+        if ($this->salaryComponents->count() > 0) {
+            foreach ($this->salaryComponents as $component) {
+                $componentAmount = $this->blankSalaryComponentValues ? 0 : $this->componentMonthlyValue($component, $request->annualSalary, $this->basicSalary);
 
-            foreach ($this->salaryGroup->salary_group->components as $component) {
-
-                if ($component->component->component_type == 'earning') {
-                    if ($component->component->value_type == 'fixed') {
-                        $totalEarnings[] += $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'percent') {
-                        $totalEarnings[] += ($request->annualSalary / 12) / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'basic_percent') {
-                        $totalEarnings[] += $this->basicSalary / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'variable') {
-
-                        $totalEarnings[] = $component->component->component_value;
-                    }
+                if ($component->component_type == 'earning') {
+                    $totalEarnings[] = $componentAmount;
                 }
                 else {
+                    $totalExpenses[] = $componentAmount;
 
-                    if ($component->component->value_type == 'fixed') {
-                        $totalExpenses[] = $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'percent') {
-                        $totalExpenses[] = ($request->annualSalary / 12) / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'basic_percent') {
-                        $totalExpenses[] = $this->basicSalary / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'variable') {
-                        $totalExpenses[] = $component->component->component_value;
-                    }
                 }
             }
         }
@@ -463,7 +458,8 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         $this->totalExpenses = $totalExpenses;
         $this->expenses = array_sum($totalExpenses);
 
-        $this->fixedAllowance = (($request->annualSalary / 12) - ($this->basicSalary + array_sum($totalEarnings)));
+        $this->fixedAllowance = $this->blankSalaryComponentValues ? '' : 0;
+        $this->annualSalary = (((float)$this->basicSalary + array_sum($totalEarnings) + (float)$this->fixedAllowance) - array_sum($totalExpenses)) * 12;
 
         $view = view('payroll::employee-salary.ajax.salary-component', $this->data)->render();
 
@@ -483,7 +479,7 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         }
 
         $this->annualSalary = $request->annualSalary;
-        $this->salaryGroup = EmployeeSalaryGroup::with('salary_group.components', 'salary_group.components.component')->where('user_id', $request->userId)->first();
+        $this->setSalaryComponents();
         $this->employeeMonthlySalary = EmployeeMonthlySalary::where('user_id', $request->userId)->first();
         $this->employeeVariableSalaries = EmployeeVariableComponent::with('component')->where('monthly_salary_id', $this->employeeMonthlySalary->id)->get() ?? [''];
         $this->currency = PayrollSetting::with('currency')->first();
@@ -495,69 +491,27 @@ class EmployeeMonthlySalaryController extends AccountBaseController
 
         $this->payrollController = new EmployeeMonthlySalaryController();
 
-        if (!is_null($this->salaryGroup)) {
-            foreach ($this->salaryGroup->salary_group->components as $component) {
+        if ($this->salaryComponents->count() > 0) {
+            foreach ($this->salaryComponents as $component) {
+                $componentAmount = $this->componentMonthlyValue($component, $this->employeeMonthlySalary->annual_salary, $this->basicSalary, $this->employeeVariableSalaries);
 
-                if ($component->component->component_type == 'earning') {
-                    if ($component->component->value_type == 'fixed') {
-                        $totalEarnings[] += $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'percent') {
-                        $totalEarnings[] += ($this->employeeMonthlySalary->annual_salary / 12) / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'basic_percent') {
-                        $totalEarnings[] += $this->basicSalary / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'variable') {
-                        $compValue = $this->employeeVariableSalaries->where('variable_component_id', $component->component->id)->first();
-
-                        if($compValue){
-                            $totalEarnings[] = $compValue->variable_value;
-                        }
-                        else{
-                            $totalEarnings[] = $component->component->component_value;
-                        }
-                    }
+                if ($component->component_type == 'earning') {
+                    $totalEarnings[] = $componentAmount;
                 }
                 else {
+                    $totalExpenses[] = $componentAmount;
+                    $this->deductionTotalWithoutVar = array_sum($totalExpenses);
 
-                    if ($component->component->value_type == 'fixed') {
-                        $totalExpenses[] = $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'percent') {
-                        $totalExpenses[] = ($this->employeeMonthlySalary->annual_salary / 12) / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'basic_percent') {
-                        $totalExpenses[] = $this->basicSalary / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'variable') {
-                        $compValueDeduction = $this->employeeVariableSalaries->where('variable_component_id', $component->component->id)->first();
-
-                        if($compValueDeduction){
-                            $totalExpenses[] = $compValueDeduction->variable_value;
-                            $this->deductionTotalWithoutVar = array_sum($totalExpenses);
-                        }
-                        else{
-                            $totalExpenses[] = $component->component->component_value;
-                            $this->deductionTotalWithoutVar = array_sum($totalExpenses);
-                        }
-                    }
                 }
             }
         }
-
 
         $this->totalEarnings = $totalEarnings;
         $this->totalExpenses = $totalExpenses;
         $this->expenses = array_sum($totalExpenses);
 
-        $this->fixedAllowance = (($request->annualSalary / 12) - ($this->basicSalary + array_sum($totalEarnings)));
+        $this->fixedAllowance = is_numeric($this->employeeMonthlySalary->fixed_allowance) ? $this->employeeMonthlySalary->fixed_allowance : 0;
+        $this->annualSalary = (($this->basicSalary + array_sum($totalEarnings) + $this->fixedAllowance) - array_sum($totalExpenses)) * 12;
 
         $view = view('payroll::employee-salary.ajax.salary-update-component', $this->data)->render();
 
@@ -568,7 +522,7 @@ class EmployeeMonthlySalaryController extends AccountBaseController
     {
         $this->user_id = $id;
         $this->employee = User::findOrFail($id);
-        $this->salaryGroup = EmployeeSalaryGroup::with('salary_group.components', 'salary_group.components.component')->where('user_id', $id)->first();
+        $this->setSalaryComponents();
         $this->employeeMonthlySalary = EmployeeMonthlySalary::where('user_id', $id)->first();
         $this->payrollController = new EmployeeMonthlySalaryController();
         $this->currency = PayrollSetting::with('currency')->first();
@@ -585,62 +539,17 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         $totalExpenses = [];
         $this->deductionTotalWithoutVar = 0;
 
-        if (!is_null($this->salaryGroup)) {
+        if ($this->salaryComponents->count() > 0) {
+            foreach ($this->salaryComponents as $component) {
+                $componentAmount = $this->componentMonthlyValue($component, $this->employeeMonthlySalary->annual_salary, $this->basicSalary, $this->employeeVariableSalaries);
 
-            foreach ($this->salaryGroup->salary_group->components as $component) {
-
-                if ($component->component->component_type == 'earning') {
-                    if ($component->component->value_type == 'fixed') {
-                        $totalEarnings[] += $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'percent') {
-                        $totalEarnings[] += ($this->employeeMonthlySalary->annual_salary / 12) / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'basic_percent') {
-                        $totalEarnings[] += $this->basicSalary / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'variable') {
-                        $compValue = $this->employeeVariableSalaries->where('variable_component_id', $component->component->id)->first() ?? null;
-
-                        if($compValue){
-                            $totalEarnings[] = $compValue->variable_value;
-                        }
-                        else{
-                            $totalEarnings[] = $component->component->component_value;
-                        }
-                    }
+                if ($component->component_type == 'earning') {
+                    $totalEarnings[] = $componentAmount;
                 }
                 else {
+                    $totalExpenses[] = $componentAmount;
+                    $this->deductionTotalWithoutVar = array_sum($totalExpenses);
 
-                    if ($component->component->value_type == 'fixed') {
-                        $totalExpenses[] = $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'percent') {
-                        $totalExpenses[] = ($this->employeeMonthlySalary->annual_salary / 12) / 100 * $component->component->component_value;
-                    }
-
-                    if ($component->component->value_type == 'basic_percent') {
-                        $totalExpenses[] = $this->basicSalary / 100 * $component->component->component_value;
-                    }
-
-
-                    if ($component->component->value_type == 'variable') {
-                        $compValueDeduction = $this->employeeVariableSalaries->where('variable_component_id', $component->component->id)->first();
-
-                        if($compValueDeduction){
-                            $totalExpenses[] = $compValueDeduction->variable_value;
-                            $this->deductionTotalWithoutVar = array_sum($totalExpenses);
-
-                        }
-                        else{
-                            $totalExpenses[] = $component->component->component_value;
-                            $this->deductionTotalWithoutVar = array_sum($totalExpenses);
-                        }
-                    }
                 }
             }
         }
@@ -650,7 +559,9 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         $this->expenses = array_sum($totalExpenses);
 
 
-        $this->fixedAllowance = is_int($this->employeeMonthlySalary->fixed_allowance) ? $this->employeeMonthlySalary->fixed_allowance : 0;
+        $this->fixedAllowance = is_numeric($this->employeeMonthlySalary->fixed_allowance) ? $this->employeeMonthlySalary->fixed_allowance : 0;
+        $this->employeeMonthlySalary->effective_annual_salary = (($this->basicSalary + array_sum($totalEarnings) + $this->fixedAllowance) - array_sum($totalExpenses)) * 12;
+        $this->employeeMonthlySalary->effective_monthly_salary = $this->employeeMonthlySalary->effective_annual_salary / 12;
 
         if (request()->ajax()) {
             $this->pageTitle = __('payroll::app.menu.payroll');
@@ -674,10 +585,12 @@ class EmployeeMonthlySalaryController extends AccountBaseController
 
         if ($request->annual_salary > 0) {
             $salary->user_id = $request->user_id;
+            $salary->annual_salary = $request->annual_salary;
             $salary->effective_annual_salary = $request->annual_salary;
             $salary->basic_salary = $request->basic_salary;
             $salary->basic_value_type = $request->basic_value;
             $salary->effective_monthly_salary = $request->annual_salary / 12;
+            $salary->amount = $request->annual_salary / 12;
             $salary->type = $request->type;
             $salary->fixed_allowance = $request->fixedAllowance;
             $salary->date = now()->timezone($this->company->timezone)->toDateString();
@@ -718,6 +631,31 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         return Reply::successWithData(__('messages.updateSuccess'), ['redirectUrl' => route('employee-salary.index')]);
     }
 
+    public function componentMonthlyValue($component, $annualSalary, $basicSalary, $employeeVariableSalaries = null)
+    {
+        if ($employeeVariableSalaries) {
+            $savedValue = $employeeVariableSalaries->where('variable_component_id', $component->id)->first();
+
+            if ($savedValue) {
+                return (float) $savedValue->variable_value;
+            }
+        }
+
+        if ($component->value_type == 'fixed' || $component->value_type == 'variable') {
+            return (float) $component->component_value;
+        }
+
+        if ($component->value_type == 'percent') {
+            return (($annualSalary / 12) / 100) * $component->component_value;
+        }
+
+        if ($component->value_type == 'basic_percent') {
+            return ($basicSalary / 100) * $component->component_value;
+        }
+
+        return 0;
+    }
+
     public function currencyFormatterCustom($amount)
     {
         $formats = currency_format_setting();
@@ -729,4 +667,12 @@ class EmployeeMonthlySalaryController extends AccountBaseController
         return number_format($amount, $no_of_decimal, $decimal_separator, $thousand_separator);
     }
 
+
+    private function setSalaryComponents()
+    {
+        $this->salaryComponents = SalaryComponent::orderBy('component_type')
+            ->orderBy('component_name')
+            ->whereNotIn('component_name', ['Basic', 'Special Allowance'])
+            ->get();
+    }
 }

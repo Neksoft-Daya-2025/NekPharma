@@ -184,7 +184,10 @@
                                         </td>
                                         <td class="text-center">
                                             @php
-                                                $canApproveThis = user()->permission('approve_dcr_reports') === 'all' || $report->submitted_to == user()->id || in_array((int) $report->user_id, array_map('intval', $reportingDescendantUserIds), true);
+                                                $canApproveThis = user()->permission('approve_dcr_reports') === 'all'
+                                                    || $report->submitted_to == user()->id
+                                                    || in_array((int) $report->user_id, array_map('intval', $reportingDescendantUserIds), true)
+                                                    || in_array((int) $report->user_id, $zonalApprovalUserIds ?? [], true);
                                             @endphp
                                             @if($canApproveThis && ($report->status == 'pending' || !$report->status))
                                                 <button type="button" class="btn btn-sm btn-success approve-dcr-btn" data-id="{{ $report->id }}" title="Approve">
@@ -571,4 +574,3 @@ $(document).ready(function() {
 });
 </script>
 @endpush
-

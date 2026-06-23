@@ -92,16 +92,13 @@ class AttendanceReportDataTable extends BaseDataTable
                 $ed = $row->employeeDetail;
                 return $ed && $ed->headquarter ? $ed->headquarter->name : '-';
             })
-            ->addColumn('present_days', fn($row) => $this->daysPresent = Attendance::countDaysPresentByUser($startDate, $endDate, $row->id) ?: '0')
+            ->addColumn('present_days', fn($row) => Attendance::countDaysPresentByUser($startDate, $endDate, $row->id) ?: '0')
             ->addColumn('extra_days', fn($row) => $this->extraDays($startDate, $endDate, $row->id, $holidays))
-            ->addColumn('absent_days', function ($row) {
-                $this->holidaysCount = $this->holidaysCount - $this->extraDays;
+            ->addColumn('absent_days', function ($row) use ($startDate, $endDate, $holidays) {
+                $daysPresent = Attendance::countDaysPresentByUser($startDate, $endDate, $row->id);
+                $extraDays = $this->extraDays($startDate, $endDate, $row->id, $holidays);
 
-                if ($this->holidaysCount > 0) {
-                    return (($this->totalWorkingDays - ($this->daysPresent + $this->extraDays + $this->holidaysCount)) <= 0) ? '0' : ($this->totalWorkingDays - ($this->daysPresent + $this->extraDays + $this->holidaysCount));
-                }
-
-                return (($this->totalWorkingDays - ($this->daysPresent + $this->extraDays)) <= 0) ? '0' : ($this->totalWorkingDays - ($this->daysPresent + $this->extraDays));
+                return self::calculateAbsentDaysForReport($this->totalWorkingDays, $daysPresent, $extraDays, $this->holidaysCount);
             })
             ->addColumn('hours_clocked', fn($row) => $this->calculateHours($period, $row))
             ->addColumn('late_day_count', fn($row) => Attendance::countDaysLateByUser($startDate, $endDate, $row->id) ?: '0')
@@ -173,6 +170,13 @@ class AttendanceReportDataTable extends BaseDataTable
             __('app.days') . ' ' . __('modules.attendance.late') => ['data' => 'late_day_count', 'name' => 'late_day_count', 'title' => __('app.days') . ' ' . __('modules.attendance.late')],
             __('modules.attendance.halfDay') => ['data' => 'half_day_count', 'name' => 'half_day_count', 'title' => __('modules.attendance.halfDay')],
         ];
+    }
+
+    public static function calculateAbsentDaysForReport(int $totalWorkingDays, int $daysPresent, int $extraDays, int $holidaysCount): int
+    {
+        $holidaysWithoutAttendance = max(0, $holidaysCount - $extraDays);
+
+        return max(0, $totalWorkingDays - ($daysPresent + $holidaysWithoutAttendance));
     }
 
     public function calculateHours($period, $user)

@@ -23,10 +23,9 @@ class SalesPlanExport implements FromCollection, WithHeadings, WithMapping, Shou
     {
         return [
             'Period',
-            'Headquarter',
-            'Assigned Employees',
+            'Plan Level',
+            'Scope',
             'Product',
-            'Target Qty',
             'Target Amount',
             'Notes',
         ];
@@ -36,10 +35,9 @@ class SalesPlanExport implements FromCollection, WithHeadings, WithMapping, Shou
     {
         return [
             \Carbon\Carbon::create()->month((int) $target->period_month)->format('F') . ' ' . $target->period_year,
-            $target->headquarter->name ?? '-',
-            $target->assigned_employee_names ?? '-',
-            $target->product->name ?? '-',
-            (float) ($target->target_qty ?? 0),
+            ucfirst((string) $target->plan_level),
+            $target->scope_name,
+            $target->product->name ?? 'All Products',
             (float) $target->target_amount,
             $target->notes ?? '',
         ];

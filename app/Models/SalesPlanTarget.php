@@ -14,6 +14,7 @@ class SalesPlanTarget extends BaseModel
 
     protected $fillable = [
         'company_id',
+        'plan_type',
         'period_month',
         'period_year',
         'plan_level',

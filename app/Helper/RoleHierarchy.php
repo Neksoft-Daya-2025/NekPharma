@@ -12,6 +12,21 @@ use Illuminate\Support\Facades\DB;
  */
 class RoleHierarchy
 {
+    private const ROLE_LEVEL_FALLBACKS = [
+        'medical-representative' => 1,
+        'area-business-manager' => 2,
+        'regional-manager' => 3,
+        'regional-business-manager' => 3,
+        'zonal-manager' => 4,
+        'zonal-business-manager' => 4,
+        'sales-manager' => 5,
+        'pmt' => 6,
+        'hr' => 7,
+        'hr-manager' => 7,
+        'admin' => 8,
+        'senior-manager-pmt' => 8,
+    ];
+
     /**
      * User IDs that the viewer is allowed to see (viewer's level >= target's level).
      * Use for query scoping (e.g. whereIn('user_id', ...)).
@@ -42,8 +57,18 @@ class RoleHierarchy
         $userIds = DB::table('role_user')
             ->join('roles', 'roles.id', '=', 'role_user.role_id')
             ->where('roles.company_id', $companyId)
-            ->whereNotNull('roles.hierarchy_level')
-            ->where('roles.hierarchy_level', '<=', $viewerLevel)
+            ->where(function ($query) use ($viewerLevel) {
+                $query->where(function ($levelQuery) use ($viewerLevel) {
+                    $levelQuery->whereNotNull('roles.hierarchy_level')
+                        ->where('roles.hierarchy_level', '<=', $viewerLevel);
+                });
+
+                foreach (self::ROLE_LEVEL_FALLBACKS as $roleName => $level) {
+                    if ($level <= $viewerLevel) {
+                        $query->orWhere('roles.name', $roleName);
+                    }
+                }
+            })
             ->distinct()
             ->pluck('role_user.user_id')
             ->toArray();
@@ -71,7 +96,9 @@ class RoleHierarchy
         if (!$user || !$user->roles) {
             return null;
         }
-        $levels = $user->roles->pluck('hierarchy_level')->filter()->values();
+        $levels = $user->roles->map(function ($role) {
+            return $role->hierarchy_level ?: (self::ROLE_LEVEL_FALLBACKS[$role->name] ?? null);
+        })->filter()->values();
         return $levels->isEmpty() ? null : (int) $levels->max();
     }
 

@@ -3,7 +3,6 @@
 namespace App\Exports;
 
 use App\Models\Attendance;
-use Carbon\CarbonInterval;
 use App\Models\AttendanceSetting;
 use App\Models\EmployeeDetails;
 use App\Models\EmployeeShiftSchedule;
@@ -145,13 +144,13 @@ class AttendanceExport implements FromCollection, WithHeadings, WithMapping, Wit
                   });
         });
 
-        $employees = $employees->select('users.name', 'users.id')->get();
+        $employees = $employees->select('employee_details.*', 'users.name', 'users.id as employee_user_id')->get();
         $employeedata = array();
         $emp_attendance = 1;
         $employee_index = 0;
 
         foreach ($employees as $employee) {
-            $userId = $employee->id;
+            $userId = $employee->employee_user_id;
             $employeedata[$employee_index]['employee_name'] = $employee->name;
             $employeedata[$employee_index]['employee_id'] = $employee->employee_id ?? '-';
             $employeedata[$employee_index]['designation'] = $employee->designation->name ?? '-';
@@ -376,15 +375,19 @@ class AttendanceExport implements FromCollection, WithHeadings, WithMapping, Wit
 
             $emp_status = $employeedata['dates'][$index]['comments']['status'];
 
-            if (str_contains($emp_status, 'Holiday') || $employeedata['dates'][$index]['total_hours'] < 1) {
-                $data[] = $employeedata['dates'][$index]['comments']['status'];
-            }
-            else {
-                $data[] = CarbonInterval::formatHuman($employeedata['dates'][$index]['total_hours']);
-            }
+            $data[] = self::statusForExportCell($emp_status, $employeedata['dates'][$index]['total_hours']);
         }
 
         return $data;
+    }
+
+    public static function statusForExportCell(string $status, int $totalMinutes): string
+    {
+        if ($totalMinutes > 0) {
+            return 'Present';
+        }
+
+        return $status;
     }
 
     public function checkHolidays($attendances, $date)

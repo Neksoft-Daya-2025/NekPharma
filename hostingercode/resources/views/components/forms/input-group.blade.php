@@ -1,4 +1,12 @@
-<div {{ $attributes->merge(['class' => 'input-group']) }}>
+@php
+    $defaultAttributes = ['class' => 'input-group'];
+
+    if ($id) {
+        $defaultAttributes['id'] = $id;
+    }
+@endphp
+
+<div {{ $attributes->merge($defaultAttributes) }}>
     @if ($prepend)
         <div class="input-group-prepend">
             {!! $prepend !!}

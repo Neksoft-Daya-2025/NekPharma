@@ -33,6 +33,10 @@ class EmployeeSalaryDataTable extends BaseDataTable
             ->eloquent($query)
             ->addColumn('action', function ($row) {
                     $salary = EmployeeMonthlySalary::employeeNetSalary($row->id);
+                    $userRoles = collect(user_roles())->map(function ($role) {
+                        return strtolower($role);
+                    })->toArray();
+                    $canDeleteSalary = in_array('admin', $userRoles) || in_array('hr', $userRoles) || in_array('hr-manager', $userRoles);
                     $action = '<div class="task_view">
                         <div class="dropdown">
                             <a class="task_view_more d-flex align-items-center justify-content-center dropdown-toggle" type="link"
@@ -48,6 +52,10 @@ class EmployeeSalaryDataTable extends BaseDataTable
                                     </a>';
                     $action .= '<a href="javascript:;" data-user-id="' . $row->id . '" class="dropdown-item update-salary" ><i class="fa fa-plus"></i> ' .  __('payroll::modules.payroll.increment') . '</a>';
                     $action .= '<a href="javascript:;" data-user-id="' . $row->id . '" class="dropdown-item salary-history" ><i class="fa fa-eye"></i> ' .__('payroll::modules.payroll.salaryHistory'). '</a>';
+
+                    if ($canDeleteSalary) {
+                        $action .= '<a href="javascript:;" data-user-id="' . $row->id . '" class="dropdown-item delete-employee-salary" ><i class="fa fa-trash mr-2"></i> ' . trans('app.delete') . '</a>';
+                    }
                 }
                 else{
                     $action = '<a href="' . route('employee-salary.make-salary', [$row->id]) . '" data-user-id="' . $row->id . '" class="dropdown-item add-salary openRightModal float-left" ><i class="fa fa-plus"></i> ' .__('payroll::modules.payroll.addSalary'). '</a>';

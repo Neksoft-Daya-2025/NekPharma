@@ -20,15 +20,15 @@ class DcrManagementExport implements FromCollection, WithHeadings, WithMapping, 
             $rows = collect();
 
             foreach ($report->doctorVisits as $visit) {
-                $rows->push($this->visitRow($report, 'Doctor', $visit->doctor->fullname ?? $visit->doctor_name ?? '-', $visit->speciality ?? '-', $this->products($visit), $visit->pob, $visit->general_remark ?? null));
+                $rows->push($this->visitRow($report, 'Doctor', $visit->doctor->fullname ?? $visit->doctor_name ?? '-', $visit->speciality ?? '-', $this->products($visit), $visit->pob, $visit->general_remark ?? null, $visit));
             }
 
             foreach ($report->chemistVisits as $visit) {
-                $rows->push($this->visitRow($report, 'Chemist', $visit->chemist->shopname ?? $visit->chemist_name ?? '-', null, $this->rcpa($visit), null, $visit->general_remark ?? null));
+                $rows->push($this->visitRow($report, 'Chemist', $visit->chemist->shopname ?? $visit->chemist_name ?? '-', null, $this->rcpa($visit), null, $visit->general_remark ?? null, $visit));
             }
 
             foreach ($report->stockistVisits as $visit) {
-                $rows->push($this->visitRow($report, 'Stockist', $visit->stockist->shopname ?? $visit->stockist_name ?? '-', null, null, $visit->pob ?? null, $visit->remark ?? null));
+                $rows->push($this->visitRow($report, 'Stockist', $visit->stockist->shopname ?? $visit->stockist_name ?? '-', null, null, $visit->pob ?? null, $visit->remark ?? null, $visit));
             }
 
             if ($rows->isEmpty()) {
@@ -43,6 +43,18 @@ class DcrManagementExport implements FromCollection, WithHeadings, WithMapping, 
                 if ($report->stockist_id) {
                     $rows->push($this->visitRow($report, 'Stockist', optional($report->stockist)->shopname ?? '-', null, null, $report->pob_stockist ?? $report->stockist_pob_amount, $report->stockist_general_remark ?? $report->stockist_remark));
                 }
+
+                if ($rows->isEmpty()) {
+                    $rows->push($this->visitRow(
+                        $report,
+                        'Other Work',
+                        $report->work_status ?: '-',
+                        null,
+                        null,
+                        null,
+                        $report->remark ?: null
+                    ));
+                }
             }
 
             return $rows;
@@ -51,7 +63,7 @@ class DcrManagementExport implements FromCollection, WithHeadings, WithMapping, 
 
     public function headings(): array
     {
-        return ['Date', 'Employee', 'HQ', 'Station', 'Work Status', 'Party Type', 'Party Name', 'Speciality', 'Products/RCPA', 'POB', 'Remark', 'Status'];
+        return ['Date', 'Employee', 'HQ', 'Station', 'Time', 'Location', 'Work Status', 'Party Type', 'Party Name', 'Speciality', 'Products/RCPA', 'POB', 'Remark', 'Status'];
     }
 
     public function map($row): array
@@ -59,13 +71,15 @@ class DcrManagementExport implements FromCollection, WithHeadings, WithMapping, 
         return $row;
     }
 
-    private function visitRow($report, string $partyType, string $partyName, ?string $speciality, ?string $products, $pob, ?string $remark): array
+    private function visitRow($report, string $partyType, string $partyName, ?string $speciality, ?string $products, $pob, ?string $remark, $visit = null): array
     {
         return [
             optional($report->report_date)->format(company()->date_format) ?? $report->report_date,
-            optional($report->user)->name ?? '-',
+            $report->employee_name_snapshot ?? optional($report->user)->name ?? ('Employee #' . $report->user_id),
             $report->headquarter ?? '-',
             $report->station ?? '-',
+            $this->visitTime($visit ?: $report),
+            $this->visitLocation($visit),
             $report->work_status ?? '-',
             $partyType,
             $partyName,
@@ -85,5 +99,21 @@ class DcrManagementExport implements FromCollection, WithHeadings, WithMapping, 
     private function rcpa($visit): string
     {
         return collect([$visit->rcpa1, $visit->rcpa2, $visit->rcpa3, $visit->rcpa4])->filter()->implode(', ');
+    }
+
+    private function visitTime($record): string
+    {
+        return $record && $record->created_at
+            ? $record->created_at->timezone(company()->timezone)->format('h:i A')
+            : '-';
+    }
+
+    private function visitLocation($visit): string
+    {
+        if (! $visit || $visit->latitude === null || $visit->longitude === null || $visit->latitude === '' || $visit->longitude === '') {
+            return '-';
+        }
+
+        return $visit->latitude . ', ' . $visit->longitude;
     }
 }

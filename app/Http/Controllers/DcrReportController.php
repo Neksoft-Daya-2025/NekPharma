@@ -26,6 +26,8 @@ use App\Models\TourMonthLock;
 use App\Models\PharmaHeadquarterAssign;
 use App\Exports\DcrManagementExport;
 use App\Notifications\DcrSubmitted;
+use App\Helpers\PharmaDesignationHelper;
+use App\Scopes\ActiveScope;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -62,10 +64,17 @@ class DcrReportController extends AccountBaseController
             $this->approvePermission = user()->permission('approve_dcr_reports');
             $approvePerm = $this->approvePermission;
             $hasApprovePermission = in_array($approvePerm, ['all', 'added', 'owned', 'both'], true);
-            $hasDcrsSubmittedToMe = DcrReport::where('submitted_to', user()->id)
+            $submittedEmployeeIdsForApproval = DcrReport::where('submitted_to', user()->id)
                 ->where('company_id', company()->id)
-                ->exists();
+                ->distinct()
+                ->pluck('user_id')
+                ->toArray();
+            $hasDcrsSubmittedToMe = ! empty($submittedEmployeeIdsForApproval);
             $reportingDescendantIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+            $viewableIdsForApproval = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+            $isZonalManager = $this->userIsZonalManager(user());
+            $reportingDescendantIds = array_values(array_intersect($reportingDescendantIds, $viewableIdsForApproval));
+            $approvalEmployeeIds = array_values(array_unique(array_merge($submittedEmployeeIdsForApproval, $reportingDescendantIds)));
             $hasReportingEmployees = $reportingDescendantIds !== [];
             $hasReportingEmployeesWithDcrs = false;
             if ($hasReportingEmployees) {
@@ -80,12 +89,15 @@ class DcrReportController extends AccountBaseController
             abort_403(! $canAccessApprovePage);
 
             $this->reportingDescendantUserIds = $reportingDescendantIds;
+            $this->zonalApprovalUserIds = $isZonalManager ? array_map('intval', $approvalEmployeeIds) : [];
 
             // Load employees with their headquarter and designation information
-            if ($this->viewPermission == 'all') {
-                $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-                $this->employees = User::with(['employeeDetail.designation', 'employeeDetail.headquarter'])
-                    ->whereHas('employeeDetail')
+            if ($this->viewPermission == 'all' && user()->hasAdminLikeAccess()) {
+                $viewableIds = $viewableIdsForApproval;
+                $this->employees = User::with(['employeeDetail.designation', 'employeeDetail.headquarter', 'employeeDetails.designation', 'employeeDetails.headquarter'])
+                    ->where(function ($q) {
+                        $q->whereHas('employeeDetail')->orWhereHas('employeeDetails');
+                    })
                     ->where('company_id', company()->id)
                     ->when(!empty($viewableIds), fn ($q) => $q->whereIn('id', $viewableIds))
                     ->orderBy('name')
@@ -94,31 +106,20 @@ class DcrReportController extends AccountBaseController
                         return [
                             'id' => $employee->id,
                             'name' => $employee->name,
-                            'designation' => optional($employee->employeeDetail)->designation->name ?? null,
-                            'headquarter_id' => optional($employee->employeeDetail)->headquarter_id,
-                            'headquarter_name' => optional($employee->employeeDetail->headquarter)->name ?? null,
+                            'designation' => optional($this->employeeDetailForUser($employee))->designation->name ?? null,
+                            'headquarter_id' => optional($this->employeeDetailForUser($employee))->headquarter_id,
+                            'headquarter_name' => optional(optional($this->employeeDetailForUser($employee))->headquarter)->name ?? null,
                         ];
                     });
             } else {
                 // Non-admin: employees who submitted DCRs to current user OR any descendant in reporting tree
-                $reportingEmployeeIds = $this->reportingDescendantUserIds;
-
-                // Get employee IDs from DCRs submitted to current user
-                $submittedEmployeeIds = DcrReport::where('submitted_to', user()->id)
-                    ->where('company_id', company()->id)
-                    ->distinct()
-                    ->pluck('user_id')
-                    ->toArray();
-                
-                // Combine both: employees who submitted to user + employees who report to user
-                $employeeIds = array_unique(array_merge($submittedEmployeeIds, $reportingEmployeeIds));
-                // Requirement 2.2: only include employees the current user can view by hierarchy
-                $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-                $employeeIds = array_values(array_intersect($employeeIds, $viewableIds));
+                $employeeIds = $approvalEmployeeIds;
                 
                 if (!empty($employeeIds)) {
-                    $this->employees = User::with(['employeeDetail.designation', 'employeeDetail.headquarter'])
-                        ->whereHas('employeeDetail')
+                    $this->employees = User::with(['employeeDetail.designation', 'employeeDetail.headquarter', 'employeeDetails.designation', 'employeeDetails.headquarter'])
+                        ->where(function ($q) {
+                            $q->whereHas('employeeDetail')->orWhereHas('employeeDetails');
+                        })
                         ->whereIn('id', $employeeIds)
                         ->where('company_id', company()->id)
                         ->orderBy('name')
@@ -127,9 +128,9 @@ class DcrReportController extends AccountBaseController
                             return [
                                 'id' => $employee->id,
                                 'name' => $employee->name,
-                                'designation' => optional($employee->employeeDetail)->designation->name ?? null,
-                                'headquarter_id' => optional($employee->employeeDetail)->headquarter_id,
-                                'headquarter_name' => optional($employee->employeeDetail->headquarter)->name ?? null,
+                                'designation' => optional($this->employeeDetailForUser($employee))->designation->name ?? null,
+                                'headquarter_id' => optional($this->employeeDetailForUser($employee))->headquarter_id,
+                                'headquarter_name' => optional(optional($this->employeeDetailForUser($employee))->headquarter)->name ?? null,
                             ];
                         });
                 } else {
@@ -150,55 +151,48 @@ class DcrReportController extends AccountBaseController
                 'stockistVisits.stockist'
             ]);
 
-            // Get accessible area IDs for filtering DCR reports by area
-            $accessibleAreaIds = $this->accessibleAreaIds();
-            $accessibleHqIdsForFilter = $this->accessibleHeadquarterIds();
-
-            if ($this->viewPermission == 'all') {
-                // Admin / view-all: restrict by hierarchy; non-admin also by HQ scope
+            if ($this->viewPermission == 'all' && user()->hasAdminLikeAccess()) {
+                // Admin / view-all: restrict by hierarchy.
                 $dcrQuery = $dcrQuery->where('company_id', company()->id);
-                $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
+                $viewableIds = $viewableIdsForApproval;
                 if (!empty($viewableIds)) {
                     $dcrQuery = $dcrQuery->whereIn('user_id', $viewableIds);
                 }
                 if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
                     $dcrQuery = $dcrQuery->where('user_id', $selectedEmployeeId);
                 }
-                // Non-admin with 'all' permission: still restrict by accessible HQs (Requirement 3.1.1)
-                if (!user()->hasAdminLikeAccess() && $accessibleHqIdsForFilter !== null) {
-                    if (!empty($accessibleHqIdsForFilter)) {
-                        $dcrQuery->whereHas('user.employeeDetail.headquarter', function ($hqQuery) use ($accessibleHqIdsForFilter) {
-                            $hqQuery->whereIn('id', $accessibleHqIdsForFilter);
-                        });
-                    } else {
-                        $dcrQuery->whereRaw('1 = 0');
-                    }
-                }
             } else {
                 // Non-admin: DCRs submitted to me, or from any descendant in the reporting tree (transitive)
-                $reportingEmployeeIds = $this->reportingDescendantUserIds;
-                $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-                $reportingEmployeeIds = array_values(array_intersect($reportingEmployeeIds, $viewableIds));
+                $reportingEmployeeIds = $reportingDescendantIds;
 
-                $dcrQuery = $dcrQuery->where(function($q) use ($reportingEmployeeIds) {
-                    $q->where('submitted_to', user()->id);
+                $approvalAccessibleHqIds = $this->accessibleHeadquarterIds();
 
-                    if (! empty($reportingEmployeeIds)) {
-                        $q->orWhereIn('user_id', $reportingEmployeeIds);
-                    }
-                })
-                ->where('company_id', company()->id);
-                
-                // Filter by accessible headquarters for ABM profiles
-                // DCR reports are filtered by the creator's headquarter
-                if ($accessibleHqIdsForFilter !== null && !empty($accessibleHqIdsForFilter)) {
-                    $dcrQuery->whereHas('user.employeeDetail.headquarter', function($hqQuery) use ($accessibleHqIdsForFilter) {
-                        $hqQuery->whereIn('id', $accessibleHqIdsForFilter);
+                $dcrQuery = $dcrQuery->where('company_id', company()->id)
+                    ->where(function($q) use ($reportingEmployeeIds, $approvalAccessibleHqIds) {
+                        $q->where('submitted_to', user()->id);
+
+                        if (! empty($reportingEmployeeIds)) {
+                            $q->orWhere(function($reportingQuery) use ($reportingEmployeeIds, $approvalAccessibleHqIds) {
+                                $reportingQuery->whereIn('user_id', $reportingEmployeeIds);
+
+                                if ($approvalAccessibleHqIds !== null) {
+                                    if (! empty($approvalAccessibleHqIds)) {
+                                        $reportingQuery->where(function($employeeHeadquarterQuery) use ($approvalAccessibleHqIds) {
+                                            $employeeHeadquarterQuery
+                                                ->whereHas('user.employeeDetail.headquarter', function($hqQuery) use ($approvalAccessibleHqIds) {
+                                                    $hqQuery->whereIn('id', $approvalAccessibleHqIds);
+                                                })
+                                                ->orWhereHas('user.employeeDetails.headquarter', function($hqQuery) use ($approvalAccessibleHqIds) {
+                                                    $hqQuery->whereIn('id', $approvalAccessibleHqIds);
+                                                });
+                                        });
+                                    } else {
+                                        $reportingQuery->whereRaw('1 = 0');
+                                    }
+                                }
+                            });
+                        }
                     });
-                } elseif ($accessibleHqIdsForFilter !== null && empty($accessibleHqIdsForFilter)) {
-                    // No accessible headquarters - return empty
-                    $dcrQuery->whereRaw('1 = 0');
-                }
                 
                 // If employee filter is set, filter by that employee
                 if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
@@ -236,55 +230,72 @@ class DcrReportController extends AccountBaseController
         // Get accessible area IDs for filtering DCR reports by area
         $accessibleAreaIds = $this->accessibleAreaIds();
         $accessibleHqIdsForFilter = $this->accessibleHeadquarterIds();
+        $viewableIds = user()->hasAdminLikeAccess()
+            ? []
+            : RoleHierarchy::userIdsViewableBy(user(), company()->id);
+        $reportingEmployeeIdsForStatus = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+        $reportingEmployeeIdsForStatus = array_values(array_intersect($reportingEmployeeIdsForStatus, $viewableIds));
+        $submittedEmployeeIdsForStatus = DcrReport::where('submitted_to', user()->id)
+            ->where('company_id', company()->id)
+            ->distinct()
+            ->pluck('user_id')
+            ->toArray();
+        $selectedHQ = $request->get('hq');
+        $this->selectedHQ = $selectedHQ;
+        $selectedArea = $request->get('area');
+        $this->selectedArea = $selectedArea;
+        $selectedRegion = $request->get('region');
+        $this->selectedRegion = $selectedRegion;
 
         if ($this->viewPermission == 'all') {
             $dcrQuery = $dcrQuery->where('company_id', company()->id);
-            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-            if (!empty($viewableIds)) {
+            if (!user()->hasAdminLikeAccess() && !empty($viewableIds)) {
                 $dcrQuery = $dcrQuery->whereIn('user_id', $viewableIds);
             }
             if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
                 $dcrQuery = $dcrQuery->where('user_id', $selectedEmployeeId);
             }
             // Non-admin with 'all' permission: still restrict by accessible HQs (Requirement 3.1.1)
-            if (!user()->hasAdminLikeAccess() && $accessibleHqIdsForFilter !== null) {
-                if (!empty($accessibleHqIdsForFilter)) {
-                    $dcrQuery->whereHas('user.employeeDetail.headquarter', function ($hqQuery) use ($accessibleHqIdsForFilter) {
-                        $hqQuery->whereIn('id', $accessibleHqIdsForFilter);
-                    });
-                } else {
-                    $dcrQuery->whereRaw('1 = 0');
-                }
+            if (!user()->hasAdminLikeAccess()) {
+                $this->applyDcrReportingHeadquarterScope($dcrQuery, $accessibleHqIdsForFilter, [user()->id]);
             }
         } else {
             // Non-admin: Show DCRs created by current user OR DCRs submitted to current user
-            $dcrQuery = $dcrQuery->where(function($q) {
-                $q->where('user_id', user()->id)
-                  ->orWhere('submitted_to', user()->id);
-            });
-            
-            // Also include DCRs from the full reporting subtree (transitive)
-            $reportingEmployeeIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
-            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-            $reportingEmployeeIds = array_values(array_intersect($reportingEmployeeIds, $viewableIds));
+            $reportingEmployeeIds = $reportingEmployeeIdsForStatus;
 
-            if (! empty($reportingEmployeeIds)) {
-                $dcrQuery = $dcrQuery->orWhere(function($q) use ($reportingEmployeeIds) {
-                    $q->whereIn('user_id', $reportingEmployeeIds);
+            $dcrQuery = $dcrQuery->where('company_id', company()->id)
+                ->where(function($q) use ($reportingEmployeeIds) {
+                    $q->where('user_id', user()->id)
+                        ->orWhere('submitted_to', user()->id);
+
+                    // Also include DCRs from the full reporting subtree (transitive)
+                    if (! empty($reportingEmployeeIds)) {
+                        $q->orWhereIn('user_id', $reportingEmployeeIds);
+                    }
                 });
-            }
             
             // Filter by accessible headquarters for ABM profiles
-            // DCR reports are filtered by the creator's headquarter
-            if ($accessibleHqIdsForFilter !== null && !empty($accessibleHqIdsForFilter)) {
-                $dcrQuery->whereHas('user.employeeDetail.headquarter', function($hqQuery) use ($accessibleHqIdsForFilter) {
-                    $hqQuery->whereIn('id', $accessibleHqIdsForFilter);
-                });
-            } elseif ($accessibleHqIdsForFilter !== null && empty($accessibleHqIdsForFilter)) {
-                // No accessible headquarters - return empty
-                $dcrQuery->whereRaw('1 = 0');
+            // DCR reports are filtered by report HQ first; self reports remain visible even if HR HQ is blank.
+            $this->applyDcrReportingHeadquarterScope($dcrQuery, $accessibleHqIdsForFilter, [user()->id]);
+
+            if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
+                $dcrQuery = $dcrQuery->where('user_id', $selectedEmployeeId);
             }
         }
+
+        $employeeIdsForFilter = $this->viewPermission == 'all' && user()->hasAdminLikeAccess()
+            ? []
+            : ($this->viewPermission == 'all'
+            ? $viewableIds
+            : array_values(array_unique(array_merge([user()->id], $submittedEmployeeIdsForStatus, $reportingEmployeeIdsForStatus))));
+        $this->employees = $this->dcrReportingEmployeesForFilter(
+            $employeeIdsForFilter,
+            $accessibleHqIdsForFilter,
+            user()->hasAdminLikeAccess() ? [] : [user()->id],
+            $selectedHQ,
+            $selectedArea,
+            $selectedRegion
+        );
         
         // Get date filters from request
         $fromDate = $request->get('from_date');
@@ -314,7 +325,7 @@ class DcrReportController extends AccountBaseController
         // Determine which employee to check
         $employeeToCheck = null;
         
-        if ($this->viewPermission == 'all') {
+        if ($this->viewPermission == 'all' && user()->hasAdminLikeAccess()) {
             // Admin user: show all headquarters (no filtering)
             // No need to set $employeeToCheck
         } else {
@@ -375,17 +386,36 @@ class DcrReportController extends AccountBaseController
         // Filter by Area (report's user's headquarter's area_id)
         if ($selectedArea) {
             $this->reports = $this->reports->filter(function($report) use ($selectedArea) {
-                $areaId = optional(optional(optional($report->user)->employeeDetail)->headquarter)->area_id;
+                $headquarter = $this->dcrReportHeadquarterForFilter($report, $this->headquarters);
+                $areaId = optional($headquarter)->area_id;
                 return $areaId != null && (int) $areaId === (int) $selectedArea;
             });
         }
 
-        // Filter by Region (report's user's headquarter's area's region_id)
+        // Filter by Region (DCR report headquarter's area's region_id)
         if ($selectedRegion) {
             $this->reports = $this->reports->filter(function($report) use ($selectedRegion) {
-                $regionId = optional(optional(optional(optional($report->user)->employeeDetail)->headquarter)->area)->region_id;
+                $headquarter = $this->dcrReportHeadquarterForFilter($report, $this->headquarters);
+                $regionId = optional(optional($headquarter)->area)->region_id;
                 return $regionId != null && (int) $regionId === (int) $selectedRegion;
             });
+        }
+
+        $this->showVisitEmployeeColumn = $this->viewPermission == 'all'
+            || user()->hasAdminLikeAccess()
+            || $this->reports->contains(fn ($report) => (int) $report->user_id !== (int) user()->id);
+        if ($this->showVisitEmployeeColumn) {
+            $this->reports = $this->reports->sort(function ($a, $b) {
+                $nameCompare = strcasecmp(
+                    $a->employee_name_snapshot ?? optional($a->user)->name ?? '',
+                    $b->employee_name_snapshot ?? optional($b->user)->name ?? ''
+                );
+                if ($nameCompare !== 0) {
+                    return $nameCompare;
+                }
+
+                return optional($b->report_date)->timestamp <=> optional($a->report_date)->timestamp;
+            })->values();
         }
 
         $this->dcrDraftResumeInfo = $this->buildDcrDraftResumeInfoFromPayload(null);
@@ -397,6 +427,238 @@ class DcrReportController extends AccountBaseController
         }
 
         return view('dcr-reports.index', $this->data);
+    }
+
+    private function dcrReportingEmployeesForFilter(
+        array $employeeIds,
+        ?array $accessibleHqIds,
+        array $alwaysIncludeUserIds = [],
+        $selectedHeadquarterId = null,
+        $selectedAreaId = null,
+        $selectedRegionId = null
+    )
+    {
+        $alwaysIncludeUserIds = array_values(array_unique(array_filter(array_map('intval', $alwaysIncludeUserIds))));
+        if (! empty($employeeIds)) {
+            $employeeIds = array_values(array_unique(array_merge(array_map('intval', $employeeIds), $alwaysIncludeUserIds)));
+        } elseif (! user()->hasAdminLikeAccess() && ! empty($alwaysIncludeUserIds)) {
+            $employeeIds = $alwaysIncludeUserIds;
+        }
+
+        $query = User::withoutGlobalScope(ActiveScope::class)
+            ->with(['employeeDetail.designation', 'employeeDetail.headquarter', 'employeeDetails.designation', 'employeeDetails.headquarter'])
+            ->where(function ($q) {
+                $q->whereHas('employeeDetail')->orWhereHas('employeeDetails');
+            })
+            ->where('company_id', company()->id);
+
+        if (! empty($employeeIds)) {
+            $query->whereIn('id', $employeeIds);
+        }
+
+        if (! user()->hasAdminLikeAccess() && $accessibleHqIds !== null) {
+            if (empty($accessibleHqIds)) {
+                if (empty($alwaysIncludeUserIds)) {
+                    return collect();
+                }
+
+                $query->whereIn('id', $alwaysIncludeUserIds);
+            } else {
+                $accessibleHqIds = array_values(array_unique(array_filter(array_map('intval', $accessibleHqIds))));
+                $accessibleHqNames = $this->headquarterNamesForIds($accessibleHqIds);
+
+                $query->where(function ($employeeHeadquarterQuery) use ($accessibleHqIds, $accessibleHqNames, $alwaysIncludeUserIds) {
+                    if (! empty($alwaysIncludeUserIds)) {
+                        $employeeHeadquarterQuery->whereIn('users.id', $alwaysIncludeUserIds);
+                    } else {
+                        $employeeHeadquarterQuery->whereRaw('1 = 0');
+                    }
+
+                    $employeeHeadquarterQuery
+                        ->orWhereHas('employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds))
+                        ->orWhereHas('employeeDetails.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds))
+                        ->orWhereExists(function ($dcrExists) use ($accessibleHqIds, $accessibleHqNames) {
+                            $dcrExists->select(DB::raw(1))
+                                ->from('dcr_reports')
+                                ->whereColumn('dcr_reports.user_id', 'users.id')
+                                ->where('dcr_reports.company_id', company()->id)
+                                ->whereNull('dcr_reports.deleted_at')
+                                ->where(function ($dcrHqQuery) use ($accessibleHqIds, $accessibleHqNames) {
+                                    $dcrHqQuery->whereIn('dcr_reports.headquarter_id_snapshot', $accessibleHqIds);
+
+                                    if (! empty($accessibleHqNames)) {
+                                        $dcrHqQuery->orWhereIn('dcr_reports.headquarter', $accessibleHqNames);
+                                    }
+                                });
+                        });
+                });
+            }
+        }
+
+        $selectedTerritoryHqIds = $this->headquarterIdsForSelectedReportingTerritory(
+            $selectedHeadquarterId,
+            $selectedAreaId,
+            $selectedRegionId
+        );
+
+        if (! empty($selectedTerritoryHqIds)) {
+            $selectedTerritoryHqNames = $this->headquarterNamesForIds($selectedTerritoryHqIds);
+
+            $query->where(function ($employeeHeadquarterQuery) use ($selectedTerritoryHqIds, $selectedTerritoryHqNames) {
+                $employeeHeadquarterQuery
+                    ->whereHas('employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $selectedTerritoryHqIds))
+                    ->orWhereHas('employeeDetails.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $selectedTerritoryHqIds))
+                    ->orWhereExists(function ($dcrExists) use ($selectedTerritoryHqIds, $selectedTerritoryHqNames) {
+                        $dcrExists->select(DB::raw(1))
+                            ->from('dcr_reports')
+                            ->whereColumn('dcr_reports.user_id', 'users.id')
+                            ->where('dcr_reports.company_id', company()->id)
+                            ->whereNull('dcr_reports.deleted_at')
+                            ->where(function ($dcrHqQuery) use ($selectedTerritoryHqIds, $selectedTerritoryHqNames) {
+                                $dcrHqQuery->whereIn('dcr_reports.headquarter_id_snapshot', $selectedTerritoryHqIds);
+
+                                if (! empty($selectedTerritoryHqNames)) {
+                                    $dcrHqQuery->orWhereIn('dcr_reports.headquarter', $selectedTerritoryHqNames);
+                                }
+                            });
+                    });
+            });
+        }
+
+        return $query->orderBy('name')
+            ->get()
+            ->map(function ($employee) {
+                $employeeDetail = $this->employeeDetailForUser($employee);
+
+                return [
+                    'id' => $employee->id,
+                    'name' => $employee->name,
+                    'designation' => optional(optional($employeeDetail)->designation)->name,
+                    'headquarter_name' => optional(optional($employeeDetail)->headquarter)->name,
+                ];
+            });
+    }
+
+    private function headquarterIdsForSelectedReportingTerritory($selectedHeadquarterId = null, $selectedAreaId = null, $selectedRegionId = null): array
+    {
+        if (! empty($selectedHeadquarterId)) {
+            return [(int) $selectedHeadquarterId];
+        }
+
+        $headquarterQuery = PharmaHeadquarter::where('company_id', company()->id);
+
+        if (! empty($selectedAreaId)) {
+            return $headquarterQuery
+                ->where('area_id', (int) $selectedAreaId)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->toArray();
+        }
+
+        if (! empty($selectedRegionId)) {
+            $areaIds = PharmaArea::where('company_id', company()->id)
+                ->where('region_id', (int) $selectedRegionId)
+                ->pluck('id');
+
+            if ($areaIds->isEmpty()) {
+                return [];
+            }
+
+            return $headquarterQuery
+                ->whereIn('area_id', $areaIds)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->toArray();
+        }
+
+        return [];
+    }
+
+    private function applyDcrReportingHeadquarterScope(Builder $query, ?array $accessibleHqIds, array $alwaysIncludeUserIds = []): void
+    {
+        if ($accessibleHqIds === null) {
+            return;
+        }
+
+        $alwaysIncludeUserIds = array_values(array_unique(array_filter(array_map('intval', $alwaysIncludeUserIds))));
+
+        if (empty($accessibleHqIds)) {
+            if (! empty($alwaysIncludeUserIds)) {
+                $query->whereIn('user_id', $alwaysIncludeUserIds);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+
+            return;
+        }
+
+        $accessibleHqIds = array_values(array_unique(array_filter(array_map('intval', $accessibleHqIds))));
+        $accessibleHqNames = $this->headquarterNamesForIds($accessibleHqIds);
+
+        $query->where(function ($dcrHeadquarterQuery) use ($accessibleHqIds, $accessibleHqNames, $alwaysIncludeUserIds) {
+            if (! empty($alwaysIncludeUserIds)) {
+                $dcrHeadquarterQuery->whereIn('user_id', $alwaysIncludeUserIds);
+            } else {
+                $dcrHeadquarterQuery->whereRaw('1 = 0');
+            }
+
+            $dcrHeadquarterQuery->orWhereIn('headquarter_id_snapshot', $accessibleHqIds);
+
+            if (! empty($accessibleHqNames)) {
+                $dcrHeadquarterQuery->orWhereIn('headquarter', $accessibleHqNames);
+            }
+
+            $dcrHeadquarterQuery
+                ->orWhereHas('user.employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds))
+                ->orWhereHas('user.employeeDetails.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds));
+        });
+    }
+
+    private function headquarterNamesForIds(array $headquarterIds): array
+    {
+        if (empty($headquarterIds)) {
+            return [];
+        }
+
+        return PharmaHeadquarter::where('company_id', company()->id)
+            ->whereIn('id', $headquarterIds)
+            ->pluck('name')
+            ->filter()
+            ->unique()
+            ->values()
+            ->toArray();
+    }
+
+    private function dcrReportHeadquarterForFilter($report, $headquarters)
+    {
+        if (! $report) {
+            return null;
+        }
+
+        if (! empty($report->headquarter_id_snapshot)) {
+            $headquarter = $headquarters->firstWhere('id', (int) $report->headquarter_id_snapshot);
+            if ($headquarter) {
+                return $headquarter;
+            }
+        }
+
+        if (! empty($report->headquarter)) {
+            $headquarterName = trim($report->headquarter);
+            $headquarter = $headquarters->first(function ($hq) use ($headquarterName) {
+                return strcasecmp(trim($hq->name ?? ''), $headquarterName) === 0;
+            });
+            if ($headquarter) {
+                return $headquarter;
+            }
+        }
+
+        $employeeDetail = optional($report->user)->employeeDetail ?? optional($report->user)->employeeDetails;
+
+        return optional($employeeDetail)->headquarter;
     }
 
     public function export(Request $request)
@@ -435,38 +697,37 @@ class DcrReportController extends AccountBaseController
 
         if ($this->viewPermission == 'all') {
             $query->where('company_id', company()->id);
-            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-            if (!empty($viewableIds)) {
+            $viewableIds = user()->hasAdminLikeAccess()
+                ? []
+                : RoleHierarchy::userIdsViewableBy(user(), company()->id);
+            if (!user()->hasAdminLikeAccess() && !empty($viewableIds)) {
                 $query->whereIn('user_id', $viewableIds);
             }
             if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
                 $query->where('user_id', $selectedEmployeeId);
             }
-            if (!user()->hasAdminLikeAccess() && $accessibleHqIds !== null) {
-                if (!empty($accessibleHqIds)) {
-                    $query->whereHas('user.employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds));
-                } else {
-                    $query->whereRaw('1 = 0');
-                }
+            if (!user()->hasAdminLikeAccess()) {
+                $this->applyDcrReportingHeadquarterScope($query, $accessibleHqIds, [user()->id]);
             }
         } else {
-            $query->where(function ($q) {
-                $q->where('user_id', user()->id)
-                    ->orWhere('submitted_to', user()->id);
-            });
-
             $reportingEmployeeIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
             $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
             $reportingEmployeeIds = array_values(array_intersect($reportingEmployeeIds, $viewableIds));
 
-            if (!empty($reportingEmployeeIds)) {
-                $query->orWhere(fn ($q) => $q->whereIn('user_id', $reportingEmployeeIds));
-            }
+            $query->where('company_id', company()->id)
+                ->where(function ($q) use ($reportingEmployeeIds) {
+                    $q->where('user_id', user()->id)
+                        ->orWhere('submitted_to', user()->id);
 
-            if ($accessibleHqIds !== null && !empty($accessibleHqIds)) {
-                $query->whereHas('user.employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds));
-            } elseif ($accessibleHqIds !== null && empty($accessibleHqIds)) {
-                $query->whereRaw('1 = 0');
+                    if (!empty($reportingEmployeeIds)) {
+                        $q->orWhereIn('user_id', $reportingEmployeeIds);
+                    }
+                });
+
+            $this->applyDcrReportingHeadquarterScope($query, $accessibleHqIds, [user()->id]);
+
+            if ($selectedEmployeeId && $selectedEmployeeId != 'all') {
+                $query->where('user_id', $selectedEmployeeId);
             }
         }
 
@@ -491,12 +752,18 @@ class DcrReportController extends AccountBaseController
 
         if ($request->get('area')) {
             $selectedArea = (int) $request->get('area');
-            $reports = $reports->filter(fn ($report) => (int) optional(optional(optional($report->user)->employeeDetail)->headquarter)->area_id === $selectedArea);
+            $reports = $reports->filter(function ($report) use ($selectedArea, $headquarters) {
+                $headquarter = $this->dcrReportHeadquarterForFilter($report, $headquarters);
+                return (int) optional($headquarter)->area_id === $selectedArea;
+            });
         }
 
         if ($request->get('region')) {
             $selectedRegion = (int) $request->get('region');
-            $reports = $reports->filter(fn ($report) => (int) optional(optional(optional(optional($report->user)->employeeDetail)->headquarter)->area)->region_id === $selectedRegion);
+            $reports = $reports->filter(function ($report) use ($selectedRegion, $headquarters) {
+                $headquarter = $this->dcrReportHeadquarterForFilter($report, $headquarters);
+                return (int) optional(optional($headquarter)->area)->region_id === $selectedRegion;
+            });
         }
 
         return $reports->values();
@@ -507,7 +774,7 @@ class DcrReportController extends AccountBaseController
         $query = PharmaHeadquarter::with(['exstations', 'outstations', 'area'])
             ->where('company_id', company()->id);
 
-        if ($this->viewPermission != 'all') {
+        if ($this->viewPermission != 'all' || ! user()->hasAdminLikeAccess()) {
             $accessibleHqIds = $this->accessibleHeadquarterIds(user());
             if ($accessibleHqIds === null) {
                 return $query->orderBy('name')->get();
@@ -847,6 +1114,13 @@ class DcrReportController extends AccountBaseController
         // Get accessible headquarters for filtering
         $accessibleHqIds = $this->accessibleHeadquarterIds();
         $accessibleAreaIds = $this->accessibleAreaIds();
+        $hasFullPharmaAccess = $accessibleHqIds === null;
+        $this->stationRequiresHeadquarterSelection = user()->hasAdminLikeAccess() || ($hasFullPharmaAccess && ! user()->hasAdminLikeAccess());
+        $this->lockStationForZonalManager = $this->userIsZonalManager(user());
+        $currentEmployeeDetail = $this->employeeDetailForUser(user());
+        $this->lockStationFromTourPlan = ! user()->hasAdminLikeAccess()
+            && ! $this->lockStationForZonalManager
+            && ! ($currentEmployeeDetail && $currentEmployeeDetail->designation && PharmaDesignationHelper::usesGeographyAllocation($currentEmployeeDetail->designation));
 
         // Doctors/chemists/stockists for visit pickers are loaded via AJAX (getStationCustomers) per selected station
         // to avoid embedding full company lists and to match HQ/station scope. Empty arrays keep the page light.
@@ -1008,33 +1282,25 @@ class DcrReportController extends AccountBaseController
                     $this->userHeadquarter = $this->headquarters->first()->id;
                 }
 
-                $this->reportingManagerId = $draftDcr->submitted_to;
-                if ($draftDcr->submitted_to) {
-                    $this->managers = User::with(['employeeDetail.designation'])
-                        ->whereHas('employeeDetail')
-                        ->where('company_id', company()->id)
-                        ->where('id', $draftDcr->submitted_to)
-                        ->get();
-                } else {
-                    $this->managers = collect();
+                $emp = $this->employeeDetailForUser(user());
+                $currentReportingManagerId = optional($emp)->reporting_to;
+                $this->reportingManagerId = $draftDcr->submitted_to ?: $currentReportingManagerId;
+                $this->managers = $this->activeReportingManagerCollection($this->reportingManagerId);
+
+                // Old drafts can point to a former/inactive reporting manager. Resume with current HR mapping.
+                if ($this->managers->isEmpty() && $currentReportingManagerId && (int) $currentReportingManagerId !== (int) $this->reportingManagerId) {
+                    $this->reportingManagerId = $currentReportingManagerId;
+                    $this->managers = $this->activeReportingManagerCollection($this->reportingManagerId);
                 }
             } else {
                 // Get employee's reporting manager from HR (for logged-in user by default)
-                $this->reportingManagerId = optional(user()->employeeDetails)->reporting_to;
+                $emp = $this->employeeDetailForUser(user());
+                $this->reportingManagerId = optional($emp)->reporting_to;
 
-                if ($this->reportingManagerId) {
-                    $this->managers = User::with(['employeeDetail.designation'])
-                        ->whereHas('employeeDetail')
-                        ->where('id', $this->reportingManagerId)
-                        ->where('company_id', company()->id)
-                        ->get();
-                } else {
-                    $this->managers = collect();
-                }
+                $this->managers = $this->activeReportingManagerCollection($this->reportingManagerId);
 
                 $this->reportDate = $this->findLastPendingDate();
 
-                $emp = user()->employeeDetails ?? user()->employeeDetail;
                 $this->userHeadquarter = $emp->headquarter_id ?? $emp->pharma_headquarter_id ?? null;
 
                 if ($this->userHeadquarter === null && $this->headquarters->isNotEmpty()) {
@@ -1118,7 +1384,7 @@ class DcrReportController extends AccountBaseController
             'headquarter.exstations',
             'headquarter.outstations',
             'headquarter.area',
-            'submittedTo',
+            'submittedTo.employeeDetail.designation',
             'approvedBy',
         ])
             ->where('user_id', $userId)
@@ -1154,6 +1420,9 @@ class DcrReportController extends AccountBaseController
                     'work_status' => $tour->work_status,
                     'work_with' => $tour->work_with,
                     'remark' => $tour->remark,
+                    'submitted_to' => $tour->submitted_to,
+                    'submitted_to_name' => optional($tour->submittedTo)->name,
+                    'submitted_to_designation' => optional(optional(optional($tour->submittedTo)->employeeDetail)->designation)->name,
                     'approved_by' => $tour->approvedBy->name ?? '-',
                     'approved_at' => $tour->approved_at ? $tour->approved_at->translatedFormat($dateFormat . ' ' . $timeFormat) : '-',
                 ]
@@ -1187,14 +1456,15 @@ class DcrReportController extends AccountBaseController
             return Reply::dataOnly(['status' => 'error', 'message' => 'Not allowed to add DCR for this employee']);
         }
 
-        $emp = User::with(['employeeDetail'])->where('id', $userId)->where('company_id', company()->id)->first();
-        if (!$emp || !$emp->employeeDetail) {
+        $emp = User::with(['employeeDetail', 'employeeDetails'])->where('id', $userId)->where('company_id', company()->id)->first();
+        $empDetail = $emp ? $this->employeeDetailForUser($emp) : null;
+        if (!$emp || !$empDetail) {
             return Reply::dataOnly(['status' => 'error', 'message' => 'Employee not found']);
         }
 
         $reportDate = $this->findLastPendingDate($userId);
-        $reportingTo = optional($emp->employeeDetail)->reporting_to;
-        $userHeadquarter = $emp->employeeDetail->headquarter_id ?? $emp->employeeDetail->pharma_headquarter_id ?? null;
+        $reportingTo = optional($empDetail)->reporting_to;
+        $userHeadquarter = $empDetail->headquarter_id ?? $empDetail->pharma_headquarter_id ?? null;
 
         $managers = collect();
         if ($reportingTo) {
@@ -1233,6 +1503,85 @@ class DcrReportController extends AccountBaseController
         $ids = array_values(array_unique(array_merge($reportingIds, $submittedIds)));
 
         return array_values(array_intersect($ids, RoleHierarchy::userIdsViewableBy(user(), company()->id)));
+    }
+
+    private function employeeDetailForUser(?User $user)
+    {
+        if (! $user) {
+            return null;
+        }
+
+        return $user->employeeDetails ?? $user->employeeDetail ?? null;
+    }
+
+    private function activeReportingManagerCollection($managerId)
+    {
+        if (! $managerId) {
+            return collect();
+        }
+
+        return User::with(['employeeDetail.designation'])
+            ->whereHas('employeeDetail')
+            ->where('id', $managerId)
+            ->where('company_id', company()->id)
+            ->get();
+    }
+
+    private function dcrSnapshotPayload(int $dcrOwnerId, ?string $headquarterName, ?string $station): array
+    {
+        $owner = User::with(['employeeDetails.designation', 'employeeDetails.headquarter', 'employeeDetail.designation', 'employeeDetail.headquarter'])
+            ->find($dcrOwnerId);
+        $employeeDetail = $this->employeeDetailForUser($owner);
+        $headquarterId = $employeeDetail->headquarter_id ?? $employeeDetail->pharma_headquarter_id ?? null;
+
+        if (!$headquarterId && $headquarterName) {
+            $headquarterId = PharmaHeadquarter::where('company_id', company()->id)
+                ->where('name', $headquarterName)
+                ->value('id');
+        }
+
+        return [
+            'employee_name_snapshot' => optional($owner)->name,
+            'employee_designation_snapshot' => optional(optional($employeeDetail)->designation)->name,
+            'headquarter_id_snapshot' => $headquarterId ? (int) $headquarterId : null,
+            'station_type_snapshot' => $this->resolveDcrStationType($station),
+        ];
+    }
+
+    private function resolveDcrStationType(?string $station): ?string
+    {
+        if (!$station) {
+            return null;
+        }
+
+        if (PharmaHeadquarter::where('company_id', company()->id)->where('name', $station)->exists()) {
+            return 'HQ';
+        }
+
+        if (PharmaExstation::where('company_id', company()->id)->where('name', $station)->exists()) {
+            return 'EX Station';
+        }
+
+        if (PharmaOutstation::where('company_id', company()->id)->where('name', $station)->exists()) {
+            return 'Out Station';
+        }
+
+        return null;
+    }
+
+    private function userIsZonalManager(?User $user): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        if ($user->hasRole('zonal-manager')) {
+            return true;
+        }
+
+        $emp = $this->employeeDetailForUser($user);
+
+        return $emp && $emp->designation && PharmaDesignationHelper::isZM($emp->designation);
     }
 
     /**
@@ -1418,6 +1767,11 @@ class DcrReportController extends AccountBaseController
 
         // Submitted to current user (manager) — must be able to open/edit header-only rows routed to them
         if ($dcr->submitted_to && (int) $dcr->submitted_to === (int) user()->id) {
+            return true;
+        }
+
+        $reportingDescendantIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+        if (in_array((int) $dcr->user_id, array_map('intval', $reportingDescendantIds), true)) {
             return true;
         }
 
@@ -1817,6 +2171,7 @@ class DcrReportController extends AccountBaseController
     private function getOrCreateDraft(Request $request, int $dcrOwnerId): DcrReport
     {
         $header = $this->resolveDraftHeaderFromRequest($request);
+        $snapshot = $this->dcrSnapshotPayload($dcrOwnerId, $header['headquarter'], $header['station']);
         $draft = DcrReport::where('user_id', $dcrOwnerId)
             ->whereDate('report_date', $request->report_date)
             ->where('status', 'draft')
@@ -1829,6 +2184,7 @@ class DcrReportController extends AccountBaseController
                 'work_status' => $header['work_status'],
                 'work_with' => $header['work_with'],
                 'remark' => $header['remark'],
+                ...$snapshot,
             ]);
             $draft->refresh();
             $this->syncTourWithDraftIfNeeded($draft);
@@ -1847,6 +2203,7 @@ class DcrReportController extends AccountBaseController
             'work_status' => $header['work_status'],
             'work_with' => $header['work_with'],
             'remark' => $header['remark'],
+            ...$snapshot,
         ]);
         $this->syncTourWithDraftIfNeeded($created);
 
@@ -2354,6 +2711,7 @@ class DcrReportController extends AccountBaseController
         $stationString = $request->station; // Single value now
         $workStatusString = $request->work_status; // Single select value
         $workWithString = is_array($request->work_with) ? implode(',', $request->work_with) : $request->work_with;
+        $snapshot = $this->dcrSnapshotPayload($dcrOwnerId, $headquarterName, $stationString);
         
         // Check if a field-work type is selected (shows doctor/chemist/stockist sections)
         $fieldWorkTypes = config('dcr.field_work_types', ['Field Work', 'Working Day', 'Working Days']);
@@ -2372,6 +2730,7 @@ class DcrReportController extends AccountBaseController
             'work_status' => $workStatusString,
             'work_with' => $workWithString,
             'remark' => $request->remark, // For non-field work
+            ...$snapshot,
         ];
         
         // Create the main DCR report
@@ -2955,8 +3314,10 @@ class DcrReportController extends AccountBaseController
         $isAdmin = $approvePermission == 'all';
 
         $descendantIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+        $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
         $canApprove = $isAdmin || $dcr->submitted_to == user()->id
-            || in_array((int) $dcr->user_id, array_map('intval', $descendantIds), true);
+            || in_array((int) $dcr->user_id, array_map('intval', $descendantIds), true)
+            || ($this->userIsZonalManager(user()) && in_array((int) $dcr->user_id, array_map('intval', $viewableIds), true));
 
         abort_403(! $canApprove);
         abort_403(!$this->canViewDcr($dcr));
@@ -2987,8 +3348,10 @@ class DcrReportController extends AccountBaseController
         $isAdmin = $approvePermission == 'all';
 
         $descendantIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+        $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
         $canApprove = $isAdmin || $dcr->submitted_to == user()->id
-            || in_array((int) $dcr->user_id, array_map('intval', $descendantIds), true);
+            || in_array((int) $dcr->user_id, array_map('intval', $descendantIds), true)
+            || ($this->userIsZonalManager(user()) && in_array((int) $dcr->user_id, array_map('intval', $viewableIds), true));
 
         abort_403(! $canApprove);
         abort_403(!$this->canViewDcr($dcr));
@@ -3020,13 +3383,18 @@ class DcrReportController extends AccountBaseController
         $dcrIds = $request->dcr_ids;
         
         $reportingEmployeeIds = RoleHierarchy::reportingDescendantUserIds(user()->id, company()->id);
+        $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
 
         if (! $isAdmin) {
             $dcrsAccessible = DcrReport::whereIn('id', $dcrIds)
-                ->where(function($q) use ($reportingEmployeeIds) {
-                    $q->where('submitted_to', user()->id);
-                    if (! empty($reportingEmployeeIds)) {
-                        $q->orWhereIn('user_id', $reportingEmployeeIds);
+                ->where(function($q) use ($reportingEmployeeIds, $viewableIds) {
+                    if ($this->userIsZonalManager(user())) {
+                        $q->whereIn('user_id', $viewableIds);
+                    } else {
+                        $q->where('submitted_to', user()->id);
+                        if (! empty($reportingEmployeeIds)) {
+                            $q->orWhereIn('user_id', $reportingEmployeeIds);
+                        }
                     }
                 })
                 ->count();
@@ -3043,12 +3411,16 @@ class DcrReportController extends AccountBaseController
         
         // If not admin, only approve DCRs submitted to current user OR from reporting employees
         if (!$isAdmin) {
-            $query->where(function($q) use ($reportingEmployeeIds) {
-                $q->where('submitted_to', user()->id);
-                if (!empty($reportingEmployeeIds)) {
-                    $q->orWhereIn('user_id', $reportingEmployeeIds);
-                }
-            });
+            if ($this->userIsZonalManager(user())) {
+                $query->whereIn('user_id', $viewableIds);
+            } else {
+                $query->where(function($q) use ($reportingEmployeeIds) {
+                    $q->where('submitted_to', user()->id);
+                    if (!empty($reportingEmployeeIds)) {
+                        $q->orWhereIn('user_id', $reportingEmployeeIds);
+                    }
+                });
+            }
         }
         
         $dcrsToApprove = (clone $query)->get(['id', 'approved', 'approved_by', 'approved_at', 'status']);

@@ -32,15 +32,32 @@ class DcrReportReportController extends AccountBaseController
             $this->fromDate = now($this->company->timezone)->startOfMonth();
             $this->toDate = now($this->company->timezone);
 
-            $viewableIds = RoleHierarchy::userIdsViewableBy(user(), company()->id);
-            $this->employees = User::with(['employeeDetail.designation', 'employeeDetail.headquarter'])
-                ->whereHas('employeeDetail')
-                ->where('company_id', company()->id)
-                ->when(!empty($viewableIds), fn ($q) => $q->whereIn('id', $viewableIds))
-                ->orderBy('name')
-                ->get();
-
+            $viewableIds = user()->hasAdminLikeAccess()
+                ? []
+                : RoleHierarchy::userIdsViewableBy(user(), company()->id);
             $accessibleHqIds = $this->accessibleHeadquarterIds();
+
+            $employeeQuery = User::with(['employeeDetail.designation', 'employeeDetail.headquarter', 'employeeDetails.designation', 'employeeDetails.headquarter'])
+                ->where(function ($q) {
+                    $q->whereHas('employeeDetail')->orWhereHas('employeeDetails');
+                })
+                ->where('company_id', company()->id)
+                ->when(!user()->hasAdminLikeAccess() && !empty($viewableIds), fn ($q) => $q->whereIn('id', $viewableIds));
+
+            if (!user()->hasAdminLikeAccess() && $accessibleHqIds !== null) {
+                if (!empty($accessibleHqIds)) {
+                    $employeeQuery->where(function ($employeeHeadquarterQuery) use ($accessibleHqIds) {
+                        $employeeHeadquarterQuery
+                            ->whereHas('employeeDetail.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds))
+                            ->orWhereHas('employeeDetails.headquarter', fn ($hqQuery) => $hqQuery->whereIn('id', $accessibleHqIds));
+                    });
+                } else {
+                    $employeeQuery->whereRaw('1 = 0');
+                }
+            }
+
+            $this->employees = $employeeQuery->orderBy('name')->get();
+
             $headquarterQuery = PharmaHeadquarter::with(['exstations', 'outstations', 'area'])
                 ->where('company_id', company()->id);
             if ($accessibleHqIds !== null && !empty($accessibleHqIds)) {
