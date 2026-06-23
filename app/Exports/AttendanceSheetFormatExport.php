@@ -61,7 +61,7 @@ class AttendanceSheetFormatExport implements FromCollection, WithHeadings, WithM
         $headers = array_merge($headers, [
             'Standard Days',
             'Working Days',
-            'WO',
+            'Week Off',
             'Holiday',
             'SL',
             'EL',

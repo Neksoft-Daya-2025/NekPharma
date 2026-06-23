@@ -15,6 +15,14 @@ class AttendanceSheetFormatExportTest extends TestCase
         $this->assertStringNotContainsString('setShowDropDown', $controller);
     }
 
+    public function test_attendance_sheet_summary_header_uses_week_off_label(): void
+    {
+        $export = file_get_contents(__DIR__ . '/../../app/Exports/AttendanceSheetFormatExport.php');
+
+        $this->assertStringContainsString("'Week Off'", $export);
+        $this->assertStringNotContainsString("'WO',\n            'Holiday'", $export);
+    }
+
     public function test_attendance_on_holiday_exports_as_present(): void
     {
         $summary = AttendanceSheetFormatExport::summarizeDayForExport(

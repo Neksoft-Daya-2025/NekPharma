@@ -1454,7 +1454,7 @@ return array(
         'requestPending' => 'Request Pending',
         'sendMonthlyReport' => 'Send monthly attendance report email',
         'chooseRoleReport' => 'Choose roles for email report',
-        'dayOff' => 'Day Off',
+        'dayOff' => 'Week Off',
         'earlyClockIn' => 'Early Clock In (minutes)',
         'deleteRequestChange' => 'Delete Request Change',
         'automateShifts' => 'Automate Shifts',
